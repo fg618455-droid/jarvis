@@ -1,0 +1,231 @@
+"""
+Tests for the SenseVoice (FunASR) speech-recognition engine.
+
+These verify the wrapper behaviour with funasr mocked out — the real
+funasr import is lazy so lightweight submodules stay import-light.
+"""
+
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+from jarvis.listening.sensevoice import (
+    SenseVoiceEngine,
+    SenseVoiceResult,
+    SenseVoiceUnavailableError,
+    clean_transcript,
+    resolve_device,
+    resolve_model_ref,
+    is_available,
+)
+
+
+class TestCleanTranscript:
+    """Rich-tag stripping, language extraction, and no-speech detection."""
+
+    def test_strips_tags_and_extracts_language(self):
+        text, lang, no_speech = clean_transcript(
+            "<|zh|><|NEUTRAL|><|Speech|><|woitn|>大家好欢迎使用"
+        )
+        assert text == "大家好欢迎使用"
+        assert lang == "zh"
+        assert no_speech is False
+
+    def test_english_with_itn_and_emotion(self):
+        text, lang, no_speech = clean_transcript(
+            "<|en|><|HAPPY|><|Speech|><|withitn|>Hello world, it is 5 o'clock."
+        )
+        assert text == "Hello world, it is 5 o'clock."
+        assert lang == "en"
+        assert no_speech is False
+
+    def test_cantonese_and_japanese(self):
+        text, lang, _ = clean_transcript("<|yue|><|NEUTRAL|><|Speech|><|woitn|>你好")
+        assert lang == "yue"
+        assert text == "你好"
+
+        text, lang, _ = clean_transcript("<|ja|><|NEUTRAL|><|Speech|><|woitn|>こんにちは")
+        assert lang == "ja"
+        assert text == "こんにちは"
+
+    def test_nospeech_tag_detected_and_language_dropped(self):
+        text, lang, no_speech = clean_transcript("<|nospeech|><|Event_UNK|>")
+        assert text == ""
+        assert no_speech is True
+        assert lang is None
+
+    def test_empty_input(self):
+        assert clean_transcript("") == ("", None, False)
+        assert clean_transcript(None) == ("", None, False)
+
+    def test_text_without_tags_passes_through(self):
+        text, lang, no_speech = clean_transcript("just plain text")
+        assert text == "just plain text"
+        assert lang is None
+        assert no_speech is False
+
+
+class TestResolveDevice:
+    def test_explicit_preference_passthrough(self):
+        assert resolve_device("cuda") == "cuda"
+        assert resolve_device("mps") == "mps"
+        assert resolve_device("cpu") == "cpu"
+
+    def test_auto_falls_back_to_cpu_without_accelerators(self):
+        with patch("jarvis.listening.sensevoice._is_apple_silicon", return_value=False):
+            with patch("jarvis.listening.sensevoice._torch_cuda_available", return_value=False):
+                assert resolve_device("auto") == "cpu"
+
+    def test_auto_prefers_cuda_when_available(self):
+        with patch("jarvis.listening.sensevoice._is_apple_silicon", return_value=False):
+            with patch("jarvis.listening.sensevoice._torch_cuda_available", return_value=True):
+                assert resolve_device("auto") == "cuda:0"
+
+    def test_auto_uses_mps_on_apple_silicon(self):
+        with patch("jarvis.listening.sensevoice._is_apple_silicon", return_value=True):
+            with patch("jarvis.listening.sensevoice._torch_cuda_available", return_value=False):
+                with patch("jarvis.listening.sensevoice._torch_mps_available", return_value=True):
+                    assert resolve_device("auto") == "mps"
+
+
+class TestResolveModelRef:
+    def test_bundled_model_wins_over_configured(self):
+        with patch(
+            "jarvis.listening.sensevoice.bundled_model_dir",
+            return_value="C:/apps/Jarvis/models/SenseVoiceSmall",
+        ):
+            model, hub = resolve_model_ref("FunAudioLLM/SenseVoiceSmall")
+        assert model == "C:/apps/Jarvis/models/SenseVoiceSmall"
+        assert hub == "hf"
+
+    def test_default_id_uses_huggingface_hub(self):
+        with patch("jarvis.listening.sensevoice.bundled_model_dir", return_value=None):
+            model, hub = resolve_model_ref(None)
+        assert model == "FunAudioLLM/SenseVoiceSmall"
+        assert hub == "hf"
+
+    def test_iic_prefix_uses_modelscope_hub(self):
+        with patch("jarvis.listening.sensevoice.bundled_model_dir", return_value=None):
+            model, hub = resolve_model_ref("iic/SenseVoiceSmall")
+        assert model == "iic/SenseVoiceSmall"
+        assert hub == "ms"
+
+    def test_local_path_passes_through(self):
+        with patch("jarvis.listening.sensevoice.bundled_model_dir", return_value=None):
+            model, hub = resolve_model_ref("D:/models/SenseVoiceSmall")
+        assert model == "D:/models/SenseVoiceSmall"
+        assert hub == "hf"
+
+
+class TestBundledModelDir:
+    def test_dev_checkout_models_dir(self, monkeypatch):
+        import jarvis.listening.sensevoice as sv
+        monkeypatch.setattr(sv.sys, "frozen", False, raising=False)
+        monkeypatch.delattr(sv.sys, "_MEIPASS", raising=False)
+        # No models/ directory in the repo -> None
+        assert sv.bundled_model_dir() is None or not sv.bundled_model_dir().endswith(
+            "models/SenseVoiceSmall"
+        )
+
+    def test_frozen_app_resolves_next_to_executable(self, monkeypatch, tmp_path):
+        import jarvis.listening.sensevoice as sv
+        model_dir = tmp_path / "models" / "SenseVoiceSmall"
+        model_dir.mkdir(parents=True)
+        exe_dir = tmp_path
+        monkeypatch.setattr(sv.sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sv.sys, "executable", str(exe_dir / "Jarvis.exe"))
+        monkeypatch.setattr(sv.sys, "_MEIPASS", None, raising=False)
+        assert sv.bundled_model_dir() == str(model_dir)
+
+
+class TestAvailability:
+    def test_unavailable_when_funasr_missing(self):
+        with patch("jarvis.listening.sensevoice._get_auto_model", return_value=None):
+            assert is_available() is False
+
+    def test_available_when_funasr_present(self):
+        with patch("jarvis.listening.sensevoice._get_auto_model", return_value=object):
+            assert is_available() is True
+
+
+class TestSenseVoiceEngineLoad:
+    def test_load_constructs_autmodel_with_resolved_args(self):
+        fake_cls = MagicMock()
+        fake_cls.return_value = MagicMock(model_path="C:/models/sv")
+        with patch("jarvis.listening.sensevoice._get_auto_model", return_value=fake_cls):
+            engine = SenseVoiceEngine.load("FunAudioLLM/SenseVoiceSmall", device="cpu")
+
+        assert engine.device == "cpu"
+        assert engine.model_path == "C:/models/sv"
+        kwargs = fake_cls.call_args[1]
+        assert kwargs["model"] == "FunAudioLLM/SenseVoiceSmall"
+        assert kwargs["device"] == "cpu"
+        assert kwargs["hub"] == "hf"
+        assert kwargs["disable_update"] is True
+
+    def test_load_raises_when_funasr_unavailable(self):
+        with patch("jarvis.listening.sensevoice._get_auto_model", return_value=None):
+            with pytest.raises(SenseVoiceUnavailableError):
+                SenseVoiceEngine.load()
+
+    def test_load_propagates_model_errors(self):
+        fake_cls = MagicMock(side_effect=OSError("connection refused"))
+        with patch("jarvis.listening.sensevoice._get_auto_model", return_value=fake_cls):
+            with pytest.raises(OSError):
+                SenseVoiceEngine.load()
+
+
+class TestSenseVoiceEngineTranscribe:
+    def _make_engine(self, generate_result=None, generate_error=None):
+        auto = MagicMock()
+        if generate_error is not None:
+            auto.generate.side_effect = generate_error
+        else:
+            auto.generate.return_value = generate_result or [{"key": "k", "text": ""}]
+        engine = SenseVoiceEngine.__new__(SenseVoiceEngine)
+        engine._auto = auto
+        engine.device = "cpu"
+        return engine
+
+    def test_transcribe_parses_result(self):
+        engine = self._make_engine(
+            [{"key": "k", "text": "<|en|><|NEUTRAL|><|Speech|><|woitn|>what is the weather"}]
+        )
+        result = engine.transcribe(MagicMock())
+        assert isinstance(result, SenseVoiceResult)
+        assert result.text == "what is the weather"
+        assert result.language == "en"
+        assert result.no_speech is False
+        # generate receives a dict cache and language auto
+        call_kwargs = engine._auto.generate.call_args[1]
+        assert call_kwargs["language"] == "auto"
+        assert call_kwargs["use_itn"] is True
+        assert call_kwargs["cache"] == {}
+
+    def test_transcribe_nospeech(self):
+        engine = self._make_engine([{"key": "k", "text": "<|nospeech|><|Event_UNK|>"}])
+        result = engine.transcribe(MagicMock())
+        assert result.text == ""
+        assert result.no_speech is True
+
+    def test_transcribe_error_returns_empty(self):
+        engine = self._make_engine(generate_error=RuntimeError("boom"))
+        result = engine.transcribe(MagicMock())
+        assert result.text == ""
+        assert result.no_speech is False
+
+    def test_transcribe_empty_result(self):
+        engine = self._make_engine([])
+        result = engine.transcribe(MagicMock())
+        assert result.text == ""
+
+    def test_warmup_runs_non_silent_audio(self):
+        import numpy as np
+        engine = self._make_engine(
+            [{"key": "k", "text": "<|en|><|NEUTRAL|><|Speech|><|woitn|>warm"}]
+        )
+        with patch("jarvis.listening.sensevoice.np", np):
+            engine.warmup(16000)
+        audio = engine._auto.generate.call_args[1]["input"]
+        assert audio.shape[0] == 16000
+        assert not (audio == 0).all(), "warmup should not use silent audio"

@@ -35,7 +35,6 @@ if sys.platform == 'win32' and not getattr(sys, 'frozen', False):
         pass
 
 from typing import Optional
-from faster_whisper import WhisperModel
 
 from .config import load_settings
 from .memory.db import Database
@@ -326,7 +325,7 @@ def main(smoke_test: bool = False) -> None:
     debug_log("daemon started", "jarvis")
     print("✓ Daemon started", flush=True)
     print(f"🧠 Using chat model: {cfg.llm_chat_model}", flush=True)
-    print(f"🎤 Using whisper model: {cfg.whisper_model}", flush=True)
+    print(f"🎤 Using sensevoice model: {cfg.sensevoice_model}", flush=True)
 
     # MCP preflight: discover and cache external MCP tools
     mcps = getattr(cfg, "mcps", {}) or {}
@@ -485,11 +484,11 @@ def main(smoke_test: bool = False) -> None:
         print("  TTS disabled", flush=True)
 
     # Initialize voice listening (only if dependencies available)
-    print("🎤 Initializing voice listener (this may take a moment to load Whisper model)...", flush=True)
+    print("🎤 Initializing voice listener (this may take a moment to load SenseVoice model)...", flush=True)
     voice_thread: Optional[threading.Thread] = None
     voice_thread = VoiceListener(db, cfg, tts, _global_dialogue_memory)
     voice_thread.start()
-    print("✓ Voice listener thread started (loading Whisper model in background)", flush=True)
+    print("✓ Voice listener thread started (loading SenseVoice model in background)", flush=True)
 
     # Initialize dictation engine (hold-to-dictate)
     dictation = None
@@ -524,9 +523,7 @@ def main(smoke_test: bool = False) -> None:
                 debug_log("dictation ended — listener resumed", "dictation")
 
             dictation = _DE(
-                whisper_model_ref=lambda: voice_thread.model,
-                whisper_backend_ref=lambda: voice_thread._whisper_backend,
-                mlx_repo_ref=lambda: voice_thread._mlx_model_repo,
+                sensevoice_engine_ref=lambda: voice_thread.engine,
                 hotkey=cfg.dictation_hotkey,
                 sample_rate=int(getattr(cfg, "sample_rate", 16000)),
                 on_dictation_start=_on_dictation_start,
