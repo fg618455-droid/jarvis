@@ -135,6 +135,8 @@ On small models, a caveat line is appended above a more involved example to set 
 
 **Concurrency:** LLM warmups run in daemon threads started before SenseVoice loads, so they overlap with SenseVoice initialisation. After SenseVoice finishes, the listener joins the warmup threads with a **single 60 s budget** shared across them all. If the budget is exhausted, the listener continues (with a `⏳ Some models still warming — continuing anyway` notice) and the first engagement pays the cold-load cost on demand.
 
+**Runtime pre-load:** `daemon.main()` imports the SenseVoice runtime (funasr + torch + sklearn + scipy) on the main thread **before** the voice thread and the pynput keyboard-hook thread start. funasr's import chain loads many native DLLs; importing it from the voice thread concurrently with pynput's native message loop deadlocks on the Windows loader lock (the voice thread stalls forever in `importlib.create_module`). The eager import serialises all native loading ahead of thread divergence; the listener's own lazy import remains as a safety net for non-daemon use.
+
 **Best-effort semantics:** Every warmup path swallows its own errors and returns a bool. A failed warmup prints `⚠️ … warmup failed — will load on first use` but never blocks or crashes the listener — voice input is prioritised over startup latency.
 
 ## The Three Listening Modes
