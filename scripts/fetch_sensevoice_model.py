@@ -8,6 +8,13 @@ repository root; the PyInstaller build (``jarvis_desktop.spec``) bundles
 that directory, and the app resolves it via
 ``jarvis.listening.sensevoice.bundled_model_dir``.
 
+CI (``.github/workflows/build-desktop.yml``) runs this before every
+desktop build, restoring the weights from ``actions/cache`` (keyed on
+this script) so the ~940 MB are downloaded once and reused across
+builds. The script is idempotent: it skips the download when the model
+directory already holds the essential files (``config.yaml`` +
+``model.pt``), which is what a cache hit looks like.
+
 Usage:
     python scripts/fetch_sensevoice_model.py            # HuggingFace (default)
     python scripts/fetch_sensevoice_model.py --hub ms   # ModelScope
@@ -48,7 +55,22 @@ def main() -> int:
         action="store_true",
         help="Skip the funasr import check after download",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-download even when the model directory already looks complete",
+    )
     args = parser.parse_args()
+
+    # Idempotent by default: CI restores the weights from actions/cache and
+    # devs re-run this script without paying for a re-download. The essential
+    # inference files are config.yaml + model.pt; anything less means an
+    # interrupted download and we re-fetch.
+    if not args.force and (MODEL_DIR / "config.yaml").exists() and (MODEL_DIR / "model.pt").exists():
+        size_mb = sum(f.stat().st_size for f in MODEL_DIR.rglob("*") if f.is_file()) / (1024 * 1024)
+        print(f"✅ SenseVoiceSmall already present in {MODEL_DIR} ({size_mb:.0f} MB), skipping download")
+        print("   Use --force to re-download.")
+        return 0
 
     model_id = args.model or (MODELSCOPE_ID if args.hub == "ms" else DEFAULT_ID)
     print(f"📥 Fetching SenseVoiceSmall weights ({model_id}) ...")

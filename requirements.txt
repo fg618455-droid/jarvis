@@ -14,6 +14,9 @@ funasr>=1.4.1
 # (SenseVoiceSmall is ~17x realtime on CPU).
 torch>=2.6.0
 torchaudio>=2.6.0
+# Direct dependency of scripts/fetch_sensevoice_model.py (also pulled in by
+# funasr): downloading model weights at build time and hub="hf" at runtime.
+huggingface_hub>=0.24.0
 setuptools<81
 sounddevice==0.4.7
 pytesseract==0.3.13
