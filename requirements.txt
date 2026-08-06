@@ -10,10 +10,17 @@ funasr>=1.4.1
 # PyTorch powers FunASR/SenseVoice. torchaudio is a hard import of funasr's
 # load path (funasr.utils.load_utils) even though the SenseVoice inference
 # path itself uses soundfile/librosa — without it `import funasr` fails.
-# The default wheel is fine: on a machine without a GPU it runs on CPU
+# PyPI's default Windows torch wheel is CPU-only, so Windows installs pin the
+# CUDA 12.4 build from PyTorch's own index (the bundled CUDA runtime makes
+# SenseVoice GPU-accelerated; the Inno Setup `{app}\cuda` tree does not serve
+# torch). Other platforms use the default wheel: Linux ships CUDA-enabled,
+# macOS (Apple Silicon) uses MPS, and GPU-less machines fall back to CPU
 # (SenseVoiceSmall is ~17x realtime on CPU).
-torch>=2.6.0
-torchaudio>=2.6.0
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0+cu124; sys_platform == "win32"
+torch>=2.6.0; sys_platform != "win32"
+torchaudio==2.6.0+cu124; sys_platform == "win32"
+torchaudio>=2.6.0; sys_platform != "win32"
 # Direct dependency of scripts/fetch_sensevoice_model.py (also pulled in by
 # funasr): downloading model weights at build time and hub="hf" at runtime.
 huggingface_hub>=0.24.0
