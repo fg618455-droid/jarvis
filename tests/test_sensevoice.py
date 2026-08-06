@@ -118,14 +118,25 @@ class TestResolveModelRef:
 
 
 class TestBundledModelDir:
-    def test_dev_checkout_models_dir(self, monkeypatch):
+    def test_dev_checkout_uses_repo_models_dir(self, monkeypatch, tmp_path):
+        """Dev checkouts resolve models/SenseVoiceSmall at the repo root
+        (the same dir scripts/fetch_sensevoice_model.py and CI populate)."""
         import jarvis.listening.sensevoice as sv
+        repo_root = tmp_path / "repo"
+        model_dir = repo_root / "models" / "SenseVoiceSmall"
+        model_dir.mkdir(parents=True)
+        monkeypatch.setattr(sv, "_REPO_ROOT", repo_root)
         monkeypatch.setattr(sv.sys, "frozen", False, raising=False)
         monkeypatch.delattr(sv.sys, "_MEIPASS", raising=False)
-        # No models/ directory in the repo -> None
-        assert sv.bundled_model_dir() is None or not sv.bundled_model_dir().endswith(
-            "models/SenseVoiceSmall"
-        )
+        assert sv.bundled_model_dir() == str(model_dir)
+
+    def test_dev_checkout_returns_none_without_models_dir(self, monkeypatch, tmp_path):
+        import jarvis.listening.sensevoice as sv
+        repo_root = tmp_path / "repo"
+        monkeypatch.setattr(sv, "_REPO_ROOT", repo_root)
+        monkeypatch.setattr(sv.sys, "frozen", False, raising=False)
+        monkeypatch.delattr(sv.sys, "_MEIPASS", raising=False)
+        assert sv.bundled_model_dir() is None
 
     def test_frozen_app_resolves_next_to_executable(self, monkeypatch, tmp_path):
         import jarvis.listening.sensevoice as sv
@@ -136,6 +147,51 @@ class TestBundledModelDir:
         monkeypatch.setattr(sv.sys, "executable", str(exe_dir / "Jarvis.exe"))
         monkeypatch.setattr(sv.sys, "_MEIPASS", None, raising=False)
         assert sv.bundled_model_dir() == str(model_dir)
+
+
+class TestDefaultModelDir:
+    def test_dev_uses_repo_models_dir(self, monkeypatch, tmp_path):
+        import jarvis.listening.sensevoice as sv
+        monkeypatch.setattr(sv, "_REPO_ROOT", tmp_path / "repo")
+        monkeypatch.setattr(sv.sys, "frozen", False, raising=False)
+        assert sv.default_model_dir() == tmp_path / "repo" / "models" / "SenseVoiceSmall"
+
+    def test_frozen_uses_config_dir(self, monkeypatch, tmp_path):
+        import jarvis.listening.sensevoice as sv
+        monkeypatch.setattr(sv.sys, "frozen", True, raising=False)
+        with patch(
+            "jarvis.config.default_config_path",
+            return_value=tmp_path / "config" / "config.json",
+        ):
+            assert sv.default_model_dir() == tmp_path / "config" / "models" / "SenseVoiceSmall"
+
+
+class TestDownloadModel:
+    def test_downloads_into_local_dir_without_symlinks(self, tmp_path):
+        """The runtime download uses snapshot_download(local_dir=...) so
+        files are copied, never symlinked (HF cache symlinks fail on
+        Windows without Developer Mode, WinError 1314)."""
+        import jarvis.listening.sensevoice as sv
+        target = tmp_path / "models" / "SenseVoiceSmall"
+        with patch(
+            "huggingface_hub.snapshot_download",
+            return_value=str(target),
+        ) as mock_dl:
+            result = sv.download_model("FunAudioLLM/SenseVoiceSmall", target_dir=target)
+        assert result == str(target)
+        mock_dl.assert_called_once_with(
+            repo_id="FunAudioLLM/SenseVoiceSmall", local_dir=str(target)
+        )
+
+    def test_download_defaults_to_default_model_dir(self, monkeypatch, tmp_path):
+        import jarvis.listening.sensevoice as sv
+        monkeypatch.setattr(sv, "_REPO_ROOT", tmp_path / "repo")
+        monkeypatch.setattr(sv.sys, "frozen", False, raising=False)
+        with patch("huggingface_hub.snapshot_download") as mock_dl:
+            result = sv.download_model("FunAudioLLM/SenseVoiceSmall")
+        assert result == str(tmp_path / "repo" / "models" / "SenseVoiceSmall")
+        mock_dl.assert_called_once()
+        assert mock_dl.call_args[1]["local_dir"].startswith(str(tmp_path / "repo"))
 
 
 class TestAvailability:
@@ -149,19 +205,44 @@ class TestAvailability:
 
 
 class TestSenseVoiceEngineLoad:
-    def test_load_constructs_autmodel_with_resolved_args(self):
+    def test_load_constructs_autmodel_with_resolved_local_dir(self):
+        """An id that isn't a local dir is downloaded first (no HF cache
+        symlinks), and AutoModel receives the local directory."""
         fake_cls = MagicMock()
         fake_cls.return_value = MagicMock(model_path="C:/models/sv")
         with patch("jarvis.listening.sensevoice._get_auto_model", return_value=fake_cls):
-            engine = SenseVoiceEngine.load("FunAudioLLM/SenseVoiceSmall", device="cpu")
+            # No bundled weights: the configured id must be downloaded.
+            with patch("jarvis.listening.sensevoice.bundled_model_dir", return_value=None):
+                with patch(
+                    "jarvis.listening.sensevoice.download_model",
+                    return_value="C:/downloaded/SenseVoiceSmall",
+                ) as mock_dl:
+                    engine = SenseVoiceEngine.load("FunAudioLLM/SenseVoiceSmall", device="cpu")
 
         assert engine.device == "cpu"
         assert engine.model_path == "C:/models/sv"
+        mock_dl.assert_called_once_with("FunAudioLLM/SenseVoiceSmall")
         kwargs = fake_cls.call_args[1]
-        assert kwargs["model"] == "FunAudioLLM/SenseVoiceSmall"
+        assert kwargs["model"] == "C:/downloaded/SenseVoiceSmall"
         assert kwargs["device"] == "cpu"
         assert kwargs["hub"] == "hf"
         assert kwargs["disable_update"] is True
+
+    def test_load_uses_local_dir_without_downloading(self, tmp_path):
+        """A configured local model directory is passed straight through."""
+        model_dir = tmp_path / "SenseVoiceSmall"
+        model_dir.mkdir()
+        fake_cls = MagicMock()
+        fake_cls.return_value = MagicMock(model_path=str(model_dir))
+        with patch("jarvis.listening.sensevoice._get_auto_model", return_value=fake_cls):
+            # No bundled weights so the configured local dir is used as-is.
+            with patch("jarvis.listening.sensevoice.bundled_model_dir", return_value=None):
+                with patch(
+                    "jarvis.listening.sensevoice.download_model"
+                ) as mock_dl:
+                    SenseVoiceEngine.load(str(model_dir), device="cpu")
+        mock_dl.assert_not_called()
+        assert fake_cls.call_args[1]["model"] == str(model_dir)
 
     def test_load_raises_when_funasr_unavailable(self):
         with patch("jarvis.listening.sensevoice._get_auto_model", return_value=None):
@@ -171,8 +252,12 @@ class TestSenseVoiceEngineLoad:
     def test_load_propagates_model_errors(self):
         fake_cls = MagicMock(side_effect=OSError("connection refused"))
         with patch("jarvis.listening.sensevoice._get_auto_model", return_value=fake_cls):
-            with pytest.raises(OSError):
-                SenseVoiceEngine.load()
+            with patch(
+                "jarvis.listening.sensevoice.download_model",
+                return_value="C:/downloaded/SenseVoiceSmall",
+            ):
+                with pytest.raises(OSError):
+                    SenseVoiceEngine.load()
 
 
 class TestSenseVoiceEngineTranscribe:

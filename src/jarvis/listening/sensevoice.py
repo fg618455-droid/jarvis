@@ -12,6 +12,7 @@ does not drag them in via ``listener.py``.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -30,6 +31,10 @@ _NOSPEECH_RE = re.compile(r"<\|nospeech\|>", re.IGNORECASE)
 
 DEFAULT_MODEL_ID = "FunAudioLLM/SenseVoiceSmall"
 BUNDLED_MODEL_DIR_NAME = "SenseVoiceSmall"
+
+# Repository root for dev checkouts: src/jarvis/listening/sensevoice.py
+# is four levels below it. Frozen builds don't have a repo root.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 _AutoModel = None  # cached funasr.AutoModel class (or None on import failure)
 
@@ -120,14 +125,51 @@ def bundled_model_dir() -> Optional[str]:
         if meipass:
             candidates.append(Path(meipass) / "models" / BUNDLED_MODEL_DIR_NAME)
     else:
-        # Repository root: three levels up from this file's package dir
-        # (jarvis/listening/sensevoice.py -> src/jarvis/listening/ -> repo root).
-        root = Path(__file__).resolve().parents[2]
-        candidates.append(root / "models" / BUNDLED_MODEL_DIR_NAME)
+        # Dev checkout: same directory scripts/fetch_sensevoice_model.py and
+        # the CI build populate (repository root models/SenseVoiceSmall).
+        candidates.append(_REPO_ROOT / "models" / BUNDLED_MODEL_DIR_NAME)
     for candidate in candidates:
         if candidate.is_dir():
             return str(candidate)
     return None
+
+
+def default_model_dir() -> Path:
+    """Persistent local directory for the model weights.
+
+    Dev checkouts share the repository ``models/`` dir (the same location
+    ``scripts/fetch_sensevoice_model.py`` and the CI build use, so a dev
+    download and a CI-cached build land in the same place). Frozen apps
+    without bundled weights store the download next to the config file.
+    """
+    if not getattr(sys, "frozen", False):
+        return _REPO_ROOT / "models" / BUNDLED_MODEL_DIR_NAME
+    from ..config import default_config_path
+
+    return Path(default_config_path()).parent / "models" / BUNDLED_MODEL_DIR_NAME
+
+
+def download_model(model_id: str, target_dir: Optional[Path] = None) -> str:
+    """Download the model weights into a local directory and return its path.
+
+    Uses ``snapshot_download(local_dir=...)`` so files are copied rather
+    than symlinked. The plain HF-cache path creates symlinks, which
+    Windows refuses without Developer Mode or admin (WinError 1314), and
+    funasr surfaces that as a scary "Download failed!" warning even when
+    the copy fallback then succeeds. A local dir also keeps first-run
+    progress visible and is reused across runs.
+    """
+    target = Path(target_dir or default_model_dir())
+    target.mkdir(parents=True, exist_ok=True)
+    from huggingface_hub import snapshot_download
+
+    print(
+        f"     🎤 Downloading SenseVoice model '{model_id}' to {target} "
+        "(one-time, ~940 MB)...",
+        flush=True,
+    )
+    snapshot_download(repo_id=model_id, local_dir=str(target))
+    return str(target)
 
 
 def resolve_model_ref(configured: Optional[str]) -> tuple[str, str]:
@@ -203,6 +245,11 @@ class SenseVoiceEngine:
         Raises :class:`SenseVoiceUnavailableError` when funasr is not
         installed; model initialisation errors (e.g. download failures)
         propagate to the caller, which prints the user-facing message.
+
+        The model is resolved to a local directory whenever possible:
+        bundled weights first, then the configured id is downloaded into
+        ``default_model_dir()`` (file copies — no HF cache symlinks, which
+        fail on Windows without symlink privileges).
         """
         auto_model_cls = _get_auto_model()
         if auto_model_cls is None:
@@ -211,6 +258,8 @@ class SenseVoiceEngine:
             )
         resolved_device = resolve_device(device)
         model_ref, hub = resolve_model_ref(model)
+        if not os.path.isdir(model_ref):
+            model_ref = download_model(model_ref)
         try:
             auto = auto_model_cls(
                 model=model_ref,
