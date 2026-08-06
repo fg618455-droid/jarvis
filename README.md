@@ -182,6 +182,8 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 
 > **Note:** VRAM requirements include the fast model (`gemma4:e2b`) which is always loaded alongside the chat model for voice intent classification and other real-time work. The default chat model shares this, so no extra VRAM is needed.
 
+> **Platform support:** Intel Macs (x86_64) are no longer supported. Speech recognition runs on SenseVoice (PyTorch), and PyTorch no longer ships Intel-Mac wheels. Apple Silicon, Windows, and Linux builds remain available.
+
 The setup wizard will guide you through model selection and installation on first launch.
 
 ## Configuration

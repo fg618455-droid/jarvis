@@ -138,8 +138,6 @@ jobs:
         include:
           - os: macos-latest
             arch: arm64
-          - os: macos-15-intel
-            arch: x64
 
     steps:
       - name: 📥 Checkout code

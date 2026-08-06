@@ -66,6 +66,30 @@ def is_available() -> bool:
     return _get_auto_model() is not None
 
 
+_preloaded_engine: Optional["SenseVoiceEngine"] = None
+
+
+def preload_engine(
+    model: Optional[str] = None, device: str = "auto"
+) -> "SenseVoiceEngine":
+    """Construct the SenseVoice engine on the calling thread and cache it.
+
+    ``daemon.main()`` calls this on the main thread before the voice thread
+    and the pynput keyboard-hook thread start. funasr's import chain and
+    model construction load many native DLLs; doing that from the voice
+    thread concurrently with pynput's native message loop deadlocks on the
+    Windows loader lock, so all native loading happens here, ahead of thread
+    divergence. Later :meth:`SenseVoiceEngine.load` calls with the same
+    resolved model and device reuse the cached instance.
+
+    Raises the same errors as :meth:`SenseVoiceEngine.load`.
+    """
+    global _preloaded_engine
+    if _preloaded_engine is None:
+        _preloaded_engine = SenseVoiceEngine.load(model=model, device=device)
+    return _preloaded_engine
+
+
 def _is_apple_silicon() -> bool:
     import platform
 
@@ -260,22 +284,51 @@ class SenseVoiceEngine:
         model_ref, hub = resolve_model_ref(model)
         if not os.path.isdir(model_ref):
             model_ref = download_model(model_ref)
+
+        # Reuse the engine pre-loaded by preload_engine() (daemon main
+        # thread) when the resolved model and device match, so the voice
+        # thread never performs native loading.
+        if _preloaded_engine is not None and (
+            _preloaded_engine.model == model_ref
+            and _preloaded_engine.device == resolved_device
+        ):
+            return _preloaded_engine
+
+        def _build(dev: str):
+            try:
+                return auto_model_cls(
+                    model=model_ref,
+                    device=dev,
+                    hub=hub,
+                    disable_update=True,
+                    disable_pbar=True,
+                )
+            except TypeError:
+                # Older funasr versions may not accept disable_pbar.
+                return auto_model_cls(
+                    model=model_ref,
+                    device=dev,
+                    hub=hub,
+                    disable_update=True,
+                )
+
         try:
-            auto = auto_model_cls(
-                model=model_ref,
-                device=resolved_device,
-                hub=hub,
-                disable_update=True,
-                disable_pbar=True,
-            )
-        except TypeError:
-            # Older funasr versions may not accept disable_pbar.
-            auto = auto_model_cls(
-                model=model_ref,
-                device=resolved_device,
-                hub=hub,
-                disable_update=True,
-            )
+            auto = _build(resolved_device)
+        except Exception as exc:
+            # Device init failure (cuDNN mismatch, VRAM pressure, flaky
+            # driver): retry on CPU before giving up so voice and dictation
+            # stay usable. The old faster-whisper path had a device
+            # fallback chain; SenseVoice gets the same resilience.
+            if resolved_device != "cpu":
+                debug_log(
+                    f"sensevoice init failed on {resolved_device}: {exc}; "
+                    "retrying on cpu",
+                    "voice",
+                )
+                resolved_device = "cpu"
+                auto = _build(resolved_device)
+            else:
+                raise
         model_path = str(getattr(auto, "model_path", None) or model_ref)
         debug_log(
             f"sensevoice loaded: model={model_ref} device={resolved_device} "

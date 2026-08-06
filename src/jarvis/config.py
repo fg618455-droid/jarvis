@@ -686,7 +686,7 @@ def load_settings() -> Settings:
     merged: Dict[str, Any] = {**defaults, **cfg_json}
 
     # Build Settings. Some fields support env var overrides.
-    # Env overrides: JARVIS_VOICE_DEBUG, JARVIS_WHISPER_BACKEND
+    # Env overrides: JARVIS_VOICE_DEBUG
     voice_debug = os.environ.get("JARVIS_VOICE_DEBUG", "0") == "1"
 
     # Normalize/convert fields

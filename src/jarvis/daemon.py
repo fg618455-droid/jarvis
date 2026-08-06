@@ -486,20 +486,25 @@ def main(smoke_test: bool = False) -> None:
     # Initialize voice listening (only if dependencies available)
     print("🎤 Initializing voice listener (this may take a moment to load SenseVoice model)...", flush=True)
 
-    # Pre-load the SenseVoice runtime (funasr + torch + sklearn + scipy) on
-    # the main thread BEFORE the voice thread and the pynput keyboard-hook
-    # thread start. funasr's import chain loads many native DLLs, and doing
-    # that concurrently with pynput's native message loop deadlocks on the
-    # Windows loader lock: the voice thread stalls forever in
-    # importlib's create_module and startup appears frozen after
-    # "Warming up models...".
+    # Pre-load the SenseVoice runtime AND construct the engine on the main
+    # thread BEFORE the voice thread and the pynput keyboard-hook thread
+    # start. funasr's import chain and model construction load many native
+    # DLLs, and doing that from the voice thread concurrently with pynput's
+    # native message loop deadlocks on the Windows loader lock: startup
+    # appears frozen after "Warming up models...". The voice thread later
+    # reuses this engine via preload_engine()'s cache.
     print("     🔄 Loading SenseVoice runtime (first time can take a few seconds)...", flush=True)
     try:
-        from .listening.sensevoice import _get_auto_model
+        from .listening.sensevoice import preload_engine
 
-        _get_auto_model()
+        preload_engine(
+            model=getattr(cfg, "sensevoice_model", None),
+            device=getattr(cfg, "sensevoice_device", "auto"),
+        )
     except Exception as exc:
         debug_log(f"sensevoice runtime pre-load failed: {exc}", "voice")
+        if smoke_test:
+            raise
 
     voice_thread: Optional[threading.Thread] = None
     voice_thread = VoiceListener(db, cfg, tts, _global_dialogue_memory)

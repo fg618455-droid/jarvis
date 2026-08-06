@@ -5,7 +5,18 @@ These verify the wrapper behaviour with funasr mocked out — the real
 funasr import is lazy so lightweight submodules stay import-light.
 """
 
+import pytest
 from unittest.mock import patch, MagicMock
+
+
+@pytest.fixture(autouse=True)
+def _reset_preloaded_engine():
+    """Isolate the module-level engine cache between tests."""
+    import jarvis.listening.sensevoice as sv
+
+    sv._preloaded_engine = None
+    yield
+    sv._preloaded_engine = None
 
 import pytest
 
@@ -258,6 +269,76 @@ class TestSenseVoiceEngineLoad:
             ):
                 with pytest.raises(OSError):
                     SenseVoiceEngine.load()
+
+    def test_load_retries_on_cpu_when_device_init_fails(self):
+        """A CUDA init failure (cuDNN mismatch, VRAM pressure, flaky
+        driver) must fall back to CPU so voice and dictation stay usable,
+        mirroring the old faster-whisper device fallback chain."""
+        import jarvis.listening.sensevoice as sv
+
+        fake_cls = MagicMock(side_effect=[RuntimeError("cuDNN init failed"), MagicMock(model_path="C:/m")])
+        with patch("jarvis.listening.sensevoice._get_auto_model", return_value=fake_cls):
+            with patch("jarvis.listening.sensevoice._torch_cuda_available", return_value=True):
+                with patch("jarvis.listening.sensevoice._is_apple_silicon", return_value=False):
+                    with patch(
+                        "jarvis.listening.sensevoice.download_model",
+                        return_value="C:/downloaded/SenseVoiceSmall",
+                    ):
+                        engine = SenseVoiceEngine.load()
+        assert engine.device == "cpu"
+        devices = [c[1]["device"] for c in fake_cls.call_args_list]
+        assert devices == ["cuda:0", "cpu"]
+
+    def test_load_no_cpu_retry_when_cpu_init_fails(self):
+        """A genuine CPU init failure propagates — there is no lower device."""
+        import jarvis.listening.sensevoice as sv
+
+        fake_cls = MagicMock(side_effect=RuntimeError("cpu boom"))
+        with patch("jarvis.listening.sensevoice._get_auto_model", return_value=fake_cls):
+            with patch("jarvis.listening.sensevoice._torch_cuda_available", return_value=False):
+                with patch("jarvis.listening.sensevoice._is_apple_silicon", return_value=False):
+                    with patch(
+                        "jarvis.listening.sensevoice.download_model",
+                        return_value="C:/downloaded/SenseVoiceSmall",
+                    ):
+                        with pytest.raises(RuntimeError):
+                            SenseVoiceEngine.load()
+
+
+class TestPreloadEngine:
+    def test_preload_constructs_and_caches(self):
+        """preload_engine() builds the engine once and later load() calls
+        with the same resolved model/device reuse it without rebuilding."""
+        import jarvis.listening.sensevoice as sv
+
+        fake_cls = MagicMock(return_value=MagicMock(model_path="C:/m"))
+        with patch("jarvis.listening.sensevoice._get_auto_model", return_value=fake_cls):
+            with patch("jarvis.listening.sensevoice._torch_cuda_available", return_value=False):
+                with patch("jarvis.listening.sensevoice._is_apple_silicon", return_value=False):
+                    with patch(
+                        "jarvis.listening.sensevoice.download_model",
+                        return_value="C:/downloaded/SenseVoiceSmall",
+                    ):
+                        preloaded = sv.preload_engine()
+                        again = sv.SenseVoiceEngine.load()
+        assert preloaded is again
+        assert fake_cls.call_count == 1
+
+    def test_load_ignores_cache_on_mismatched_device(self):
+        """A different device or model still builds a fresh engine."""
+        import jarvis.listening.sensevoice as sv
+
+        fake_cls = MagicMock(return_value=MagicMock(model_path="C:/m"))
+        with patch("jarvis.listening.sensevoice._get_auto_model", return_value=fake_cls):
+            with patch("jarvis.listening.sensevoice._torch_cuda_available", return_value=False):
+                with patch("jarvis.listening.sensevoice._is_apple_silicon", return_value=False):
+                    with patch(
+                        "jarvis.listening.sensevoice.download_model",
+                        return_value="C:/downloaded/SenseVoiceSmall",
+                    ):
+                        sv.preload_engine()
+                        sv.SenseVoiceEngine.load(device="cuda:0")
+        assert fake_cls.call_count == 2
 
 
 class TestSenseVoiceEngineTranscribe:
