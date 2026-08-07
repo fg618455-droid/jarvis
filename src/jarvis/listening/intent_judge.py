@@ -439,7 +439,7 @@ Examples:
                         # judgment is lost (500 cut this exact case off at
                         # "I said tomorro"). 1500 gives ~4.5x headroom over
                         # the measured 326-token reasoning+answer baseline
-                        # while ``intent_judge_timeout_sec`` (6s default)
+                        # while ``intent_judge_timeout_sec`` (10s default)
                         # still bounds slow or runaway generations; the
                         # model normally stops long before the cap.
                         "max_tokens": 1500,
@@ -533,7 +533,7 @@ def create_intent_judge(cfg) -> IntentJudge:
         aliases=list(getattr(cfg, "wake_aliases", [])),
         model=resolve_model(cfg, Tier.FAST),
         cfg=cfg,
-        timeout_sec=float(getattr(cfg, "intent_judge_timeout_sec", 6.0)),
+        timeout_sec=float(getattr(cfg, "intent_judge_timeout_sec", 10.0)),
         thinking=bool(getattr(cfg, "intent_judge_thinking_enabled", False)),
     )
     return IntentJudge(config)
