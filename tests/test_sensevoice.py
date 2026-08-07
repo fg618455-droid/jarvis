@@ -341,6 +341,45 @@ class TestPreloadEngine:
         assert fake_cls.call_count == 2
 
 
+class TestQuietStartup:
+    def test_load_suppresses_funasr_print_chatter(self, capsys):
+        """funasr's module-level prints (the misleading ffmpeg notice and
+        the version banner) must not reach the daemon console."""
+        fake_cls = MagicMock()
+
+        def noisy(*args, **kwargs):
+            print("Notice: ffmpeg is not installed. torchaudio is used to load audio")
+            print("funasr version: 1.4.1.")
+            return MagicMock(model_path="C:/m")
+
+        fake_cls.side_effect = noisy
+        with patch("jarvis.listening.sensevoice._get_auto_model", return_value=fake_cls):
+            with patch("jarvis.listening.sensevoice._torch_cuda_available", return_value=False):
+                with patch("jarvis.listening.sensevoice._is_apple_silicon", return_value=False):
+                    with patch(
+                        "jarvis.listening.sensevoice.download_model",
+                        return_value="C:/downloaded/SenseVoiceSmall",
+                    ):
+                        SenseVoiceEngine.load(device="cpu")
+        out = capsys.readouterr().out
+        assert "ffmpeg is not installed" not in out
+        assert "funasr version" not in out
+
+    def test_quiet_funasr_loggers_sets_levels(self):
+        """funasr (and any child logger) is silenced to CRITICAL; torch and
+        friends keep WARNING so real warnings still surface."""
+        import jarvis.listening.sensevoice as sv
+        import logging
+
+        logging.getLogger("funasr.auto.auto_model").setLevel(logging.DEBUG)
+        logging.getLogger("torch").setLevel(logging.DEBUG)
+        sv._quiet_funasr_loggers()
+        assert logging.getLogger("funasr").level == logging.CRITICAL
+        assert logging.getLogger("funasr.auto.auto_model").level == logging.CRITICAL
+        assert logging.getLogger("torch").level == logging.WARNING
+        assert logging.getLogger("torchaudio").level == logging.WARNING
+
+
 class TestSenseVoiceEngineTranscribe:
     def _make_engine(self, generate_result=None, generate_error=None):
         auto = MagicMock()

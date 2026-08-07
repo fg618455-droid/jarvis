@@ -12,6 +12,9 @@ does not drag them in via ``listener.py``.
 
 from __future__ import annotations
 
+import contextlib
+import io
+import logging
 import os
 import re
 import sys
@@ -43,6 +46,43 @@ class SenseVoiceUnavailableError(RuntimeError):
     """Raised when funasr is not installed / cannot be imported."""
 
 
+def _quiet_funasr_loggers() -> None:
+    """Silence funasr and friends so daemon startup stays clean.
+
+    Jarvis reports through its own ``debug_log``; funasr's Python logging
+    is noise here (and its ``basicConfig`` hijacks the root logger for the
+    whole process). ``funasr`` is silenced to CRITICAL so its INFO/WARNING
+    lines ("download models from model hub", "Loading pretrained params",
+    "trust_remote_code: False") never reach the console; torch, torchaudio,
+    librosa and huggingface_hub keep real warnings at WARNING level.
+    """
+    for name in ("funasr", "torchaudio", "librosa", "torch", "huggingface_hub"):
+        logging.getLogger(name).setLevel(
+            logging.CRITICAL if name == "funasr" else logging.WARNING
+        )
+    # Child loggers created after import inherit "funasr", but cover any
+    # that registered their own level already.
+    for name in list(logging.Logger.manager.loggerDict):
+        if name.split(".", 1)[0] == "funasr":
+            logging.getLogger(name).setLevel(logging.CRITICAL)
+
+
+@contextlib.contextmanager
+def _quiet_stdio():
+    """Discard funasr's module-level print chatter.
+
+    funasr prints a misleading "Notice: ffmpeg is not installed" banner at
+    import time and a "funasr version: x.y.z." line during model loading,
+    even though Jarvis never loads audio files (raw PCM goes straight to
+    the model), so ffmpeg is irrelevant to it. Those prints are not
+    routed through logging, so the only way to keep them off the daemon
+    console is to redirect the streams while funasr runs.
+    """
+    sink = io.StringIO()
+    with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+        yield
+
+
 def _get_auto_model():
     """Lazily import and cache ``funasr.AutoModel``.
 
@@ -51,8 +91,10 @@ def _get_auto_model():
     """
     global _AutoModel
     if _AutoModel is None:
+        _quiet_funasr_loggers()
         try:
-            from funasr import AutoModel as _am
+            with _quiet_stdio():
+                from funasr import AutoModel as _am
 
             _AutoModel = _am
         except Exception as exc:  # noqa: BLE001 - import chains vary wildly
@@ -280,6 +322,7 @@ class SenseVoiceEngine:
             raise SenseVoiceUnavailableError(
                 "funasr is not installed (run: pip install funasr)"
             )
+        _quiet_funasr_loggers()
         resolved_device = resolve_device(device)
         model_ref, hub = resolve_model_ref(model)
         if not os.path.isdir(model_ref):
@@ -313,7 +356,8 @@ class SenseVoiceEngine:
                 )
 
         try:
-            auto = _build(resolved_device)
+            with _quiet_stdio():
+                auto = _build(resolved_device)
         except Exception as exc:
             # Device init failure (cuDNN mismatch, VRAM pressure, flaky
             # driver): retry on CPU before giving up so voice and dictation
@@ -326,7 +370,8 @@ class SenseVoiceEngine:
                     "voice",
                 )
                 resolved_device = "cpu"
-                auto = _build(resolved_device)
+                with _quiet_stdio():
+                    auto = _build(resolved_device)
             else:
                 raise
         model_path = str(getattr(auto, "model_path", None) or model_ref)
