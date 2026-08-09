@@ -757,6 +757,7 @@ def acquire_single_instance_lock() -> bool:
 class LogSignals(QObject):
     """Signals for thread-safe log updates."""
     new_log = pyqtSignal(str)
+    security_request = pyqtSignal(str)
 
 
 class LogViewerWindow(QMainWindow):
@@ -1263,6 +1264,7 @@ class JarvisSystemTray:
         self.log_viewer = LogViewerWindow()
         self.log_signals = LogSignals()
         self.log_signals.new_log.connect(self.log_viewer.append_log)
+        self.log_signals.security_request.connect(self._handle_security_request)
 
         # Create memory viewer window (hidden by default)
         self.memory_viewer = MemoryViewerWindow()
@@ -1271,6 +1273,12 @@ class JarvisSystemTray:
         # Note: Creating the face window also initializes the SpeakingState singleton
         # in the main thread, which is important for cross-thread signal delivery
         self.face_window = FaceWindow()
+
+        from desktop_app.security_confirmation import SecurityConfirmationBridge
+        from jarvis.security.desktop_confirm import set_desktop_confirmation_requester
+
+        self._security_confirmation_bridge = SecurityConfirmationBridge(self.face_window)
+        set_desktop_confirmation_requester(self._security_confirmation_bridge.request)
 
         # Create dictation history window (hidden by default)
         from desktop_app.dictation_history import DictationHistoryWindow
@@ -1328,6 +1336,8 @@ class JarvisSystemTray:
     def cleanup_on_exit(self) -> None:
         """Cleanup when app is exiting."""
         debug_log("cleaning up on exit", "desktop")
+        from jarvis.security.desktop_confirm import set_desktop_confirmation_requester
+        set_desktop_confirmation_requester(None)
         if self.is_listening:
             self.stop_daemon()
         # Stop memory viewer server
@@ -1848,6 +1858,7 @@ class JarvisSystemTray:
 
                 # Set up environment with PYTHONPATH for source runs
                 env = os.environ.copy()
+                env["JARVIS_DESKTOP_APP"] = "1"
                 src_path = Path(__file__).parent.parent  # Go up to src/
                 if "PYTHONPATH" in env:
                     env["PYTHONPATH"] = f"{src_path}{os.pathsep}{env['PYTHONPATH']}"
@@ -1942,6 +1953,10 @@ class JarvisSystemTray:
                     # EOF - process has ended
                     debug_log("log reader: EOF reached, daemon stdout closed", "desktop")
                     break
+                from jarvis.security.desktop_confirm import SECURITY_IPC_PREFIX
+                if line.startswith(SECURITY_IPC_PREFIX):
+                    self.log_signals.security_request.emit(line)
+                    continue
                 # Debug: log IPC events specifically
                 if "__DIARY__:" in line:
                     debug_log(f"log reader: IPC event read: {line[:80]}...", "desktop")
@@ -1949,6 +1964,30 @@ class JarvisSystemTray:
         except Exception as e:
             debug_log(f"log reader error: {e}", "desktop")
             self.log_signals.new_log.emit(f"⚠️ Log reader error: {e}\n")
+
+    def _handle_security_request(self, line: str) -> None:
+        """Show a subprocess security request and return its decision over stdin."""
+        from jarvis.security.desktop_confirm import SECURITY_IPC_PREFIX
+        from desktop_app.security_confirmation import SecurityConfirmationDialog
+
+        try:
+            payload = json.loads(line[len(SECURITY_IPC_PREFIX):])
+            dialog = SecurityConfirmationDialog(
+                str(payload["action_name"]),
+                dict(payload.get("action_args") or {}),
+                int(payload["timeout_seconds"]),
+                self.face_window,
+            )
+            approved = dialog.exec() == QDialog.DialogCode.Accepted
+            response = json.dumps({
+                "request_id": str(payload["request_id"]),
+                "approved": approved,
+            })
+            if self.daemon_process and self.daemon_process.stdin:
+                self.daemon_process.stdin.write(f"SECURITY_CONFIRM_RESPONSE:{response}\n")
+                self.daemon_process.stdin.flush()
+        except Exception as exc:
+            debug_log(f"desktop security request failed closed: {exc}", "security")
 
     def stop_daemon(self, show_diary_dialog: bool = True) -> None:
         """Stop the Jarvis daemon.

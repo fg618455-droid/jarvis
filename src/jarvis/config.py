@@ -118,6 +118,13 @@ class Settings:
     use_stdin: bool
     voice_debug: bool
 
+    # Security confirmation
+    security_level: str
+    security_confirm_channels: list[str]
+    security_confirmation_timeout_sec: int
+    telegram_bot_token: str
+    telegram_chat_id: str
+
     # Screen Capture
     allowlist_bundles: list[str]
 
@@ -526,6 +533,13 @@ def get_default_config() -> Dict[str, Any]:
         "active_profiles": ["developer", "business", "life"],
         "use_stdin": False,
 
+        # Security confirmation
+        "security_level": "critical",
+        "security_confirm_channels": ["desktop", "telegram", "voice"],
+        "security_confirmation_timeout_sec": 60,
+        "telegram_bot_token": "",
+        "telegram_chat_id": "",
+
         # Screen Capture
         "allowlist_bundles": [
             "com.apple.Terminal",
@@ -914,6 +928,27 @@ def load_settings() -> Settings:
     llm_digest_timeout_sec = float(merged.get("llm_digest_timeout_sec", 8.0))
     llm_embedding_timeout_sec = float(merged.get("llm_embedding_timeout_sec", 60.0))
     llm_profile_select_timeout_sec = float(merged.get("llm_profile_select_timeout_sec", 30.0))
+    security_level = str(merged.get("security_level", "critical")).strip().lower()
+    if security_level not in ("off", "critical", "paranoid"):
+        security_level = "critical"
+    security_confirm_channels = [
+        str(channel).strip().lower()
+        for channel in _ensure_list(merged.get("security_confirm_channels"))
+        if str(channel).strip()
+    ]
+    security_confirmation_timeout_sec = max(
+        1, min(300, int(merged.get("security_confirmation_timeout_sec", 60)))
+    )
+    telegram_bot_token = str(
+        os.environ.get("TELEGRAM_BOT_TOKEN")
+        or merged.get("telegram_bot_token", "")
+        or ""
+    ).strip()
+    telegram_chat_id = str(
+        os.environ.get("TELEGRAM_CHAT_ID")
+        or merged.get("telegram_chat_id", "")
+        or ""
+    ).strip()
 
     return Settings(
         # Database & Storage
@@ -942,6 +977,13 @@ def load_settings() -> Settings:
         active_profiles=active_profiles,
         use_stdin=use_stdin,
         voice_debug=voice_debug,
+
+        # Security confirmation
+        security_level=security_level,
+        security_confirm_channels=security_confirm_channels,
+        security_confirmation_timeout_sec=security_confirmation_timeout_sec,
+        telegram_bot_token=telegram_bot_token,
+        telegram_chat_id=telegram_chat_id,
 
         # Screen Capture
         allowlist_bundles=allowlist_bundles,

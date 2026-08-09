@@ -1039,6 +1039,11 @@ class TestWikipediaLanguageScriptMismatch:
         cfg.brave_search_api_key = ""
         cfg.wikipedia_fallback_enabled = True
         cfg.mcps = {}
+        cfg.security_level = "off"
+        cfg.security_confirm_channels = []
+        cfg.security_confirmation_timeout_sec = 60
+        cfg.telegram_bot_token = ""
+        cfg.telegram_chat_id = ""
 
         result = run_tool_with_retries(
             db=None,
@@ -1082,6 +1087,11 @@ class TestWikipediaLanguageScriptMismatch:
         cfg.brave_search_api_key = ""
         cfg.wikipedia_fallback_enabled = True
         cfg.mcps = {}
+        cfg.security_level = "off"
+        cfg.security_confirm_channels = []
+        cfg.security_confirmation_timeout_sec = 60
+        cfg.telegram_bot_token = ""
+        cfg.telegram_chat_id = ""
 
         result = run_tool_with_retries(
             db=None,
@@ -1129,6 +1139,11 @@ class TestLanguagePlumbingEndToEnd:
         cfg.brave_search_api_key = ""
         cfg.wikipedia_fallback_enabled = True
         cfg.mcps = {}
+        cfg.security_level = "off"
+        cfg.security_confirm_channels = []
+        cfg.security_confirmation_timeout_sec = 60
+        cfg.telegram_bot_token = ""
+        cfg.telegram_chat_id = ""
 
         result = run_tool_with_retries(
             db=None,

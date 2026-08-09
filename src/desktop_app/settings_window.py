@@ -65,6 +65,7 @@ CATEGORIES = [
     ("vad", "📊 Voice Activity Detection"),
     ("timing", "⏱️ Timing & Windows"),
     ("memory", "🧠 Memory & Dialogue"),
+    ("security", "🔐 Security"),
     ("location", "📍 Location"),
     ("features", "✨ Features"),
     ("mcps", "🔌 MCP Servers"),
@@ -332,6 +333,27 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("agentic_max_turns", "Agentic Max Turns",
       "Maximum turns in agentic tool-use loops",
       "memory", "int", min_val=1, max_val=30)
+
+    # --- Security ---
+    f("security_level", "Confirmation Level",
+      "Critical protects sensitive actions; paranoid confirms every tool; off disables protection",
+      "security", "choice", choices=[
+          ("critical", "Critical (recommended)"),
+          ("paranoid", "Paranoid"),
+          ("off", "Off"),
+      ])
+    f("security_confirm_channels", "Confirmation Channels",
+      "Channels tried in order when an action needs approval: desktop, telegram, voice",
+      "security", "list")
+    f("security_confirmation_timeout_sec", "Confirmation Timeout",
+      "Maximum time to wait for a decision",
+      "security", "int", min_val=5, max_val=300, suffix="s")
+    f("telegram_bot_token", "Telegram Bot Token",
+      "Bot token for mobile confirmations; leave empty to disable Telegram",
+      "security", "password", nullable=True)
+    f("telegram_chat_id", "Telegram Chat ID",
+      "Only decisions from this chat are accepted; leave empty to disable Telegram",
+      "security", "str", nullable=True)
 
     # --- Location ---
     f("location_enabled", "Enable Location",

@@ -484,6 +484,10 @@ def main(smoke_test: bool = False) -> None:
     voice_thread: Optional[threading.Thread] = None
     voice_thread = VoiceListener(db, cfg, tts, _global_dialogue_memory)
     voice_thread.start()
+    from .security.voice_confirm import set_voice_confirmation_requester
+    set_voice_confirmation_requester(
+        voice_thread.request_security_confirmation if tts.enabled else None
+    )
     print("✓ Voice listener thread started (loading Whisper model in background)", flush=True)
 
     # Initialize dictation engine (hold-to-dictate)
@@ -565,6 +569,7 @@ def main(smoke_test: bool = False) -> None:
                 voice_thread.join(timeout=2.0)
             except Exception:
                 pass
+        set_voice_confirmation_requester(None)
 
         if tts is not None:
             try:
@@ -613,6 +618,19 @@ def main(smoke_test: bool = False) -> None:
                     _global_stop_requested = True
                     break
                 line = line.strip()
+                if line.startswith("SECURITY_CONFIRM_RESPONSE:"):
+                    try:
+                        import json as _json
+                        from .security.desktop_confirm import resolve_desktop_confirmation
+
+                        payload = _json.loads(line.split(":", 1)[1])
+                        resolve_desktop_confirmation(
+                            str(payload["request_id"]),
+                            bool(payload.get("approved", False)),
+                        )
+                    except Exception as exc:
+                        debug_log(f"invalid desktop confirmation response: {exc}", "security")
+                    continue
                 if line == "SHUTDOWN":
                     debug_log("SHUTDOWN command received, requesting stop", "jarvis")
                     _global_stop_requested = True
@@ -620,7 +638,10 @@ def main(smoke_test: bool = False) -> None:
         except Exception:
             pass  # stdin might not be available
 
-    if sys.platform == "win32" and not getattr(sys, 'frozen', False):
+    if (
+        not getattr(sys, 'frozen', False)
+        and (sys.platform == "win32" or os.environ.get("JARVIS_DESKTOP_APP") == "1")
+    ):
         stdin_thread = threading.Thread(target=stdin_monitor, daemon=True)
         stdin_thread.start()
 
@@ -646,6 +667,8 @@ def main(smoke_test: bool = False) -> None:
     finally:
         print("🔄 Daemon shutting down - saving memory...", flush=True)
         debug_log("daemon finally block starting - performing cleanup", "jarvis")
+        from .security.voice_confirm import set_voice_confirmation_requester
+        set_voice_confirmation_requester(None)
 
         # Clean shutdown - stop dictation first
         if dictation is not None:

@@ -194,6 +194,31 @@ Most users won't need to change anything. Open **⚙️ Settings** from the tray
 </p>
 
 <details>
+<summary><strong>Security confirmations</strong></summary>
+
+Jarvis asks before sensitive tool execution. The default `critical` level protects every MCP tool, meal deletion, and local file writes, appends, or deletion. Set `paranoid` to confirm every tool, or `off` only in a controlled development environment.
+
+Configure the order under **⚙️ Settings → 🔐 Security**. Jarvis skips channels that are not configured or cannot open. A refusal or timeout denies the tool immediately, and no available channel also denies it.
+
+- **Desktop** shows the tool and arguments in a local Qt dialog and needs no credentials.
+- **Telegram** sends Approve and Deny buttons to one authorised chat. Create a bot with BotFather, send the bot a message, then configure the bot token and chat ID. You can use the settings window or the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` environment variables. This option sends the displayed tool name and arguments to Telegram's servers.
+- **Voice/console** asks for a random four-digit code. Voice is the weakest option because anyone in the room can hear and repeat the code.
+
+```json
+{
+  "security_level": "critical",
+  "security_confirm_channels": ["desktop", "telegram", "voice"],
+  "security_confirmation_timeout_sec": 60,
+  "telegram_bot_token": "",
+  "telegram_chat_id": ""
+}
+```
+
+Telegram is optional and remains unavailable until both credentials are set. Jarvis continues to work locally with desktop and voice confirmation when Telegram is not configured.
+
+</details>
+
+<details>
 <summary><strong>LLM Provider (Ollama or OpenAI-compatible)</strong></summary>
 
 By default Jarvis runs everything locally through [Ollama](https://ollama.com): no API keys, nothing leaves your machine. If you already run an OpenAI-compatible server you can point Jarvis at it instead. Your data still only travels to the servers you control.

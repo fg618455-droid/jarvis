@@ -16,6 +16,11 @@ class DummyCfg:
     def __init__(self):
         self.mcps = {}
         self.voice_debug = False
+        self.security_level = "off"
+        self.security_confirm_channels = []
+        self.security_confirmation_timeout_sec = 60
+        self.telegram_bot_token = ""
+        self.telegram_chat_id = ""
 
 
 class DummyDB:

@@ -1264,6 +1264,7 @@ class VoiceListener(threading.Thread):
             print(f"\n  ❌ Reply engine error: {e}", flush=True)
             debug_log(f"reply engine exception: {e}", "voice")
             self._stop_thinking_tune()
+
             # Provide user feedback via TTS
             if self.tts and self.tts.enabled:
                 self.tts.speak("Sorry, I encountered an error processing your request.")
@@ -1296,6 +1297,101 @@ class VoiceListener(threading.Thread):
             debug_log(f"no TTS output: reply={bool(reply)}, tts={bool(self.tts)}, enabled={getattr(self.tts, 'enabled', False) if self.tts else False}", "voice")
             # Stop thinking tune if no TTS response
             self._stop_thinking_tune()
+
+    def request_security_confirmation(
+        self,
+        action_name: str,
+        action_args: dict[str, Any],
+        challenge: str,
+        timeout_seconds: int,
+    ) -> str | None:
+        """Speak a numeric challenge and transcribe one bounded response."""
+        if np is None or self.tts is None or not self.tts.enabled:
+            raise RuntimeError("Voice confirmation output is unavailable")
+        if self._whisper_backend == "faster-whisper" and self.model is None:
+            raise RuntimeError("Voice confirmation transcription is unavailable")
+        if self._whisper_backend == "mlx" and not self._mlx_model_repo:
+            raise RuntimeError("Voice confirmation transcription is unavailable")
+
+        self._stop_thinking_tune()
+        deadline = time.monotonic() + timeout_seconds
+        spoken = threading.Event()
+        self.tts.speak(
+            f"{action_name}. {' '.join(challenge)}",
+            completion_callback=spoken.set,
+        )
+        while time.monotonic() < deadline and not spoken.wait(0.05):
+            if not self.tts.is_speaking():
+                break
+        if self.tts.is_speaking():
+            debug_log("voice security prompt exceeded confirmation timeout", "security")
+            return None
+
+        self._clear_audio_buffers()
+        energy_threshold = float(getattr(self.cfg, "voice_min_energy", 0.02))
+        endpoint_seconds = float(getattr(self.cfg, "endpoint_silence_ms", 800)) / 1000.0
+        captured: list[Any] = []
+        speech_started = False
+        silence_seconds = 0.0
+
+        debug_log(f"voice security capture started for {action_name}", "security")
+        while time.monotonic() < deadline:
+            try:
+                item = self._audio_q.get(timeout=min(0.2, max(0.01, deadline - time.monotonic())))
+            except queue.Empty:
+                continue
+            if item is None:
+                continue
+            try:
+                mono = item.reshape(-1, item.shape[-1])[:, 0] if item.ndim > 1 else item.flatten()
+                energy = float(np.sqrt(np.mean(np.square(mono)))) if mono.size else 0.0
+            except Exception:
+                continue
+
+            duration = mono.size / self._samplerate
+            if energy >= energy_threshold:
+                speech_started = True
+                silence_seconds = 0.0
+                captured.append(mono.copy())
+            elif speech_started:
+                captured.append(mono.copy())
+                silence_seconds += duration
+                if silence_seconds >= endpoint_seconds:
+                    break
+
+        if not captured:
+            debug_log("voice security capture timed out without speech", "security")
+            return None
+        audio = np.concatenate(captured).flatten()
+        transcript = self._transcribe_security_audio(audio)
+        debug_log("voice security capture transcribed", "security")
+        return transcript
+
+    def _transcribe_security_audio(self, audio) -> str:
+        """Transcribe confirmation audio with the listener's loaded backend."""
+        language = resolve_transcription_language(self.cfg)
+        if self._whisper_backend == "mlx":
+            with self.transcribe_lock:
+                result = mlx_whisper.transcribe(
+                    audio,
+                    path_or_hf_repo=self._mlx_model_repo,
+                    language=language,
+                )
+            return str(result.get("text") or "").strip()
+
+        vad_filter = bool(getattr(self.cfg, "whisper_vad", True))
+        with self.transcribe_lock:
+            try:
+                segments, _ = self.model.transcribe(
+                    audio, language=language, vad_filter=vad_filter
+                )
+            except TypeError:
+                segments, _ = self.model.transcribe(audio, language=language)
+            return " ".join(
+                str(getattr(segment, "text", "")).strip()
+                for segment in segments
+                if str(getattr(segment, "text", "")).strip()
+            )
 
     def _calculate_audio_energy(self, frames: list) -> float:
         """Calculate RMS energy from audio frames."""

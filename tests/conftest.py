@@ -101,6 +101,11 @@ class MockConfig:
     dictation_hotkey: str = "ctrl+alt+space"
     mcps: Dict[str, Any] = field(default_factory=dict)
     use_stdin: bool = True
+    security_level: str = "off"
+    security_confirm_channels: List[str] = field(default_factory=lambda: ["desktop", "telegram", "voice"])
+    security_confirmation_timeout_sec: int = 60
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
 
     def __post_init__(self) -> None:
         # Mirror ``load_settings``: when the provider-aware fields are

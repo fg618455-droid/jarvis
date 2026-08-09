@@ -319,11 +319,42 @@ def run_tool_with_retries(
     raw_name = (tool_name or "").strip()
     name = raw_name
 
+    # Friendly user print helper (non-debug only)
+    def _user_print(message: str) -> None:
+        # 4-space indent: tool messages happen INSIDE an agentic-loop
+        # turn. The turn header (`  🔁 Turn N/M`) sits at 2 spaces, so
+        # per-tool activity nests one level deeper for visual hierarchy.
+        if not getattr(cfg, "voice_debug", False):
+            try:
+                print(f"    {message}")
+            except Exception:
+                pass
+
+    def _security_allows_tool() -> bool:
+        from jarvis.security.gate import SecurityGate
+
+        try:
+            gate = SecurityGate.get_or_create(cfg)
+            return gate.confirm(raw_name, tool_args or {})
+        except Exception as exc:
+            debug_log(f"security gate failed closed for {raw_name}: {exc}", "security")
+            return False
+
+    def _denied_result() -> ToolExecutionResult:
+        _user_print(f"🔒 {raw_name} was denied by the security gate.")
+        return ToolExecutionResult(
+            success=False,
+            reply_text=None,
+            error_message="Tool execution denied by security confirmation.",
+        )
+
     # Check if tool name is a discovered MCP tool (server__toolname format)
     if "__" in raw_name:
         server_name, mcp_tool_name = raw_name.split("__", 1)
         mcps_config = getattr(cfg, "mcps", {})
         if mcps_config and server_name in mcps_config:
+            if not _security_allows_tool():
+                return _denied_result()
             try:
                 if MCPClient is None:
                     return ToolExecutionResult(success=False, reply_text=None, error_message="MCP client not available. Install 'mcp' package.")
@@ -337,19 +368,10 @@ def run_tool_with_retries(
                 detail = str(e) or type(e).__name__
                 return ToolExecutionResult(success=False, reply_text=None, error_message=f"MCP tool '{raw_name}' error: {detail}")
 
-    # Friendly user print helper (non-debug only)
-    def _user_print(message: str) -> None:
-        # 4-space indent: tool messages happen INSIDE an agentic-loop
-        # turn. The turn header (`  🔁 Turn N/M`) sits at 2 spaces, so
-        # per-tool activity nests one level deeper for visual hierarchy.
-        if not getattr(cfg, "voice_debug", False):
-            try:
-                print(f"    {message}")
-            except Exception:
-                pass
-
     # Check builtin tools first
     if name in BUILTIN_TOOLS:
+        if not _security_allows_tool():
+            return _denied_result()
         tool = BUILTIN_TOOLS[name]
         return tool.execute(
             db=db,
