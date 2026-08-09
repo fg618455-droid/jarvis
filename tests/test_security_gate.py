@@ -260,6 +260,36 @@ def test_real_config_file_wires_every_security_setting(tmp_path, monkeypatch) ->
     assert rejecting.requests == [("getWeather", {})]
 
 
+def test_configured_telegram_credentials_beat_the_environment(tmp_path, monkeypatch) -> None:
+    """A stray environment token must not hijack the configured bot."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "telegram_bot_token": "configured-token",
+        "telegram_chat_id": "111",
+    }), encoding="utf-8")
+    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "stray-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "999")
+
+    cfg = load_settings()
+
+    assert cfg.telegram_bot_token == "configured-token"
+    assert cfg.telegram_chat_id == "111"
+
+
+def test_telegram_credentials_fall_back_to_the_environment(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({}), encoding="utf-8")
+    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "environment-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "999")
+
+    cfg = load_settings()
+
+    assert cfg.telegram_bot_token == "environment-token"
+    assert cfg.telegram_chat_id == "999"
+
+
 def test_every_security_config_key_is_exposed_in_settings_metadata() -> None:
     from desktop_app.settings_window import FIELD_METADATA
 

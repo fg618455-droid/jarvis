@@ -939,14 +939,17 @@ def load_settings() -> Settings:
     security_confirmation_timeout_sec = max(
         1, min(300, int(merged.get("security_confirmation_timeout_sec", 60)))
     )
+    # The settings window is the primary way to configure these, so a
+    # configured value wins over an environment token that may belong to an
+    # unrelated project.
     telegram_bot_token = str(
-        os.environ.get("TELEGRAM_BOT_TOKEN")
-        or merged.get("telegram_bot_token", "")
+        merged.get("telegram_bot_token", "")
+        or os.environ.get("TELEGRAM_BOT_TOKEN")
         or ""
     ).strip()
     telegram_chat_id = str(
-        os.environ.get("TELEGRAM_CHAT_ID")
-        or merged.get("telegram_chat_id", "")
+        merged.get("telegram_chat_id", "")
+        or os.environ.get("TELEGRAM_CHAT_ID")
         or ""
     ).strip()
 

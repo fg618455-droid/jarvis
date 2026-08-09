@@ -79,7 +79,9 @@ timeout denies the request. The channel requires no credentials.
 Telegram is available only when both `telegram_bot_token` and
 `telegram_chat_id` are configured. Credentials may be supplied through the
 settings file or the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` environment
-variables. Environment variables take precedence.
+variables. A configured value wins, and the environment is read only when the
+setting is empty, so a token belonging to an unrelated project cannot hijack
+the channel.
 
 The channel sends an inline-button request containing the tool and bounded
 arguments. It accepts only an approve or deny callback whose random request ID

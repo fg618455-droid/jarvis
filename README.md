@@ -201,7 +201,7 @@ Jarvis asks before sensitive tool execution. The default `critical` level protec
 Configure the order under **⚙️ Settings → 🔐 Security**. Jarvis skips channels that are not configured or cannot open. A refusal or timeout denies the tool immediately, and no available channel also denies it.
 
 - **Desktop** shows the tool and arguments in a local Qt dialog and needs no credentials.
-- **Telegram** sends Approve and Deny buttons to one authorised chat. Create a bot with BotFather, send the bot a message, then configure the bot token and chat ID. You can use the settings window or the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` environment variables. This option sends the displayed tool name and arguments to Telegram's servers.
+- **Telegram** sends Approve and Deny buttons to one authorised chat. Create a bot with BotFather, send the bot a message, then configure the bot token and chat ID. You can use the settings window or the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` environment variables, and a configured value wins over the environment. This option sends the displayed tool name and arguments to Telegram's servers.
 - **Voice/console** asks for a random four-digit code. Voice is the weakest option because anyone in the room can hear and repeat the code.
 
 ```json
