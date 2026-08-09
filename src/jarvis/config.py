@@ -162,6 +162,8 @@ class Settings:
     whisper_vad: bool
     whisper_min_confidence: float
     whisper_no_speech_threshold: float
+    whisper_min_language_probability: float
+    whisper_language: str
     whisper_min_audio_duration: float
     whisper_min_word_length: int
 
@@ -448,6 +450,27 @@ def _expand_path(value: Any) -> Optional[str]:
         return str(value)
 
 
+def _normalise_language_code(value: Any) -> str:
+    """Normalise a user-supplied language setting to a bare lowercase code.
+
+    Whisper only accepts lowercase ISO-639-1 codes, while a config file written
+    by hand plausibly carries "DE" or a stray space. Anything unusable becomes
+    an empty string, which means automatic identification.
+    """
+    if not isinstance(value, str):
+        return ""
+    return value.strip().lower()
+
+
+def resolve_transcription_language(cfg: Any) -> Optional[str]:
+    """The language to transcribe in, or None to let Whisper identify it.
+
+    Both Whisper backends take the language as an optional keyword where None
+    means "identify it", so this is what every transcription call passes.
+    """
+    return _normalise_language_code(getattr(cfg, "whisper_language", "")) or None
+
+
 def _ensure_dict(value: Any) -> Dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -553,6 +576,15 @@ def get_default_config() -> Dict[str, Any]:
         "whisper_vad": True,
         "whisper_min_confidence": 0.3,  # Filter low-confidence segments (hallucinations)
         "whisper_no_speech_threshold": 0.5,  # Hard cutoff: reject segments where no_speech_prob >= this
+        # Reject an utterance when Whisper is unsure which language it heard.
+        # Noise hallucinations identify at 0.46-0.76 where real speech reaches
+        # 0.9+. 0.0 disables the gate; 0.85 is a workable setting.
+        "whisper_min_language_probability": 0.0,
+        # ISO-639-1 code of the language spoken to Jarvis, e.g. "de" or "ja".
+        # Empty means Whisper identifies the language per utterance. Naming it
+        # skips that pass and keeps Whisper from drifting into another language
+        # on noisy input; loanwords inside the named language still transcribe.
+        "whisper_language": "",
         "whisper_min_audio_duration": 0.15,
         "whisper_min_word_length": 1,
 
@@ -873,6 +905,8 @@ def load_settings() -> Settings:
     mcps = _ensure_dict(merged.get("mcps"))
     whisper_min_confidence = float(merged.get("whisper_min_confidence", 0.4))
     whisper_no_speech_threshold = float(merged.get("whisper_no_speech_threshold", 0.5))
+    whisper_min_language_probability = float(merged.get("whisper_min_language_probability", 0.0))
+    whisper_language = _normalise_language_code(merged.get("whisper_language"))
     whisper_min_audio_duration = float(merged.get("whisper_min_audio_duration", 0.3))
     whisper_min_word_length = int(merged.get("whisper_min_word_length", 2))
     llm_chat_timeout_sec = float(merged.get("llm_chat_timeout_sec", 180.0))
@@ -953,6 +987,8 @@ def load_settings() -> Settings:
         whisper_vad=whisper_vad,
         whisper_min_confidence=whisper_min_confidence,
         whisper_no_speech_threshold=whisper_no_speech_threshold,
+        whisper_min_language_probability=whisper_min_language_probability,
+        whisper_language=whisper_language,
         whisper_min_audio_duration=whisper_min_audio_duration,
         whisper_min_word_length=whisper_min_word_length,
 

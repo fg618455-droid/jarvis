@@ -18,6 +18,7 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
+from ..config import resolve_transcription_language
 from ..debug import debug_log
 from ..utils.audio_lock import portaudio_lock
 from .history import DictationHistory
@@ -1154,7 +1155,11 @@ class DictationEngine:
             return ""
         try:
             import mlx_whisper
-            result = mlx_whisper.transcribe(audio, path_or_hf_repo=repo, language=None)
+            result = mlx_whisper.transcribe(
+                audio,
+                path_or_hf_repo=repo,
+                language=resolve_transcription_language(self._cfg),
+            )
             text = result.get("text", "").strip() if isinstance(result, dict) else ""
             return text
         except Exception as exc:
@@ -1163,10 +1168,12 @@ class DictationEngine:
 
     def _transcribe_faster_whisper(self, model, audio) -> str:
         try:
+            language = resolve_transcription_language(self._cfg)
+            vad_filter = bool(getattr(self._cfg, "whisper_vad", True))
             try:
-                segments, _info = model.transcribe(audio, language=None, vad_filter=False)
+                segments, _info = model.transcribe(audio, language=language, vad_filter=vad_filter)
             except TypeError:
-                segments, _info = model.transcribe(audio, language=None)
+                segments, _info = model.transcribe(audio, language=language)
             return " ".join(seg.text for seg in segments).strip()
         except Exception as exc:
             debug_log(f"faster-whisper transcription error: {exc}", "dictation")

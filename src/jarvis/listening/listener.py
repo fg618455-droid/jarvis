@@ -25,6 +25,7 @@ from ..utils.audio_lock import portaudio_lock
 from .wake_detection import is_wake_word_detected, extract_query_after_wake, is_stop_command
 from .transcript_buffer import TranscriptBuffer
 from .intent_judge import IntentJudge, create_intent_judge, warm_up_chat_model
+from ..config import resolve_transcription_language
 from ..debug import debug_log
 from ..llm import get_embedding_backend
 from ..utils.location import is_location_available
@@ -44,6 +45,29 @@ def is_whisper_hallucination(no_speech_prob: float, threshold: float) -> bool:
     both backends apply identical policy.
     """
     return no_speech_prob >= threshold
+
+
+def is_uncertain_language(language_probability, threshold: float) -> bool:
+    """Language-identification gate for whole utterances.
+
+    Whisper invents short filler phrases from room noise. Those carry a
+    `no_speech_prob` of zero and a healthy `avg_logprob`, so neither existing
+    filter sees them. Language identification does: Whisper is confident about
+    the language of real speech and hesitant about noise.
+
+    The gate compares only the reported probability, never the language itself,
+    so it stays valid for every language the assistant supports.
+
+    Fails open. A missing or malformed probability means "cannot judge", and
+    discarding what the user actually said is worse than passing noise through.
+    A threshold of 0.0 disables the gate.
+    """
+    if threshold <= 0.0:
+        return False
+    if not isinstance(language_probability, (int, float)) or isinstance(language_probability, bool):
+        return False
+    return language_probability < threshold
+
 
 # Audio processing imports (optional)
 try:
@@ -1821,7 +1845,7 @@ class VoiceListener(threading.Thread):
                         _ = mlx_whisper.transcribe(
                             warmup_audio,
                             path_or_hf_repo=self._mlx_model_repo,
-                            language=None,
+                            language=resolve_transcription_language(self.cfg),
                         )
                         debug_log(f"MLX Whisper model pre-loaded: repo={self._mlx_model_repo}", "voice")
 
@@ -2009,23 +2033,27 @@ class VoiceListener(threading.Thread):
             # the cold-decode cost. Use low-amplitude noise rather than pure
             # silence — silence trips faster-whisper's no-speech short-circuit
             # and the decoder never actually runs. Mirror the real transcribe
-            # parameters so beam search, language detection, and the timestamp
-            # path are all exercised here instead of on the user's first word.
+            # parameters, the configured language included, so beam search and
+            # the timestamp path are exercised here rather than on the user's
+            # first word. The VAD filter stays off regardless of the setting:
+            # it would discard the warmup noise and leave the decoder cold,
+            # which is the one thing this call exists to prevent.
             if np is not None and self.model is not None:
                 try:
                     cpu_mode = self._whisper_device == "cpu"
+                    language = resolve_transcription_language(self.cfg)
                     rng = np.random.default_rng(0)
                     warmup_audio = rng.standard_normal(self._samplerate).astype(np.float32) * 0.01
                     try:
                         segments_iter, _ = self.model.transcribe(
                             warmup_audio,
-                            language=None,
+                            language=language,
                             vad_filter=False,
                             condition_on_previous_text=not cpu_mode,
                             without_timestamps=cpu_mode,
                         )
                     except TypeError:
-                        segments_iter, _ = self.model.transcribe(warmup_audio, language=None)
+                        segments_iter, _ = self.model.transcribe(warmup_audio, language=language)
                     for _ in segments_iter:
                         pass
                     debug_log("faster-whisper warmup transcription complete", "voice")
@@ -2426,11 +2454,12 @@ class VoiceListener(threading.Thread):
                     result = mlx_whisper.transcribe(
                         audio,
                         path_or_hf_repo=self._mlx_model_repo,
-                        language=None,
+                        language=resolve_transcription_language(self.cfg),
                     )
 
-                # Capture Whisper's auto-detected language (ISO-639-1) so
-                # downstream tools can pick locale-appropriate resources.
+                # Capture the language (ISO-639-1) so downstream tools can pick
+                # locale-appropriate resources. Whisper echoes back whichever
+                # language was pinned, so this holds either way.
                 detected = result.get("language")
                 if isinstance(detected, str) and detected:
                     self._last_detected_language = detected
@@ -2475,15 +2504,21 @@ class VoiceListener(threading.Thread):
                 # faster-whisper transcription
                 # CPU mode: skip timestamps and disable context carry-over for speed
                 cpu_mode = self._whisper_device == "cpu"
+                language = resolve_transcription_language(self.cfg)
+                # Whisper's own VAD is the only filter that catches the stock
+                # phrase it invents from room noise: that transcript arrives
+                # with a no_speech_prob of 0.000 and a confident language
+                # identification, so every later filter waves it through.
+                vad_filter = bool(getattr(self.cfg, "whisper_vad", True))
                 with self.transcribe_lock:
                     try:
                         segments, _info = self.model.transcribe(
-                            audio, language=None, vad_filter=False,
+                            audio, language=language, vad_filter=vad_filter,
                             condition_on_previous_text=not cpu_mode,
                             without_timestamps=cpu_mode,
                         )
                     except TypeError:
-                        segments, _info = self.model.transcribe(audio, language=None)
+                        segments, _info = self.model.transcribe(audio, language=language)
                     segments_list = list(segments)
                 # Capture the detected language (faster-whisper exposes it
                 # on the info object). Guard against older API variants
@@ -2491,6 +2526,19 @@ class VoiceListener(threading.Thread):
                 detected = getattr(_info, "language", None)
                 if isinstance(detected, str) and detected:
                     self._last_detected_language = detected
+                # Hesitant language identification marks the whole utterance as
+                # noise, so it is judged before the per-segment filters.
+                language_probability = getattr(_info, "language_probability", None)
+                min_language_probability = getattr(
+                    self.cfg, "whisper_min_language_probability", 0.0
+                )
+                if is_uncertain_language(language_probability, min_language_probability):
+                    debug_log(
+                        f"utterance filtered (language={detected} at "
+                        f"{language_probability:.2f} < {min_language_probability:.2f})",
+                        "voice",
+                    )
+                    segments_list = []
                 filtered_segments = self._filter_noisy_segments(segments_list)
                 text = " ".join(seg.text for seg in filtered_segments).strip()
         except Exception as e:

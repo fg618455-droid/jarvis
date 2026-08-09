@@ -269,6 +269,12 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("whisper_no_speech_threshold", "No-Speech Threshold",
       "Reject segments where no_speech_prob is at or above this value (filters hallucinations during silence)",
       "whisper", "float", min_val=0.0, max_val=1.0, step=0.05)
+    f("whisper_min_language_probability", "Min Language Confidence",
+      "Reject an utterance when Whisper is unsure which language it heard (0 disables; ignored when a language is set below)",
+      "whisper", "float", min_val=0.0, max_val=1.0, step=0.05)
+    f("whisper_language", "Spoken Language",
+      "ISO-639-1 code of the language you speak, e.g. de or ja. Empty identifies the language per utterance",
+      "whisper", "str")
 
     # --- VAD ---
     f("vad_enabled", "Enable VAD",
