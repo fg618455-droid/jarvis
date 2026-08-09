@@ -14,6 +14,7 @@ Design principles enforced by the engine:
 - Unified System Prompt: A single prompt with adaptive guidance handles all topics; no per-profile routing.
 - Tool Response Flow: Tools return raw data; formatting/personality is handled by the LLM through the engine's loop. The system prompt explicitly instructs the model to use tool results to fulfill the user's original request, not to describe the structure or format of the tool response.
 - Language-Agnostic Design: Prompts and ASR guidance avoid language-specific phrasing.
+- Response Language: a Piper voice speaks exactly one language, so the initial system message constrains the reply to that language. The name is read from the voice's own `<model>.onnx.json` metadata via `resolve_voice_language` in `src/jarvis/output/tts.py`, so swapping in a voice of any language needs no code change. When the metadata is missing or unreadable the constraint is omitted entirely rather than defaulting to a guess, because a wrong constraint silently mutes the assistant's ability to answer the user in their own language. Chatterbox is English-only and always carries the English constraint.
 - Data Privacy: Inputs are redacted and logging is concise and purposeful via `debug_log`.
 
 ### Entry and Inputs

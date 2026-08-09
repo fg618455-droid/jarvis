@@ -9,6 +9,7 @@ from typing import Optional, TYPE_CHECKING
 
 from ..utils.redact import redact
 from ..system_prompt import build_system_prompt
+from ..output.tts import resolve_voice_language
 from ..tools.registry import run_tool_with_retries, generate_tools_description, generate_tools_json_schema, BUILTIN_TOOLS
 from ..tools.builtin.stop import STOP_SIGNAL
 from ..debug import debug_log
@@ -631,6 +632,11 @@ def _maybe_digest_tool_result(
     return raw_tool_result
 
 
+# Matches the context block this module injects into the system message, so the
+# same block can be scrubbed back out when a model echoes it into its reply.
+_CONTEXT_ECHO_RE = re.compile(r"\s*\[Context:.*?\]", re.DOTALL)
+
+
 def _live_time_location_string(cfg) -> str:
     """Return a one-liner describing current local time and location, or ""."""
     try:
@@ -648,6 +654,33 @@ def _live_time_location_string(cfg) -> str:
     except Exception as e:
         debug_log(f"live time/location lookup failed: {e}", "memory")
         return ""
+
+
+def strip_context_echo(reply: Optional[str]) -> Optional[str]:
+    """Remove any `[Context: ...]` block the model copied into its answer.
+
+    The engine appends that block to the system message so the model knows the
+    current time and location. Small models routinely echo it back, and the
+    result gets spoken aloud. Prompt wording alone does not reliably stop this,
+    so the echo is scrubbed deterministically as well.
+
+    The marker is emitted by this module in a fixed shape, so matching it is
+    safe in every language the assistant speaks.
+    """
+    if not reply or not reply.strip():
+        return reply
+
+    cleaned = _CONTEXT_ECHO_RE.sub(" ", reply).strip()
+
+    # A reply that was nothing but the echo leaves us with no answer at all.
+    # Speaking the leak beats speaking silence.
+    if not cleaned:
+        debug_log("Reply was only a context echo; delivering as-is", "planning")
+        return reply
+
+    if cleaned != reply.strip():
+        debug_log("Stripped context echo from reply", "planning")
+    return cleaned
 
 
 def _previous_turn_failed_tool_names(recent_messages: list) -> list[str]:
@@ -1464,11 +1497,22 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         # Add model-size-appropriate prompt components
         guidance.extend(prompts.to_list())
 
-        # Both current TTS engines (Piper, Chatterbox) only support English.
-        # Responding in another language would produce garbled audio.
-        # Remove this constraint when a multilingual TTS engine is added.
+        # A Piper voice speaks exactly one language, so a reply in any other
+        # language comes out garbled. The constraint therefore names the voice's
+        # own language, read from its metadata, rather than assuming English.
+        # When the language cannot be determined we leave the reply
+        # unconstrained: a silent wrong guess is worse than none.
         tts_engine = getattr(cfg, 'tts_engine', 'piper')
-        if tts_engine in ('piper', 'chatterbox'):
+        if tts_engine == 'piper':
+            voice_language = resolve_voice_language(
+                getattr(cfg, 'tts_piper_model_path', None)
+            )
+            if voice_language:
+                guidance.append(
+                    f"Always respond in {voice_language} regardless of the "
+                    "language the user speaks in."
+                )
+        elif tts_engine == 'chatterbox':
             guidance.append(
                 "Always respond in English regardless of the language the user speaks in."
             )
@@ -2432,6 +2476,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             continue
 
         # Natural-language content from the model. Normalise and deliver.
+        content = strip_context_echo(content)
         extracted = _extract_text_from_json_response(content)
         if extracted:
             candidate_reply = extracted

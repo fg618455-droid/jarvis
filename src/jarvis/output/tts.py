@@ -6,6 +6,7 @@ import queue
 import shutil
 import signal
 import tempfile
+import json
 import os
 import re
 import sys
@@ -38,6 +39,41 @@ def _get_piper_models_dir() -> Path:
 def _get_default_piper_model_path() -> str:
     """Get the path to the default Piper voice model."""
     return str(_get_piper_models_dir() / f"{PIPER_DEFAULT_VOICE}.onnx")
+
+
+def resolve_voice_language(model_path: Optional[str]) -> Optional[str]:
+    """Return the English name of a Piper voice's language, or None if unknown.
+
+    Every Piper voice ships a sidecar ``<model>.onnx.json`` carrying a
+    ``language`` block. Reading the name from there keeps the assistant free of
+    a hardcoded language list: a user who swaps in a Dutch or Turkish voice gets
+    the matching constraint with no code change.
+
+    Returns None whenever the metadata cannot be trusted, so callers can leave
+    the response language unconstrained rather than assert a wrong one.
+    """
+    if not model_path:
+        return None
+
+    config_path = os.path.expanduser(model_path) + ".json"
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+    except (OSError, ValueError) as e:
+        debug_log(f"Voice language unreadable at {config_path}: {e}", "tts")
+        return None
+
+    language = metadata.get("language")
+    if not isinstance(language, dict):
+        return None
+
+    name = language.get("name_english")
+    if not isinstance(name, str) or not name.strip():
+        return None
+
+    resolved = name.strip()
+    debug_log(f"Voice language resolved: {resolved}", "tts")
+    return resolved
 
 
 def _download_piper_voice(voice_name: str, progress_callback: Optional[Callable[[str], None]] = None) -> Optional[str]:
