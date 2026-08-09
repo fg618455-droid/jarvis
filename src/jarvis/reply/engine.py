@@ -77,6 +77,53 @@ if TYPE_CHECKING:
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
+def build_reply_prompt_prefix(cfg) -> str:
+    """Build the query-independent head of every main reply prompt."""
+    assistant_name = str(
+        getattr(cfg, "wake_word", "jarvis") or "jarvis"
+    ).strip().capitalize()
+    parts = [build_system_prompt(assistant_name).strip()]
+    parts.extend(get_system_prompts(detect_model_size(cfg.llm_chat_model)).to_list())
+
+    tts_engine = getattr(cfg, "tts_engine", "piper")
+    if tts_engine == "piper":
+        voice_language = resolve_voice_language(
+            getattr(cfg, "tts_piper_model_path", None)
+        )
+        if voice_language:
+            parts.append(
+                f"Always respond in {voice_language} regardless of the "
+                "language the user speaks in."
+            )
+    elif tts_engine == "chatterbox":
+        parts.append(
+            "Always respond in English regardless of the language the user speaks in."
+        )
+    return "\n".join(parts)
+
+
+def warm_up_reply_prefix(cfg, model: str, timeout_sec: float = 60.0) -> bool:
+    """Prefill the stable main-reply prefix in the configured backend cache."""
+    if not model:
+        return False
+    try:
+        response = get_llm_backend(cfg).chat(
+            model,
+            [
+                {"role": "system", "content": build_reply_prompt_prefix(cfg)},
+                {"role": "user", "content": "Reply with OK."},
+            ],
+            timeout_sec=timeout_sec,
+            extra_options={"keep_alive": "30m", "max_tokens": 1},
+            tools=None,
+            thinking=False,
+        )
+        return bool(response)
+    except Exception as exc:
+        debug_log(f"reply prompt prefill failed: {type(exc).__name__}", "voice")
+        return False
+
+
 def _indent_text(text: str, prefix: str = "  ") -> str:
     return f"\n{prefix}".join(text.splitlines())
 
@@ -883,22 +930,21 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             debug_log(f"⚠️ Failed to get cached MCP tools: {e}", "mcp")
             mcp_tools = {}
 
-    # ── Step 3: Pre-flight planner ─────────────────────────────────────
-    # The planner runs FIRST, before any memory lookup or tool routing.
-    # Its job is to decide up front what preparation this turn needs:
+    # ── Step 3: Tool routing and pre-flight planner ────────────────────
+    # The router narrows the catalogue before the planner. The planner then
+    # decides what additional preparation this turn needs:
     #
     #   - Does answering require information the user shared in prior
     #     conversations? If yes, the planner emits a leading
     #     ``searchMemory topic='...'`` directive and we run diary + graph
     #     enrichment; otherwise we skip the keyword-extraction LLM call,
     #     the diary/graph queries, and the memory-digest LLM call.
-    #   - Are any external tools needed? The tool names the planner
-    #     references become the allow-list directly — we skip the
-    #     separate tool-router LLM call.
+    #   - Are any external tools needed? Planner references are unioned into
+    #     the router's authoritative allow-list.
     #
-    # Fail-open: if the planner returns ``[]`` (short query, disabled,
-    # LLM timeout, empty response), we fall through to the legacy safe
-    # defaults — run the memory extractor and the tool router as before.
+    # Fail-open: when an enabled planner returns ``[]`` after a timeout or
+    # invalid response, memory enrichment runs. A disabled planner skips
+    # speculative long-term recall while retaining warm profile and tools.
     # A positive single-step ``["Reply to the user."]`` plan is NOT the
     # same as ``[]``: it's the planner deciding no memory or tools are
     # needed. Both cases are preserved for the engine to distinguish.
@@ -1024,6 +1070,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 _planner_tool_catalog.append((str(_nm), _first[:120]))
 
     action_plan: list[str] = []
+    planner_enabled = bool(getattr(cfg, "planner_enabled", True))
 
     # Fast-path: skip the planner when the tool router found no real tools
     # AND the query is short. The planner's main job is decomposing multi-step
@@ -1048,7 +1095,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     _skip_planner = (
         _router_said_no_tools
         and _query_word_count <= 8
-        and getattr(cfg, "planner_enabled", True)
+        and planner_enabled
     )
     if _skip_planner:
         # Positive signal: no tools, no memory needed. The warm profile
@@ -1061,7 +1108,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             f"{_query_word_count} words — using reply-only plan",
             "planning",
         )
-    else:
+    elif planner_enabled:
         try:
             action_plan = plan_query(
                 cfg=cfg,
@@ -1072,6 +1119,8 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         except Exception as _plan_exc:  # pragma: no cover — defensive
             debug_log(f"planner step failed (non-fatal): {_plan_exc}", "planning")
             action_plan = []
+    else:
+        debug_log("planner disabled: skipping speculative long-term recall", "planning")
     if action_plan:
         _plan_preview = " | ".join(s[:50] for s in action_plan)
         print(
@@ -1088,7 +1137,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # - Plan without it → skip memory work entirely (no keyword LLM,
     #   no diary search, no graph search, no digest LLM).
     plan_demands_memory = bool(action_plan) and plan_requires_memory(action_plan)
-    needs_memory = (not action_plan) or plan_demands_memory
+    needs_memory = planner_enabled and ((not action_plan) or plan_demands_memory)
 
     # Recall gate: if the hot-window already carries a fresh tool result
     # covering the query topic, skip diary/graph enrichment for this turn.
@@ -1461,7 +1510,6 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # model has a concrete template to follow. Using text tools from the start also avoids
     # the wasted round-trip and prompt confusion of starting native and falling back mid-turn.
     use_text_tools = (model_size == ModelSize.SMALL)
-    prompts = get_system_prompts(model_size)
     debug_log(f"Model size detected: {model_size.value} for {cfg.llm_chat_model} (use_text_tools={use_text_tools})", "planning")
 
     # Compound-query decomposition for small models.
@@ -1488,34 +1536,14 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # steps are preserved unchanged.
     action_plan = strip_memory_directives(action_plan)
 
-    _assistant_name = str(getattr(cfg, "wake_word", "jarvis") or "jarvis").strip().capitalize()
+    _assistant_name = str(
+        getattr(cfg, "wake_word", "jarvis") or "jarvis"
+    ).strip().capitalize()
     _persona_prompt = build_system_prompt(_assistant_name)
+    _reply_prompt_prefix = build_reply_prompt_prefix(cfg)
 
     def _build_initial_system_message() -> str:
-        guidance = [_persona_prompt.strip()]
-
-        # Add model-size-appropriate prompt components
-        guidance.extend(prompts.to_list())
-
-        # A Piper voice speaks exactly one language, so a reply in any other
-        # language comes out garbled. The constraint therefore names the voice's
-        # own language, read from its metadata, rather than assuming English.
-        # When the language cannot be determined we leave the reply
-        # unconstrained: a silent wrong guess is worse than none.
-        tts_engine = getattr(cfg, 'tts_engine', 'piper')
-        if tts_engine == 'piper':
-            voice_language = resolve_voice_language(
-                getattr(cfg, 'tts_piper_model_path', None)
-            )
-            if voice_language:
-                guidance.append(
-                    f"Always respond in {voice_language} regardless of the "
-                    "language the user speaks in."
-                )
-        elif tts_engine == 'chatterbox':
-            guidance.append(
-                "Always respond in English regardless of the language the user speaks in."
-            )
+        guidance = [_reply_prompt_prefix]
 
         if warm_profile_block:
             # Pre-query, query-agnostic user context. Lives OUTSIDE the

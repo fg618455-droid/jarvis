@@ -14,7 +14,7 @@ set JARVIS_VOICE_DEBUG=0
 
 echo.
 echo  Starte JARVIS ... (erster Start laedt Modelle, dauert ~30-60 s)
-echo  Sag "Jarvis" irgendwo im Satz. Beenden mit Strg+C.
+echo  🎙️ Sag "Jarvis" am Anfang oder Ende des Satzes. Beenden mit Strg+C.
 echo.
 
 ".venv\Scripts\python.exe" -X utf8 -m jarvis.main

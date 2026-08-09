@@ -355,6 +355,75 @@ class TestEmbeddingStrategy:
             f"Expected fewer than {total_non_stop} tools but got {selected_non_stop}: {result}"
         )
 
+    @pytest.mark.unit
+    def test_static_tool_embeddings_survive_a_transient_backend_failure(self):
+        """Tool catalogue vectors remain usable across distinct user queries."""
+        generation = [1]
+
+        def _embed(text, model, timeout_sec=10.0):
+            if ":" not in text:
+                return [1.0, 0.0, 0.0, 0.0]
+            if generation[0] > 1:
+                raise RuntimeError("tool-description embedding unavailable")
+            if text.startswith("get weather:"):
+                return [1.0, 0.0, 0.0, 0.0]
+            return [0.0, 1.0, 0.0, 0.0]
+
+        backend = MagicMock()
+        backend.embed.side_effect = _embed
+        model = "latency-cache-test-model"
+
+        first = select_tools(
+            "first weather query",
+            _builtin(), {},
+            strategy=ToolSelectionStrategy.EMBEDDING,
+            embedding_backend=backend,
+            embed_model=model,
+        )
+        generation[0] = 2
+        second = select_tools(
+            "second weather query",
+            _builtin(), {},
+            strategy=ToolSelectionStrategy.EMBEDDING,
+            embedding_backend=backend,
+            embed_model=model,
+        )
+
+        assert second == first
+
+    @pytest.mark.unit
+    def test_startup_warmup_makes_first_query_independent_of_catalogue_latency(self):
+        """A warmed catalogue leaves only the changing query to embed at reply time."""
+        from jarvis.tools.selection import warm_tool_embedding_cache
+
+        warming = [True]
+
+        def _embed(text, model, timeout_sec=10.0):
+            if ":" in text and not warming[0]:
+                raise RuntimeError("catalogue embedding reached the reply path")
+            if text.startswith("get weather:") or ":" not in text:
+                return [1.0, 0.0, 0.0, 0.0]
+            return [0.0, 1.0, 0.0, 0.0]
+
+        backend = MagicMock()
+        backend.embed.side_effect = _embed
+        model = "latency-startup-warm-model"
+
+        warmed = warm_tool_embedding_cache(
+            _builtin(), {}, backend, model, timeout_sec=10.0
+        )
+        warming[0] = False
+        result = select_tools(
+            "weather query after startup",
+            _builtin(), {},
+            strategy=ToolSelectionStrategy.EMBEDDING,
+            embedding_backend=backend,
+            embed_model=model,
+        )
+
+        assert warmed == len(_builtin()) - 1
+        assert "getWeather" in result
+
 
 # ---------------------------------------------------------------------------
 # Strategy: llm

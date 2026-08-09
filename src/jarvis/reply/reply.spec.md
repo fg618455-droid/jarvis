@@ -5,6 +5,7 @@ This specification documents only the reply flow that begins when a valid user q
 ### Architecture Overview
 - Components:
   - Reply Engine (`src/jarvis/reply/engine.py`): Orchestrates conversation-memory enrichment, tool-use protocol, messages loop, output, and memory update.
+  - Reply Prefix Warmup (`build_reply_prompt_prefix` / `warm_up_reply_prefix`): Builds the same query-independent system-message head used by the engine and prefills it once during voice startup with a one-token generation cap.
   - System Prompt (`src/jarvis/system_prompt.py`): Provides a unified `SYSTEM_PROMPT` with adaptive guidance for all topics. Declares the assistant's persona — a British butler named Jarvis with dry wit and light, good-natured sarcasm — with explicit behavioural rules (answer-first/quip-second, at most one quip, skip the quip for serious topics, no butler clichés, sarcasm never aimed at the user). The rules are phrased concretely rather than as tone adjectives so small models can follow them. Persona behaviour is not currently covered by an eval; add one if the tone regresses or the rules evolve.
   - LLM Gateway (`src/jarvis/llm/`): pluggable backend abstraction (`LLMBackend` ABC + `OllamaBackend` impl, factory at `get_llm_backend(settings)`). The reply engine uses the function-style helper `chat_with_messages` (sends the messages array and returns raw JSON) and `extract_text_from_response` (normalises content across providers); both dispatch to the same backend. See `src/jarvis/llm/llm.spec.md`.
   - Conversation Memory (`src/jarvis/memory/conversation.py`): Supplies recent dialogue messages and keyword/time-bounded recall.
@@ -39,17 +40,19 @@ Design principles enforced by the engine:
      - **Tool router** (`router:{redacted_query}|{strategy}|{builtin-names}|{mcp-names}` key): skips the router LLM call when the query and tool catalogue match. The catalogue signature lets a mid-conversation MCP refresh invalidate the cache. The engine refuses to cache the router's "fall open to all tools" fallback (detected by set equality with the full catalogue): that path fires only when the LLM router gave up, and pinning a fluke fall-open into the conversation cache would force every subsequent turn to expose the entire catalogue, overwhelming small chat models.
      - Lifetime: entries persist until (a) the `stop` signal clears the whole cache, (b) the engine detects a new conversation at turn entry (`has_recent_messages()` was False) and clears it before running, or (c) targeted invalidation (warm profile only) on graph mutations. Entries are *not* bounded by `RECENT_WINDOW_SEC` age, so a long active session keeps them warm.
 
-3. Pre-flight Planner
-   - The task-list planner (`plan_query` in `src/jarvis/reply/planner.py`) runs **first**, before any memory lookup or tool routing. It sees the query, a compact dialogue snippet, and the full builtin + MCP tool catalogue (names + one-line descriptions).
+3. Tool Routing and Pre-flight Planner
+   - `select_tools` runs before the planner and produces the authoritative narrowed catalogue. With the embedding strategy, static builtin and cached MCP description vectors come from a bounded process cache warmed during voice startup; each turn embeds only the query. A per-tool embedding failure excludes that tool rather than invalidating successful cached vectors.
+   - When `planner_enabled` is true, the task-list planner (`plan_query` in `src/jarvis/reply/planner.py`) sees the query, a compact dialogue snippet, and the router-narrowed catalogue (names + one-line descriptions).
    - The planner emits an ordered list of short sub-tasks (max 5). Two of the tokens are structural for the engine:
      - `searchMemory topic='...'` as a leading step means "answering requires information from prior conversations"; the engine runs memory enrichment. Omitting it means "no memory needed".
-     - Concrete tool steps (e.g. `webSearch query='...'`) name specific tools; the engine uses those names as the allow-list directly.
-   - An empty plan (disabled, LLM timeout, too short) is the fail-open state — the engine reverts to running the memory extractor and the `select_tools` router as before.
-   - A single-step `["Reply to the user."]` plan is a positive "no memory, no tools" decision — the engine skips the memory extractor, the tool router, the diary / graph / digest LLM calls, and the direct-exec path entirely.
+     - Concrete tool steps (e.g. `webSearch query='...'`) name specific tools; those names are unioned into the router's allow-list.
+   - With the planner enabled, an empty plan from a timeout, invalid response, or exception is the fail-open state: the engine runs memory enrichment and keeps the router selection.
+   - With the planner disabled, the engine skips both the planner call and speculative long-term memory enrichment. The query-agnostic warm profile and recent dialogue remain in the main prompt, and router-selected tools remain available.
+   - A single-step `["Reply to the user."]` plan is a positive "no memory, no tools" decision. The engine skips long-term enrichment and the direct-exec path while retaining the completed router decision.
    - See `planner.spec.md` for the full prompt contract, helpers, and fail-open invariants.
 
 4. Conversation Memory Enrichment (gated)
-   - Runs only when the planner emitted a `searchMemory` directive OR the planner returned an empty plan (fail-open). Skipped otherwise, along with the keyword-extractor LLM call, the diary and graph queries, and the memory-digest LLM call.
+   - Runs only when the enabled planner emitted a `searchMemory` directive or returned an empty plan through its fail-open path. A disabled planner skips the keyword extractor, diary and graph queries, and memory-digest call.
    - Extract search parameters via `extract_search_params_for_memory(query, base_url, router_model, ..., context_hint=...)`.
      - Runs on the fast tier (`resolve_model(cfg, Tier.FAST)`), not the big chat model. The extractor is a small classification-shaped task and rides the already-warm fast model instead of paging in the chat weights.
      - The planner's `topic` hint (when present) is appended to the query the extractor sees, so keyword selection anchors on what the planner actually wanted to look up.
@@ -98,7 +101,7 @@ Design principles enforced by the engine:
    - When detected, the engine falls back to the standard "I had trouble understanding that request" error reply (model-size-aware). The malformed content is never shown to the user.
 
    Task-list planner (all model sizes, strongest impact on small models):
-   - The planner runs at the **front** of the reply flow (see step 3 above), not after tool selection. By the time the agentic loop starts, the plan already exists, the memory block has either been run or skipped based on the plan's `searchMemory` directive, and the tool allow-list has been derived from the tool names the plan referenced. See `planner.spec.md` for the prompt contract and fail-open semantics.
+   - The planner runs after tool selection and before memory enrichment (see step 3 above). By the time the agentic loop starts, the plan and router allow-list exist, and the memory block has either run or been skipped. See `planner.spec.md` for the prompt contract and fail-open semantics.
    - When the plan has more than one step, `format_plan_block(steps)` appends an `ACTION PLAN:` section to the initial system message so the chat model can see its own pre-committed sub-tasks in order. A single reply-only plan renders nothing — it's the planner's positive no-op signal.
    - When `use_text_tools` is True and the plan still has unexecuted tool steps, the engine runs `resolve_next_tool_call` at the top of each loop iteration. That call converts the next planned step (with `<placeholder>` entity references) into a concrete `{name, arguments}` JSON, validates the name against the per-turn allow-list, and direct-executes the tool. The chat model is only invoked for the final synthesis turn. This direct-exec path fires at the top of each loop iteration, before the chat model is called.
    - After each tool result, `progress_nudge(steps, tool_results_so_far)` builds a per-turn remainder hint that names the next planned step and reminds the model to substitute entities discovered in prior results. This replaces the generic completeness prompt whenever a plan is present.
@@ -149,7 +152,7 @@ Design principles enforced by the engine:
 8. Output and Memory Update
    - Remove any tool protocol markers (e.g., lines beginning with a reserved prefix) from the final response.
    - Print reply with a concise header; optionally include debug labeling.
-   - If speech synthesis is enabled, pass the reply through the TTS preprocessor (link-to-description rewriting and markdown stripping — see `src/jarvis/output/tts.py::_preprocess_for_speech`) before speaking. Markdown stripping is required because small models often emit `**bold**`, bullets, and headings despite `VOICE_STYLE` guidance, and Piper-style TTS engines read the syntax characters literally ("asterisk asterisk ..."). The stripper handles bold/italic/strikethrough, inline and fenced code, HTML tags, blockquotes, ATX and setext headings, and bullet/numbered lists. Numbered-list markers are removed only when the line is part of a real list (≥2 adjacent numbered lines with numbers ≤ 99), so prose like "2024. The year..." is preserved. The `VOICE_STYLE` prompt also explicitly forbids markdown — belt-and-suspenders.
+   - If speech synthesis is enabled, pass the complete reply through the TTS preprocessor (link-to-description rewriting and markdown stripping — see `src/jarvis/output/tts.py::_preprocess_for_speech`) and synthesise it before playback. TTS does not stream partial model output or partial waveforms. Markdown stripping is required because Piper-style engines read syntax characters literally.
    - After speech finishes, trigger the follow-up listening window if configured.
    - Add the interaction (sanitized user/assistant texts) to short-term dialogue memory; ignore failures.
 

@@ -151,11 +151,6 @@ class Settings:
     sample_rate: int
     voice_min_energy: float
 
-    # Voice Collection & Timing
-    voice_block_seconds: float
-    voice_collect_seconds: float
-    voice_max_collect_seconds: float
-
     # Wake Word Detection
     wake_word: str
     wake_aliases: list[str]
@@ -181,7 +176,6 @@ class Settings:
     vad_pre_roll_ms: int
     endpoint_silence_ms: int
     max_utterance_ms: int
-    tts_max_utterance_ms: int
 
     # UI/UX Features
     tune_enabled: bool
@@ -189,7 +183,6 @@ class Settings:
     hot_window_seconds: float
 
     # Echo Detection
-    echo_energy_threshold: float
     echo_tolerance: float
 
     # Fast tier — the small, warm, low-latency model behind the real-time
@@ -572,11 +565,6 @@ def get_default_config() -> Dict[str, Any]:
         "sample_rate": 16000,
         "voice_min_energy": 0.02,
 
-        # Voice Collection & Timing
-        "voice_block_seconds": 4.0,
-        "voice_collect_seconds": 4.5,
-        "voice_max_collect_seconds": 180.0,
-
         # Wake Word Detection
         "wake_word": "jarvis",
         "wake_aliases": ["joris", "charis", "chavis", "jar is", "jaivis", "jervis", "jarvus", "jarviz", "javis", "jairus", "jarryst", "chyrus"],
@@ -609,13 +597,11 @@ def get_default_config() -> Dict[str, Any]:
         "vad_pre_roll_ms": 240,
         "endpoint_silence_ms": 800,
         "max_utterance_ms": 12000,
-        "tts_max_utterance_ms": 3000,  # Shorter timeout during TTS for quick stop detection
 
         # UI/UX Features
         "tune_enabled": True,
         "hot_window_enabled": True,
         "hot_window_seconds": 3.0,
-        "echo_energy_threshold": 2.0,
         "echo_tolerance": 0.3,  # Time tolerance for echo detection timing
 
         # Audio Wake Word Detection
@@ -666,10 +652,6 @@ def get_default_config() -> Dict[str, Any]:
         # the chat model; the fast tier resolves its steps for small models.
         "planner_enabled": True,
         "planner_timeout_sec": 3.0,
-
-        # Stop Commands
-        "stop_commands": ["stop", "quiet", "shush", "silence", "enough", "shut up"],
-        "stop_command_fuzzy_ratio": 0.8,
 
         # Location Services
         "location_enabled": True,
@@ -806,9 +788,6 @@ def load_settings() -> Settings:
 
     voice_device_val = merged.get("voice_device")
     voice_device = None if voice_device_val in (None, "", "default", "system") else str(voice_device_val)
-    voice_block_seconds = float(merged.get("voice_block_seconds", 4.0))
-    voice_collect_seconds = float(merged.get("voice_collect_seconds", 2.5))
-    voice_max_collect_seconds = float(merged.get("voice_max_collect_seconds", 60.0))
     wake_word = str(merged.get("wake_word", "jarvis")).strip().lower()
     wake_aliases = [a.strip().lower() for a in _ensure_list(merged.get("wake_aliases")) if a.strip()]
     wake_fuzzy_ratio = float(merged.get("wake_fuzzy_ratio", 0.78))
@@ -830,12 +809,10 @@ def load_settings() -> Settings:
     vad_pre_roll_ms = int(merged.get("vad_pre_roll_ms", 240))
     endpoint_silence_ms = int(merged.get("endpoint_silence_ms", 800))
     max_utterance_ms = int(merged.get("max_utterance_ms", 12000))
-    tts_max_utterance_ms = int(merged.get("tts_max_utterance_ms", 3000))
     sample_rate = int(merged.get("sample_rate", 16000))
     tune_enabled = bool(merged.get("tune_enabled", True))
     hot_window_enabled = bool(merged.get("hot_window_enabled", True))
     hot_window_seconds = float(merged.get("hot_window_seconds", 3.0))
-    echo_energy_threshold = float(merged.get("echo_energy_threshold", 2.0))
     echo_tolerance = float(merged.get("echo_tolerance", 0.3))
 
     # Fast tier — the small, warm model behind the real-time classification
@@ -1014,11 +991,6 @@ def load_settings() -> Settings:
         sample_rate=sample_rate,
         voice_min_energy=voice_min_energy,
 
-        # Voice Collection & Timing
-        voice_block_seconds=voice_block_seconds,
-        voice_collect_seconds=voice_collect_seconds,
-        voice_max_collect_seconds=voice_max_collect_seconds,
-
         # Wake Word Detection
         wake_word=wake_word,
         wake_aliases=wake_aliases,
@@ -1044,13 +1016,11 @@ def load_settings() -> Settings:
         vad_pre_roll_ms=vad_pre_roll_ms,
         endpoint_silence_ms=endpoint_silence_ms,
         max_utterance_ms=max_utterance_ms,
-        tts_max_utterance_ms=tts_max_utterance_ms,
 
         # UI/UX Features
         tune_enabled=tune_enabled,
         hot_window_enabled=hot_window_enabled,
         hot_window_seconds=hot_window_seconds,
-        echo_energy_threshold=echo_energy_threshold,
         echo_tolerance=echo_tolerance,
         # Fast tier (voice intent, tool routing, quick classifications)
         fast_model=fast_model,

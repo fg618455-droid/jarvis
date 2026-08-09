@@ -20,14 +20,19 @@ from rapidfuzz import fuzz
 from contextlib import contextmanager
 
 from .echo_detection import EchoDetector
-from .state_manager import StateManager, ListeningState
+from .state_manager import StateManager
 from ..utils.audio_lock import portaudio_lock
-from .wake_detection import is_wake_word_detected, extract_query_after_wake, is_stop_command
+from .wake_detection import (
+    is_wake_word_detected,
+    extract_query_after_wake,
+    extract_query_from_edge_wake,
+)
 from .transcript_buffer import TranscriptBuffer
 from .intent_judge import IntentJudge, create_intent_judge, warm_up_chat_model
 from ..config import resolve_transcription_language
 from ..debug import debug_log
 from ..llm import get_embedding_backend
+from ..reply.engine import warm_up_reply_prefix
 from ..utils.location import is_location_available
 
 if TYPE_CHECKING:
@@ -454,19 +459,13 @@ class VoiceListener(threading.Thread):
 
         # Initialise modular components
         self.echo_detector = EchoDetector(
-            echo_tolerance=float(getattr(self.cfg, "echo_tolerance", 0.3)),
-            energy_spike_threshold=float(getattr(self.cfg, "echo_energy_threshold", 2.0))
+            echo_tolerance=float(getattr(self.cfg, "echo_tolerance", 0.3))
         )
 
         self.state_manager = StateManager(
             hot_window_seconds=float(getattr(self.cfg, "hot_window_seconds", 3.0)),
             echo_tolerance=float(getattr(self.cfg, "echo_tolerance", 0.3)),
-            voice_collect_seconds=float(getattr(self.cfg, "voice_collect_seconds", 2.0)),
-            max_collect_seconds=float(getattr(self.cfg, "voice_max_collect_seconds", 60.0))
         )
-
-        # Energy tracking for echo detection
-        self._recent_audio_energy: deque = deque(maxlen=50)
 
         # Audio-level wake word detection timestamp
         self._wake_timestamp: Optional[float] = None
@@ -532,12 +531,12 @@ class VoiceListener(threading.Thread):
     def track_tts_start(self, tts_text: str) -> None:
         """Called when TTS starts speaking."""
         if self.tts and self.tts.enabled:
-            # Calculate baseline energy from recent audio samples
-            baseline_energy = 0.0045  # default
-            if self._recent_audio_energy:
-                baseline_energy = sum(self._recent_audio_energy) / len(self._recent_audio_energy)
+            # Playback is a closed listening interval. Drop anything captured
+            # before the output stream starts so speaker audio cannot be
+            # transcribed later as a delayed command.
+            self._clear_audio_buffers()
 
-            self.echo_detector.track_tts_start(tts_text, baseline_energy)
+            self.echo_detector.track_tts_start(tts_text)
 
     def activate_hot_window(self) -> None:
         """Activate hot window after TTS completion."""
@@ -563,12 +562,6 @@ class VoiceListener(threading.Thread):
             utterance_energy: Pre-calculated energy from the utterance frames
         """
         if not text or not text.strip():
-            # Check for timeouts
-            if self.state_manager.check_collection_timeout():
-                query = self.state_manager.clear_collection()
-                if query.strip():
-                    self._dispatch_query(query)
-
             # Check hot window expiry
             self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
             return
@@ -586,17 +579,24 @@ class VoiceListener(threading.Thread):
         end_time_str = datetime.fromtimestamp(utterance_end_time).strftime('%H:%M:%S.%f')[:-3] if utterance_end_time > 0 else "N/A"
         debug_log(f"heard: '{text}' (utterance from {start_time_str} to {end_time_str})", "voice")
 
-        # Track if this input was received during TTS (for logging purposes)
         received_during_tts = self.tts and self.tts.is_speaking()
+
+        # The microphone callback is suspended throughout playback. This
+        # defensive guard also discards a transcript that completed across the
+        # playback boundary. Follow-ups begin after TTS in the hot window.
+        if received_during_tts:
+            debug_log("discarding transcript captured during TTS playback", "voice")
+            return
+
+        in_hot_window = self.state_manager.was_speech_during_hot_window(
+            utterance_start_time, utterance_end_time
+        )
 
         # --- Early echo check + early beep ---
         # Check for echo BEFORE starting beep and BEFORE intent judge.
         # This prevents: false beeps on echo, intent judge blocking the audio
         # loop for seconds on echo, and hot window extending from echo resets.
-        if not received_during_tts and not self._is_thinking_tune_active():
-            in_hot_window = self.state_manager.was_speech_during_hot_window(
-                utterance_start_time, utterance_end_time
-            )
+        if not self._is_thinking_tune_active():
             if in_hot_window:
                 # Fuzzy echo check — instant, no intent judge needed.
                 # Only catches pure echo (transcript ≈ TTS text). Mixed
@@ -669,50 +669,31 @@ class VoiceListener(threading.Thread):
                     self._set_face_state_listening()
                     debug_log("early beep: wake word detected", "voice")
 
-        # Echo rejection & stop commands — only while TTS is actively playing.
-        # After TTS finishes, the intent judge handles everything (echo detection,
-        # hot window follow-ups, etc.) using full transcript context + last TTS text.
-        if self.tts and self.tts.enabled and self.tts.is_speaking():
-            # Stop command detection (fast, text-based)
-            stop_commands = getattr(self.cfg, "stop_commands", ["stop", "quiet", "shush", "silence", "enough", "shut up"])
-            if is_stop_command(text_lower, stop_commands):
-                debug_log(f"stop command detected during TTS: {text_lower} (energy: {utterance_energy:.4f})", "voice")
-                self.tts.interrupt()
-                try:
-                    while not self._audio_q.empty():
-                        self._audio_q.get_nowait()
-                except Exception:
-                    pass
+        # A wake name at either utterance edge is an unambiguous address. VAD
+        # has already established the utterance boundary, so dispatch it
+        # directly instead of paying for an intent-judge round trip and a
+        # second silence collection window. Interior occurrences remain with
+        # the contextual judge because the name may be the subject.
+        if not in_hot_window:
+            wake_word = getattr(self.cfg, "wake_word", "jarvis")
+            aliases = list(set(getattr(self.cfg, "wake_aliases", [])) | {wake_word})
+            direct_query = extract_query_from_edge_wake(
+                text_lower,
+                wake_word,
+                aliases,
+                float(getattr(self.cfg, "wake_fuzzy_ratio", 0.78)),
+            )
+            if direct_query:
+                debug_log("edge wake address accepted without intent judge", "voice")
+                self.state_manager.cancel_hot_window_activation()
+                self._transcript_buffer.mark_segment_processed(text_lower)
+                self._clear_audio_buffers()
+                self._begin_reply(direct_query)
                 return
 
-            # Echo rejection during active TTS
-            should_reject = self.echo_detector.should_reject_as_echo(
-                text_lower, utterance_energy, True,
-                getattr(self.cfg, 'tts_rate', 200), utterance_start_time
-            )
-            if should_reject:
-                # Try to salvage user speech appended after echo
-                salvaged = self.echo_detector.cleanup_leading_echo_during_tts(
-                    text_lower,
-                    getattr(self.cfg, 'tts_rate', 200),
-                    utterance_start_time,
-                )
-                min_words = self.echo_detector.min_salvage_words
-                if (salvaged and salvaged.strip() and salvaged != text_lower
-                        and len(salvaged.split()) >= min_words):
-                    debug_log(f"salvaged user speech from echo during TTS: '{salvaged}'", "voice")
-                    self._transcript_buffer.update_last_segment_text(salvaged)
-                    text_lower = salvaged
-                else:
-                    debug_log(f"echo rejected during TTS: '{text_lower[:50]}'", "echo")
-                    print(f"  🔇 Heard (echo): \"{text_lower[:50]}{'...' if len(text_lower) > 50 else ''}\"", flush=True)
-                    return
-
-        # Salvage user speech from merged echo+speech chunks.
-        # When Whisper delivers a single transcript containing TTS echo followed by
-        # user speech (e.g. "I can only provide... Well you can search for it"), the
-        # echo portion was captured during TTS but the transcript arrives after TTS
-        # finishes. Try to strip the leading echo and use just the user's speech.
+        # Salvage user speech from post-playback echo+speech chunks. Speaker
+        # tails can remain in the acoustic path during the short tolerance
+        # interval, so strip a matching prefix and keep the user's suffix.
         # Skip entirely if there's no prior TTS — nothing to match against.
         last_tts_text_for_salvage = self.echo_detector._last_tts_text or ""
         last_tts_finish = self.echo_detector._last_tts_finish_time or 0.0
@@ -747,12 +728,10 @@ class VoiceListener(threading.Thread):
         # Check hot window expiry
         self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
 
-        # Intent judge — the single decision-maker for all post-TTS input.
+        # Intent judge — the decision-maker for contextual wake usage and
+        # post-TTS follow-ups. Explicit edge addresses have already dispatched.
         # Gets full transcript context, last TTS text, and hot window state.
         # Handles: echo detection, wake word queries, hot window follow-ups.
-        # During active TTS, skip short utterances (<=3 words) as those are
-        # handled by stop command detection above.
-        is_speaking_now = self.tts and self.tts.is_speaking()
         intent_judgment = None
 
         # Determine if this could be a hot window follow-up.
@@ -765,11 +744,6 @@ class VoiceListener(threading.Thread):
             utterance_start_time, utterance_end_time
         )
 
-        # Use the upgraded intent judge if available (with full transcript context)
-        # Allow during TTS for longer utterances (>3 words) that might be user responses
-        word_count = len(text_lower.split())
-        skip_intent_judge_during_tts = is_speaking_now and word_count <= 3
-
         # Gate the intent judge on an engagement signal. Without this check the
         # judge was called on every ambient utterance, blocking the audio loop
         # for up to `timeout_sec` on each background chatter — which could
@@ -777,12 +751,9 @@ class VoiceListener(threading.Thread):
         # or loaded Ollama. The judge adds value only when one of:
         #   1. A wake word was detected in the current utterance
         #   2. We are in (or pending) a hot window following TTS
-        #   3. TTS is currently speaking (intent judge can catch responses / stops
-        #      that the fast text-based stop command check missed)
         has_engagement_signal = (
             self._wake_timestamp is not None
             or could_be_hot_window
-            or is_speaking_now
         )
 
         if not has_engagement_signal:
@@ -793,8 +764,7 @@ class VoiceListener(threading.Thread):
             )
 
         if (
-            not skip_intent_judge_during_tts
-            and has_engagement_signal
+            has_engagement_signal
             and self._intent_judge is not None
             and self._intent_judge.available
         ):
@@ -846,21 +816,10 @@ class VoiceListener(threading.Thread):
                         self.state_manager.cancel_hot_window_activation()
                         self._transcript_buffer.mark_segment_processed(text_lower)
                         self._clear_audio_buffers()
-                        self.state_manager.start_collection(text_lower)
-                        self._start_thinking_tune()
-                        try:
-                            print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                        except Exception:
-                            pass
+                        self._begin_reply(text_lower)
                         return
 
             if intent_judgment is not None:
-                # If judge says stop command, interrupt TTS
-                if intent_judgment.stop and self.tts and self.tts.is_speaking():
-                    debug_log(f"🛑 Intent judge detected stop command", "voice")
-                    self.tts.interrupt()
-                    return
-
                 # If directed with query, process it
                 if intent_judgment.directed and intent_judgment.query:
                     # In wake word mode, verify the wake word is actually present
@@ -884,12 +843,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(intent_judgment.query)
-                            self._start_thinking_tune()
-                            try:
-                                print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                            except Exception:
-                                pass
+                            self._begin_reply(intent_judgment.query)
                             return
                     else:
                         # Hot window mode - no wake word needed, but check for echo.
@@ -947,14 +901,7 @@ class VoiceListener(threading.Thread):
                         self._transcript_buffer.mark_segment_processed(text_lower)
                         self._clear_audio_buffers()
 
-                        self.state_manager.start_collection(hot_query)
-
-                        # Start thinking tune and show processing message
-                        self._start_thinking_tune()
-                        try:
-                            print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                        except Exception:
-                            pass
+                        self._begin_reply(hot_query)
                         return
 
                 # If directed with high confidence but no extracted query, use actual text
@@ -981,12 +928,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
-                            self._start_thinking_tune()
-                            try:
-                                print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                            except Exception:
-                                pass
+                            self._begin_reply(text_lower)
                             return
                     else:
                         # Hot window — echo check before accepting
@@ -1011,12 +953,7 @@ class VoiceListener(threading.Thread):
                         self.state_manager.cancel_hot_window_activation()
                         self._transcript_buffer.mark_segment_processed(text_lower)
                         self._clear_audio_buffers()
-                        self.state_manager.start_collection(text_lower)
-                        self._start_thinking_tune()
-                        try:
-                            print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                        except Exception:
-                            pass
+                        self._begin_reply(text_lower)
                         return
 
                 # If not directed with high confidence, check reasoning before rejecting
@@ -1053,18 +990,11 @@ class VoiceListener(threading.Thread):
                             self._transcript_buffer.mark_segment_processed(text_lower)
 
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
-                            self._start_thinking_tune()
-                            try:
-                                print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                            except Exception:
-                                pass
+                            self._begin_reply(text_lower)
                             return
 
-                        # Check could_be_hot_window (handles overlap: utterance
-                        # started during TTS but extended into hot window span).
-                        # The grace period above only checks utterance_start_time
-                        # which is negative for overlapping utterances.
+                        # Check the recorded hot-window span as a second timing
+                        # source when the timer has expired before transcription.
                         if could_be_hot_window:
                             # Verify it's not pure echo before overriding
                             echo_score = 0
@@ -1094,12 +1024,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
-                            self._start_thinking_tune()
-                            try:
-                                print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                            except Exception:
-                                pass
+                            self._begin_reply(text_lower)
                             return
 
                         # Otherwise fall through to wake word detection
@@ -1142,12 +1067,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
-                            self._start_thinking_tune()
-                            try:
-                                print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                            except Exception:
-                                pass
+                            self._begin_reply(text_lower)
                             return
 
                         # Outside hot window — check if wake word is actually present
@@ -1194,22 +1114,10 @@ class VoiceListener(threading.Thread):
             self._clear_audio_buffers()
 
             query_fragment = extract_query_after_wake(text_lower, wake_word, list(aliases))
-            self.state_manager.start_collection(query_fragment)
-
-            # Start thinking tune and show processing message
-            self._start_thinking_tune()
-            try:
-                print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-            except Exception:
-                pass
+            self._begin_reply(query_fragment)
             return
 
-        # Priority 5: Collection mode handling
-        if self.state_manager.is_collecting():
-            self.state_manager.add_to_collection(text_lower)
-            return
-
-        # Priority 6: Non-wake input (ignore)
+        # Priority 5: Non-wake input (ignore)
         # Provide clear debug info about why input was ignored
         intent_info = ""
         if intent_judgment is not None:
@@ -1218,16 +1126,19 @@ class VoiceListener(threading.Thread):
         # Stop any early-started beep since we're not processing this input
         self._stop_thinking_tune()
 
-        if received_during_tts:
-            # User spoke during TTS but it wasn't a stop command - this is likely a response
-            # to a TTS question that arrived before hot window activated
-            debug_log(f"input ignored (during TTS, not a stop command{intent_info}): {text_lower}", "voice")
-            try:
-                print(f"  ⏳ Heard during TTS (waiting for hot window): \"{text_lower[:50]}{'...' if len(text_lower) > 50 else ''}\"", flush=True)
-            except Exception:
-                pass
-        else:
-            debug_log(f"input ignored (no wake word{intent_info}): {text_lower}", "voice")
+        debug_log(f"input ignored (no wake word{intent_info}): {text_lower}", "voice")
+
+    def _begin_reply(self, query: str) -> None:
+        """Acknowledge and synchronously dispatch one completed utterance."""
+        query = query.strip()
+        if not query:
+            return
+        self._start_thinking_tune()
+        try:
+            print(f"\n✨ Working on it: {query}", flush=True)
+        except Exception:
+            pass
+        self._dispatch_query(query)
 
     def _dispatch_query(self, query: str) -> None:
         """
@@ -1432,9 +1343,7 @@ class VoiceListener(threading.Thread):
         if np is None:
             return True
 
-        # Track energy for echo detection
         rms = float(np.sqrt(np.mean(np.square(frame))))
-        self._recent_audio_energy.append(rms)
 
         if self._vad is None:
             return rms >= float(getattr(self.cfg, "voice_min_energy", 0.0045))
@@ -1575,20 +1484,18 @@ class VoiceListener(threading.Thread):
         return False
 
     def _check_query_timeout(self) -> None:
-        """Check if there's a pending query that has timed out, and check hot window expiry."""
-        if self.state_manager.check_collection_timeout():
-            query = self.state_manager.clear_collection()
-            if query.strip():
-                self._dispatch_query(query)
-
-        # Also check hot window expiry - this ensures the timeout is enforced
+        """Check hot-window expiry when no audio is being processed."""
         # even when there's no audio being processed
         self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
 
     def _on_audio(self, indata, frames, time_info, status):
         """Audio callback from sounddevice."""
         try:
-            if self._should_stop or self._dictation_active:
+            if (
+                self._should_stop
+                or self._dictation_active
+                or (self.tts is not None and self.tts.is_speaking())
+            ):
                 return
             self._callback_count += 1
             chunk = (indata.copy() if hasattr(indata, "copy") else indata)
@@ -1699,6 +1606,17 @@ class VoiceListener(threading.Thread):
         if chat_model:
             def _warm_chat() -> None:
                 ok = warm_up_chat_model(self.cfg, chat_model, timeout=chat_timeout)
+                if ok:
+                    prefix_ok = warm_up_reply_prefix(
+                        self.cfg,
+                        chat_model,
+                        timeout_sec=chat_timeout,
+                    )
+                    if not prefix_ok:
+                        debug_log(
+                            "chat model resident but reply prefix prefill failed",
+                            "voice",
+                        )
                 self._llm_warmup_results["chat"] = (chat_model, ok)
                 # When chat and judge share a model, one warmup covers both.
                 if shared_judge:
@@ -1737,16 +1655,29 @@ class VoiceListener(threading.Thread):
             def _warm_embed() -> None:
                 try:
                     backend = get_embedding_backend(self.cfg)
-                    # Use embed() rather than warm_up() because embedding-only
-                    # models (e.g. nomic-embed-text, modernbert) are not served
-                    # on the chat endpoint — warm_up() sends a chat completion
-                    # which would fail for those models. A single-token embedding
-                    # request forces the runtime to load the model the same way.
-                    # Use the embed method's own default timeout (15s) rather than
-                    # the full chat_timeout (60s) since this probe is sub-second.
+                    # Embedding-only models are not served on the chat endpoint.
+                    # Warming the static tool catalogue both loads the model and
+                    # removes every description embedding from the first reply.
                     embed_timeout = min(chat_timeout, 15.0)
-                    result = backend.embed("ping", embed_model, timeout_sec=embed_timeout)
-                    ok = result is not None
+                    from ..tools.registry import BUILTIN_TOOLS, get_cached_mcp_tools
+                    from ..tools.selection import warm_tool_embedding_cache
+                    mcp_tools = get_cached_mcp_tools()
+                    expected = (
+                        len([name for name in BUILTIN_TOOLS if name != "stop"])
+                        + len(mcp_tools)
+                    )
+                    warmed = warm_tool_embedding_cache(
+                        BUILTIN_TOOLS,
+                        mcp_tools,
+                        backend,
+                        embed_model,
+                        timeout_sec=embed_timeout,
+                    )
+                    ok = warmed == expected
+                    debug_log(
+                        f"tool embedding cache warmed: {warmed}/{expected}",
+                        "planning",
+                    )
                 except Exception as exc:
                     debug_log(f"embed warmup failed: {exc}", "voice")
                     ok = False
@@ -2197,13 +2128,10 @@ class VoiceListener(threading.Thread):
         pre_roll_ms = int(getattr(self.cfg, "vad_pre_roll_ms", 240))
         endpoint_silence_ms = int(getattr(self.cfg, "endpoint_silence_ms", 800))
         max_utt_ms = int(getattr(self.cfg, "max_utterance_ms", 12000))
-        tts_max_utt_ms = int(getattr(self.cfg, "tts_max_utterance_ms", 3000))
 
         pre_roll_max_frames = max(1, int(pre_roll_ms / frame_ms))
         endpoint_silence_frames = max(1, int(endpoint_silence_ms / frame_ms))
-        # max_utt_frames will be calculated dynamically based on TTS state
         normal_max_utt_frames = max(1, int(max_utt_ms / frame_ms))
-        tts_max_utt_frames = max(1, int(tts_max_utt_ms / frame_ms))
 
         debug_log(f"audio params: sample_rate={self._samplerate}, frame_ms={frame_ms}, frame_samples={self._frame_samples}", "voice")
         debug_log(f"VAD: enabled={bool(self._vad is not None)}, aggressiveness={getattr(self.cfg, 'vad_aggressiveness', 2)}", "voice")
@@ -2474,9 +2402,10 @@ class VoiceListener(threading.Thread):
                             self._silence_frames = 0
                         else:
                             self._silence_frames += 1
-                            # Use shorter timeout during TTS for quick stop command detection
-                            current_max_frames = tts_max_utt_frames if (self.tts and self.tts.is_speaking()) else normal_max_utt_frames
-                            if self._silence_frames >= endpoint_silence_frames or len(self._utterance_frames) >= current_max_frames:
+                            if (
+                                self._silence_frames >= endpoint_silence_frames
+                                or len(self._utterance_frames) >= normal_max_utt_frames
+                            ):
                                 self._finalize_utterance()
                                 self._pre_roll.clear()
 
@@ -2659,21 +2588,14 @@ class VoiceListener(threading.Thread):
             self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
             return
 
-        # Add to transcript buffer for context-aware processing
-        # Mark as "during TTS" if utterance STARTED during TTS (not just if TTS is still speaking now)
-        # This ensures mixed echo+user speech gets properly marked for intent judge
-        if self.tts is not None and self.tts.is_speaking():
-            is_during_tts = True
-        else:
-            tts_finish_time = self.echo_detector._last_tts_finish_time
-            echo_tolerance = self.echo_detector.echo_tolerance
-            is_during_tts = (tts_finish_time > 0 and utterance_start_time > 0 and utterance_start_time < tts_finish_time + echo_tolerance)
+        # Playback is a closed listening interval, so every completed microphone
+        # utterance presented to the intent judge is post-playback speech.
         self._transcript_buffer.add(
             text=text,
             start_time=utterance_start_time,
             end_time=utterance_end_time,
             energy=utterance_energy,
-            is_during_tts=is_during_tts,
+            is_during_tts=False,
         )
 
         # Process the transcript with pre-calculated energy and utterance timing

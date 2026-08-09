@@ -1,4 +1,4 @@
-"""State management for listening modes (wake word, collection, hot window)."""
+"""State management for wake-word and follow-up listening modes."""
 
 import time
 import threading
@@ -12,37 +12,26 @@ from ..debug import debug_log
 class ListeningState(Enum):
     """Possible listening states."""
     WAKE_WORD = "wake_word"      # Waiting for wake word
-    COLLECTING = "collecting"    # Accumulating query text
     HOT_WINDOW = "hot_window"    # Listening without wake word after TTS
 
 
 class StateManager:
     """Manages listening state transitions and timing."""
 
-    def __init__(self, hot_window_seconds: float = 3.0, echo_tolerance: float = 0.3,
-                 voice_collect_seconds: float = 2.0, max_collect_seconds: float = 60.0):
+    def __init__(self, hot_window_seconds: float = 3.0, echo_tolerance: float = 0.3):
         """
         Initialize state manager.
 
         Args:
             hot_window_seconds: Duration of hot window listening
             echo_tolerance: Delay before activating hot window (for echo suppression)
-            voice_collect_seconds: Silence timeout for query collection
-            max_collect_seconds: Maximum time to collect a single query
         """
         self.hot_window_seconds = hot_window_seconds
         self.echo_tolerance = echo_tolerance
-        self.voice_collect_seconds = voice_collect_seconds
-        self.max_collect_seconds = max_collect_seconds
 
         # Current state
         self._state = ListeningState.WAKE_WORD
         self._state_lock = threading.Lock()
-
-        # Collection state
-        self._pending_query: str = ""
-        self._last_voice_time: float = 0.0
-        self._collect_start_time: float = 0.0
 
         # Hot window state
         self._hot_window_start_time: float = 0.0
@@ -63,115 +52,9 @@ class StateManager:
         with self._state_lock:
             return self._state
 
-    def is_collecting(self) -> bool:
-        """Check if currently in collection mode."""
-        return self.get_state() == ListeningState.COLLECTING
-
     def is_hot_window_active(self) -> bool:
         """Check if hot window is currently active."""
         return self.get_state() == ListeningState.HOT_WINDOW
-
-    def start_collection(self, initial_text: str = "") -> None:
-        """
-        Start query collection mode.
-
-        Args:
-            initial_text: Optional initial text to seed the collection
-        """
-        with self._state_lock:
-            self._state = ListeningState.COLLECTING
-            self._pending_query = initial_text.strip()
-            self._last_voice_time = time.time()
-            self._collect_start_time = self._last_voice_time
-
-        start_time_str = datetime.fromtimestamp(self._collect_start_time).strftime('%H:%M:%S.%f')[:-3]
-        debug_log(f"collection started at {start_time_str}: '{initial_text}'", "state")
-
-        # Set face state to LISTENING
-        try:
-            from desktop_app.face_widget import get_jarvis_state, JarvisState
-            face_state_manager = get_jarvis_state()
-            face_state_manager.set_state(JarvisState.LISTENING)
-            debug_log("face state set to LISTENING (collection started)", "state")
-        except ImportError:
-            pass
-        except Exception as e:
-            debug_log(f"failed to set face state to LISTENING: {e}", "state")
-
-    def add_to_collection(self, text: str) -> None:
-        """
-        Add text to current collection.
-
-        Args:
-            text: Text to append to pending query
-        """
-        if not self.is_collecting():
-            return
-
-        with self._state_lock:
-            self._pending_query = (self._pending_query + " " + text).strip()
-            self._last_voice_time = time.time()
-
-        debug_log(f"added to collection: '{text}' -> '{self._pending_query}'", "state")
-
-    def get_pending_query(self) -> str:
-        """Get the current pending query text."""
-        with self._state_lock:
-            return self._pending_query
-
-    def clear_collection(self) -> str:
-        """
-        Clear and return the current pending query.
-
-        Returns:
-            The query that was being collected
-        """
-        with self._state_lock:
-            query = self._pending_query
-            collect_start_time = self._collect_start_time
-            self._pending_query = ""
-            if self._state == ListeningState.COLLECTING:
-                self._state = ListeningState.WAKE_WORD
-
-        if query and collect_start_time > 0:
-            end_time = time.time()
-            duration = end_time - collect_start_time
-            start_time_str = datetime.fromtimestamp(collect_start_time).strftime('%H:%M:%S.%f')[:-3]
-            end_time_str = datetime.fromtimestamp(end_time).strftime('%H:%M:%S.%f')[:-3]
-            debug_log(f"collection cleared: '{query}' (started: {start_time_str}, ended: {end_time_str}, duration: {duration:.2f}s)", "state")
-        else:
-            debug_log(f"collection cleared: '{query}'", "state")
-
-        # Note: Don't set face state here - it will be set to THINKING or ASLEEP by caller
-
-        return query
-
-    def check_collection_timeout(self) -> bool:
-        """
-        Check if collection should timeout due to silence or max duration.
-
-        Returns:
-            True if collection should be finalized
-        """
-        if not self.is_collecting():
-            return False
-
-        current_time = time.time()
-        silence_timeout = current_time - self._last_voice_time >= self.voice_collect_seconds
-        max_timeout = current_time - self._collect_start_time >= self.max_collect_seconds
-
-        if silence_timeout or max_timeout:
-            timeout_type = "silence" if silence_timeout else "max"
-
-            end_time = time.time()
-            duration = end_time - self._collect_start_time
-            start_time_str = datetime.fromtimestamp(self._collect_start_time).strftime('%H:%M:%S.%f')[:-3]
-            end_time_str = datetime.fromtimestamp(end_time).strftime('%H:%M:%S.%f')[:-3]
-
-            debug_log(f"collection timeout ({timeout_type}): '{self._pending_query}' (started: {start_time_str}, ended: {end_time_str}, duration: {duration:.2f}s)", "state")
-            return True
-
-        return False
 
     def was_speech_during_hot_window(self, utterance_start_time: float,
                                      utterance_end_time: float = 0.0) -> bool:
@@ -185,9 +68,8 @@ class StateManager:
             utterance_start_time: When VAD detected voice onset (time.time()).
                                   If 0, falls back to current state check.
             utterance_end_time: When the utterance ended (time.time()).
-                                Used to detect overlap when the utterance started
-                                before the span (e.g. mic picked up TTS echo)
-                                but extended into the hot window period.
+                                Used to detect overlap when transcription
+                                completes after the window expires.
 
         Returns:
             True if:
@@ -216,12 +98,7 @@ class StateManager:
         if is_pending:
             return span_start <= 0 or utterance_start_time >= span_start
 
-        # Window expired — accept if speech overlapped with the span
-        # This handles two cases:
-        # 1. Speech started within the span (normal hot window follow-up)
-        # 2. Speech started before the span but ended during it (mic picked up
-        #    TTS echo during playback, then user spoke during hot window —
-        #    Whisper merges both into one chunk)
+        # Window expired — accept if speech overlapped with the recorded span.
         if span_start > 0 and span_end > 0:
             if span_start <= utterance_start_time <= span_end:
                 return True
@@ -280,7 +157,6 @@ class StateManager:
                 except Exception:
                     pass
             else:
-                # COLLECTING or another active state — don't interfere
                 return
 
         self._schedule_hot_window_expiry()
@@ -364,10 +240,6 @@ class StateManager:
                 return
 
             with self._state_lock:
-                # Don't overwrite COLLECTING state - user may have already started a new query
-                if self._state == ListeningState.COLLECTING:
-                    debug_log("hot window activation cancelled (already collecting)", "state")
-                    return
                 self._state = ListeningState.HOT_WINDOW
                 self._hot_window_start_time = time.time()
 

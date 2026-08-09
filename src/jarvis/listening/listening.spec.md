@@ -1,6 +1,6 @@
 # Listening Flow Specification v2
 
-This document outlines the voice listening architecture. The system uses a **transcript-first** approach where speech is continuously transcribed, and an LLM intent judge extracts queries with full context.
+This document outlines the voice listening architecture. The system uses a **transcript-first** approach where VAD-complete microphone utterances are transcribed and routed from their text. Microphone capture is suspended while Jarvis speaks.
 
 ## Architecture Overview
 
@@ -30,7 +30,7 @@ This document outlines the voice listening architecture. The system uses a **tra
 │  Segments include:                    │
 │  - text, start_time, end_time         │
 │  - energy level                       │
-│  - is_during_tts flag                 │
+│  - energy level                       │
 └───────────────────┬───────────────────┘
                     │
                     ▼ (on wake detection)
@@ -79,7 +79,7 @@ on it, and a cross-thread close is a native use-after-free.
 ### 1. Transcript-First
 
 Instead of extracting post-wake-word audio, we:
-- Continuously transcribe all speech (VAD-gated)
+- Transcribe each VAD-complete microphone utterance outside playback
 - Store transcripts with timestamps in a rolling buffer
 - Let the intent judge extract the relevant query
 
@@ -99,7 +99,7 @@ The intent judge receives full context and makes intelligent decisions:
 - Sees pre-wake-word context → can understand "...what do YOU think, Jarvis?"
 - Extracts clean query → removes filler words, false starts
 
-**Gating:** The judge is called only when there is an engagement signal — (a) a wake word was detected in the current utterance, (b) the utterance falls inside (or pending) a hot window, or (c) TTS is currently speaking. Pure ambient speech skips the judge entirely. This keeps the synchronous audio loop from blocking up to `intent_judge_timeout_sec` on every background utterance, which would otherwise freeze the UI when Ollama is slow or contended.
+**Gating:** The judge is called only when there is a contextual engagement signal: a wake name occurs away from an utterance edge, or the utterance falls inside a pending or active hot window. A wake name at the first or last token is an unambiguous address and dispatches directly after Whisper, without an intent-judge call. Pure ambient speech and playback both skip the judge.
 
 **Alias normalisation:** Before the transcript is sent to the judge, every configured wake-word alias in each segment is replaced with the primary assistant name (case-insensitive, word-boundary-aware). Aliases are Whisper mishearings of the wake word (e.g. "Jervis", "Jaivis" for "Jarvis"); without this step the small judge model sees the alias, doesn't know it refers to the assistant, and can decide the user is addressing a different person. Normalisation happens at prompt-build time only — the raw transcript buffer is untouched.
 
@@ -130,8 +130,9 @@ On small models, a caveat line is appended above a more involved example to set 
 
 **What gets warmed:**
 - **Whisper** — loading the model; additionally a silent-audio transcribe so the first real utterance doesn't pay the cold-decode cost. Both the MLX and faster-whisper backends do this.
-- **Chat model** (`cfg.llm_chat_model`) — verifies the server is actually Ollama via `GET /api/version`, then issues a minimal `/api/generate` request with `keep_alive=30m` so the weights stay resident.
+- **Chat model** (`cfg.llm_chat_model`) — verifies reachability, keeps the weights resident, then sends the query-independent reply-system prefix with a one-token cap. The second request prefills the backend's prompt cache so the first real turn reuses the persona and model-size guidance.
 - **Intent judge model** (the fast tier: `resolve_model(cfg, Tier.FAST)`) — same pattern. If it points at the same Ollama model as the chat model, a single warmup covers both roles (Ollama loads the weights once).
+- **Embedding model and static tool catalogue** — embeds every builtin and cached MCP tool description into a bounded process cache. Live turns embed only the changing query. Failures remain best-effort and fall open through tool selection.
 
 **Concurrency:** LLM warmups run in daemon threads started before Whisper loads, so they overlap with Whisper initialisation. After Whisper finishes, the listener joins the warmup threads with a **single 60 s budget** shared across them all. If the budget is exhausted, the listener continues (with a `⏳ Some models still warming — continuing anyway` notice) and the first engagement pays the cold-load cost on demand.
 
@@ -149,9 +150,11 @@ System is waiting for wake word activation.
 **On trigger:**
 1. Start thinking beep immediately and set face state to LISTENING
 2. Wait for utterance to complete (user finishes speaking)
-3. Send transcript buffer + wake timestamp to intent judge
-4. If `directed=true` and `query` exists, dispatch to reply engine
-5. If rejected, stop the beep and revert face state to IDLE
+3. Whisper transcribes after `endpoint_silence_ms` of silence
+4. If a configured wake name is the first or last token, remove it and dispatch immediately
+5. For an interior wake name, send transcript context to the intent judge and dispatch only an accepted query
+
+The VAD endpoint is the only post-speech waiting window. A completed transcript is never held for an additional collection timer.
 
 ### 2. Hot Window Mode
 
@@ -163,11 +166,11 @@ After TTS finishes, allow wake-word-free follow-up.
 
 **Behaviour:** Speech first passes through an early fuzzy echo check (rapidfuzz `partial_ratio`, threshold 70, with word-count guard to avoid catching mixed echo+speech). Pure echo is silently rejected **without calling the intent judge** — this keeps echo rejection instant and prevents it from blocking the audio loop. The hot window timer is **not** reset on echo rejection. Non-echo speech is sent to the intent judge, but if the judge rejects it, the rejection is overridden — all non-echo speech in the hot window is accepted as a follow-up query.
 
-**Mixed echo+speech handling:** When Whisper merges TTS echo and user speech into one chunk (e.g. mic picks up TTS then user speaks), the word-count guard detects the extra content and lets it through to the intent judge. The judge extracts the user's actual query from the mixed transcript. Post-judge echo checks also use the word-count guard and verify the judge's extracted query isn't itself echo before rejecting.
+**Mixed echo+speech handling:** Speaker tails can remain in the acoustic path immediately after playback. The word-count guard lets a longer post-playback chunk reach the intent judge, which extracts the user's actual query. Post-judge echo checks verify that the extracted query is not itself echo before rejecting.
 
-**Early salvage for echo-prefixed follow-ups:** Before the early fuzzy check rejects a chunk as pure echo, the listener calls `cleanup_leading_echo` to strip any TTS-tail prefix. If exact-word cleanup fails (for example because Whisper mis-transcribed the first echo word — *"explores"* → *"laws"* — breaking the word-level comparison), the listener falls back to `salvage_after_echo_tail`, which scans heard-text word boundaries right-to-left looking for the rightmost 5-word window that fuzzy-matches the TTS tail (`partial_ratio >= 85`) and keeps everything after it. This preserves short follow-ups (*"Who made it?"*) that the existing fuzzy-prefix salvage would otherwise truncate by one word because it prefers the shortest suffix. If the surviving remainder has at least `EchoDetector.min_salvage_words` words (default 3), it replaces the transcript segment text and is treated as the user's follow-up. The same minimum-word threshold is shared by the during-TTS and post-TTS merged-chunk salvage paths so the policy is consistent across all three sites.
+**Early salvage for echo-prefixed follow-ups:** Before the early fuzzy check rejects a chunk as pure echo, the listener calls `cleanup_leading_echo` to strip any TTS-tail prefix. If exact-word cleanup fails, the listener falls back to `salvage_after_echo_tail`, which scans heard-text word boundaries right-to-left for the rightmost fuzzy match against the TTS tail. A surviving remainder of at least `EchoDetector.min_salvage_words` words replaces the transcript segment and is treated as the user's follow-up.
 
-**Timestamp-based detection:** `was_speech_during_hot_window(utterance_start_time, utterance_end_time)` compares the utterance's time range against the hot window's time span (from schedule to expiry). This eliminates race conditions between slow Whisper transcription and the expiry timer — if the user started speaking during the window, it counts as hot window input regardless of when the transcript arrives. Also handles **overlapping utterances** where VAD triggered during TTS (mic picking up echo) but the utterance extended into the hot window period.
+**Timestamp-based detection:** `was_speech_during_hot_window(utterance_start_time, utterance_end_time)` compares the utterance's time range against the hot window's recorded span. If the user spoke during the window, it remains hot-window input even when Whisper finishes after the expiry timer.
 
 **`could_be_hot_window` (intent judge context):** Derived from timestamp comparison — returns True if the hot window is active, activation is pending, the utterance started within the window span even after expiry, or the utterance overlaps with the span (started before, ended during).
 
@@ -175,15 +178,7 @@ After TTS finishes, allow wake-word-free follow-up.
 
 ### 3. During TTS
 
-While TTS is playing, echo rejection and stop commands are handled with fast text-based checks (no LLM). This prevents self-loops where the mic picks up TTS output. After TTS finishes, the intent judge takes over.
-
-**Stop detection:**
-- Text-based: Check for "stop", "quiet", "shut up", etc.
-- Intent judge can also detect stop commands
-
-**Echo handling:**
-- Transcripts during TTS are flagged with `is_during_tts=true`
-- Intent judge uses this context to identify echo
+Playback is a closed listening interval. The listener clears its audio queues when TTS starts, the sounddevice callback discards microphone frames while TTS is speaking, and a transcript that crosses the playback boundary is rejected defensively. Jarvis does not support barge-in or spoken interruption. After playback and the `echo_tolerance` delay, the hot window accepts a follow-up without another wake name.
 
 ## Rolling Transcript Buffer
 
@@ -196,7 +191,7 @@ class TranscriptSegment:
     start_time: float      # Unix timestamp when speech started
     end_time: float        # Unix timestamp when speech ended
     energy: float          # Audio energy level
-    is_during_tts: bool    # Whether TTS was playing during this segment
+    is_during_tts: bool    # False for microphone segments accepted by the listener
 
 class TranscriptBuffer:
     max_duration_sec: float = 120.0  # Ambient speech context for intent judging
@@ -323,7 +318,7 @@ If the intent judge later rejects the query (and no hot window override applies)
 | `whisper_vad` | `true` | Runs Whisper's own VAD over the utterance and drops the non-speech parts before decoding. This is the only filter that catches the stock phrase Whisper invents from room noise, because that transcript arrives with a `no_speech_prob` of 0.000, a healthy `avg_logprob` and a confident language identification, so every later filter waves it through. Independent of `vad_enabled`, which gates which audio is collected in the first place. The warmup transcription ignores this setting: filtering its synthetic noise would leave the decoder cold, which is the one thing the warmup exists to prevent. |
 | `whisper_no_speech_threshold` | 0.5 | Hard cutoff on Whisper's `no_speech_prob` field. Any segment at or above this value is discarded **regardless of `avg_logprob`** — Whisper can be confident about a hallucinated phrase even when no real speech is present (e.g. the "MBC 뉴스" hallucination on background noise). This filter runs before the `avg_logprob` check so it catches high-confidence hallucinations that would otherwise survive. Applies to both the faster-whisper and MLX backends. |
 
-Note: Intent judge is always used when available (no enable flag). Falls back to simple wake word detection when Ollama is unavailable.
+Note: The intent judge has no enable flag. It is used for contextual wake-name occurrences and hot-window input, while edge-position wake addresses take the deterministic fast path. It falls back to simple wake-word detection when Ollama is unavailable.
 
 ## State Transitions
 
@@ -336,13 +331,13 @@ stateDiagram-v2
     HotWindow: Listening for Follow-up
     DuringTTS: TTS Playing
 
-    WakeWord --> IntentJudge: Wake detected (text-based)
-    IntentJudge --> DuringTTS: Query dispatched, TTS starts
+    WakeWord --> DuringTTS: Edge wake address dispatched
+    WakeWord --> IntentJudge: Contextual wake detected
+    IntentJudge --> DuringTTS: Query accepted, TTS starts
     IntentJudge --> WakeWord: Not directed / no query
     DuringTTS --> HotWindow: TTS ends + echo_tolerance
     HotWindow --> IntentJudge: Speech detected
     HotWindow --> WakeWord: Timer expires
-    DuringTTS --> WakeWord: Stop command detected
 ```
 
 ## Audio Pipeline
@@ -363,8 +358,10 @@ Add to Transcript Buffer (with timestamps)
 Wake Detection Check:
     └→ Text contains wake word? → Start thinking beep + LISTENING face
     ↓
-If wake detected OR in hot window:
-    → Fuzzy echo check (partial_ratio ≥ 70 = echo → reject + reset timer)
+If wake name is at the first or last token:
+    → Remove wake name and dispatch immediately
+Else if contextual wake detected OR in hot window:
+    → Fuzzy echo check (partial_ratio ≥ 70 = echo → reject)
     → Send buffer + context to Intent Judge
     ↓
 If judge.directed and judge.query:
@@ -396,11 +393,6 @@ If the HuggingFace model cache is corrupted (e.g. from an interrupted download),
 
 When HuggingFace returns HTTP 429 (Too Many Requests), both faster-whisper and MLX Whisper backends retry up to 4 times with exponential backoff (2s, 4s, 8s, 16s). Progress messages inform the user of each retry attempt. If all retries are exhausted, the user is advised to wait and restart.
 
-## Future: Acoustic Echo Cancellation
+## Playback Isolation
 
-Currently, echo is handled at the transcript level via fuzzy text matching and the intent judge. True acoustic echo cancellation (AEC) would:
-- Require the audio output signal (reference)
-- Process in real-time with adaptive filtering
-- Add 10-50ms latency
-
-**Current recommendation:** The transcript-level echo detection (fuzzy matching + intent judge) is sufficient and simpler. Consider AEC only if transcript-level detection proves inadequate in practice.
+The microphone path and speaker path do not overlap. This avoids self-transcription without adding an acoustic echo canceller or a second inference workload during reply playback.

@@ -26,13 +26,13 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 ## 2. Intent Judge
 
 - **File**: [src/jarvis/listening/intent_judge.py](src/jarvis/listening/intent_judge.py) — `IntentJudge.evaluate()`.
-- **Trigger**: on a speech segment *only if* there is an engagement signal (wake word detected, hot-window active, or TTS playing). Pure ambient speech skips it.
+- **Trigger**: on a speech segment only when context is needed: an interior wake-name occurrence or hot-window input. A wake name at the first or last token dispatches deterministically after Whisper, and playback is a closed listening interval, so both paths skip this call. Pure ambient speech also skips it.
 - **Model / gating**: FAST tier — `resolve_model(cfg, Tier.FAST)` via `get_llm_backend(cfg).chat(...)`. Provider-aware default at config load: `gemma4:e2b` (~2B) on the Ollama chat path; on an OpenAI-compatible chat provider an unset `fast_model` resolves to the active `llm_chat_model` (the Ollama pull-name does not exist on the user's server). An explicit `fast_model` in config.json wins on both paths. The backend re-raises `ConnectionError` so the judge can apply a 30s cooldown after the server actively refuses; falls back to text-based wake detection while the cooldown is active.
 - **Inputs**:
   - Rolling transcript buffer (last 120s, with timestamps)
   - Wake-word timestamp (if any), normalised aliases
   - Last TTS text + finish time (echo rejection)
-  - State flags (wake_word_mode, hot_window_mode, during_tts)
+  - State flags (wake_word_mode, hot_window_mode)
 - **System prompt**: `SYSTEM_PROMPT_TEMPLATE` at [intent_judge.py:135](src/jarvis/listening/intent_judge.py:135). Teaches query extraction, echo detection, stop commands, pronoun/topic disambiguation, imperative re-addressing, declaratives to the wake word.
 - **Output**: strict JSON `IntentJudgment{directed, query, stop, confidence, reasoning}` ([intent_judge.py:94](src/jarvis/listening/intent_judge.py:94)). Consumed by the listening state machine which dispatches to the reply engine. When `content` is empty **or truncated mid-JSON** (reasoning models count thinking tokens against the generation cap), the judge also recovers the JSON answer from `reasoning_content` — reasoning models typically end their thinking with the full structured answer.
 - **Limits**: `intent_judge_timeout_sec` (6s). `num_ctx: 8192` (explicit). `max_tokens: 1500` (canonical cap — covers reasoning + answer on reasoning models; OpenAI-compatible backends get it at the payload root; Ollama maps it to `num_predict`).
@@ -40,7 +40,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 ## 3. Memory Enrichment Extractor
 
 - **File**: [src/jarvis/reply/enrichment.py](src/jarvis/reply/enrichment.py) — `extract_search_params_for_memory()` (~line 71).
-- **Trigger**: once per reply, **only when the pre-flight planner (#12) emitted a `searchMemory` directive or returned an empty plan (fail-open)**. Pure reply-only plans skip this entirely — saves one LLM call per greeting / small-talk turn.
+- **Trigger**: once per reply only when the enabled pre-flight planner (#12) emitted a `searchMemory` directive or returned an empty plan through its fail-open path. A disabled planner and a positive reply-only plan both skip this call.
 - **Model / gating**: FAST tier — `resolve_model(cfg, Tier.FAST)`. Factory-dispatched. Small classification task; rides the same small/warm model as the router. Silent empty-dict on failure (early-return when no chat model is configured — no wasted LLM round-trip).
 - **Inputs**: user query (with the planner's `topic` hint appended when present), optional context hint (live-context compact summary) or UTC-now anchor, both carried in the USER message.
 - **System prompt**: inline at [enrichment.py:35-63](src/jarvis/reply/enrichment.py:35). Byte-static — no hint block, no timestamp — so the system prompt is identical across every extractor call and stays cacheable; the per-call hint / UTC anchor rides at the end of the user content.
@@ -97,7 +97,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 - **System prompt**: inline (~lines 260-315). Teaches pick up-to-5 tools or `none`.
 - **Output**: comma-separated tool names or `none`. Capped at `_LLM_MAX_SELECTED` (5). Always-included tools (`stop`, `toolSearchTool`) are unioned in regardless.
 - **Limits**: `llm_timeout_sec`. `max_tokens: 50`. On failure → all tools.
-- **Caching**: `routed_tools` cached in `DialogueMemory._hot_cache` under key `router:{redacted_query}|{strategy}|{builtin-names}|{mcp-names}` for the lifetime of the active conversation. The catalogue signature lets a mid-conversation MCP refresh invalidate the cache; `context_hint` is intentionally excluded so time/location drift inside one conversation doesn't bust it. Cleared by `clear_hot_cache()` on the `stop` signal and on new-conversation entry.
+- **Caching**: `routed_tools` is cached in `DialogueMemory._hot_cache` under key `router:{redacted_query}|{strategy}|{builtin-names}|{mcp-names}` for the lifetime of the active conversation. For the embedding strategy, each static tool-description vector is also held in a bounded process cache keyed by backend endpoint, model, tool name, and summary. Voice startup warms that catalogue; live turns normally embed only the query. The dialogue catalogue signature lets a mid-conversation MCP refresh invalidate the routed selection, while a changed tool summary creates a new static-vector key.
 - **Carry-over guard (engine-side overlay)**: after the cache lookup/write, the engine inspects the previous assistant turn's tool calls. When a previous tool reported `success=False` on its `ToolExecutionResult` (read via the `tool_failed` flag stamped onto each recorded tool result), that tool name is unioned back into the local `routed_tools` for this turn only. Compensates for small routers that misroute follow-ups where the user is supplying missing info (e.g. "I'm in London" routing to `webSearch` after a stalled `getWeather` chain). Successful chains do not carry over — a genuine new short ask after a completed chain keeps the router pick clean. The augmentation never touches the cache; replays of the same query in future turns get the raw router output. See `src/jarvis/reply/reply.spec.md` §6 (Tool allow-list per turn) for the full contract.
 
 ## 8. Tool Searcher (mid-loop escape hatch)
@@ -152,7 +152,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 ## 12. Task-list Planner (pre-flight decomposition, gates the whole turn)
 
 - **File**: [src/jarvis/reply/planner.py](src/jarvis/reply/planner.py) — `plan_query()`.
-- **Trigger**: once per reply, **after the tool router and before memory search**. Skipped when `cfg.planner_enabled = False`, when the query is shorter than `MIN_QUERY_CHARS` (4), when no model / base URL is available, or when the **engine-level fast-path skip** fires (the tool router returned no real tools AND the query is ≤ 8 words — the engine injects `["Reply to the user."]` as the plan without calling the LLM).
+- **Trigger**: once per reply, **after the tool router and before memory search**. Skipped when `cfg.planner_enabled = False`, when the query is shorter than `MIN_QUERY_CHARS` (4), when no model / base URL is available, or when the **engine-level fast-path skip** fires (the tool router returned no real tools AND the query is ≤ 8 words — the engine injects `["Reply to the user."]` as the plan without calling the LLM). A disabled planner also disables speculative long-term recall; an enabled planner that fails still returns an empty plan and takes the fail-open recall path.
 - **Model / gating**: CHAT tier — `resolve_model(cfg, Tier.CHAT)`. Factory-dispatched. The planner tracks the active chat model so upgrading it (via setup wizard, config, or provider switch) automatically upgrades plan quality.
 - **Inputs**: user query, dialogue context, **router-narrowed** tool catalogue (names + one-line descriptions) — not the full 30+ list. When the carry-over guard from #7 fires, the previous turn's failed tool name is unioned into this catalogue before the planner sees it, so the planner can plan a re-call without `toolSearchTool` round-tripping. **No** memory context — the planner decides *whether* memory is needed.
 - **System prompt**: `_PROMPT_TEMPLATE` in `planner.py`. Teaches the `searchMemory topic='...'` directive for prior-conversation lookups, short imperative tool steps, angle-bracket entity placeholders, final synthesis step, same-language output, no numbering.
@@ -190,8 +190,8 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 | # | Context | Per reply | Optional? | Model tier |
 |---|---------|-----------|-----------|------------|
 | 1 | Main chat loop | 1-8 | No | LARGE |
-| 2 | Intent judge | 1 (voice only) | fallback available | SMALL |
-| 3 | Memory enrichment extract | 0-1 | gated by planner | SMALL (FAST tier) |
+| 2 | Intent judge | 0-1 (voice only) | skipped for edge wake addresses | SMALL |
+| 3 | Memory enrichment extract | 0-1 | gated by enabled planner | SMALL (FAST tier) |
 | 4 | Memory digest | 0-N | auto by size | SMALL (uses chat model) |
 | 5 | Tool-result digest | 0-N | auto by size | SMALL (uses chat model) |
 | 6 | Max-turn digest | 0-1 | No | SMALL |
@@ -219,7 +219,7 @@ Driven by `detect_model_size(model_name) → SMALL (≤7.5B) | LARGE (>7.5B)` �
 ## Config keys
 
 - Models: `llm_chat_model` (CHAT tier), `fast_model` (FAST tier). Every context resolves via `resolve_model(cfg, tier)`. Legacy on-disk keys (`ollama_chat_model` as a v1 → v2 alias; `intent_judge_model` / `tool_router_model` / `evaluator_model` / `planner_model` folded into `fast_model` by the v2 → v3 migration) are readable but no longer part of `Settings`.
-- Flags: `memory_digest_enabled`, `tool_result_digest_enabled`, `llm_thinking_enabled`, `intent_judge_thinking_enabled`, `tool_selection_strategy`
+- Flags: `memory_digest_enabled`, `tool_result_digest_enabled`, `llm_thinking_enabled`, `intent_judge_thinking_enabled`, `tool_selection_strategy`, `planner_enabled`
 - Timeouts: `llm_chat_timeout_sec` (45s), `llm_digest_timeout_sec` (8s, shared across #4/#5/#6), `llm_tools_timeout_sec`, `intent_judge_timeout_sec` (6s), `planner_timeout_sec` (3s)
 - Caps: `agentic_max_turns` (8), `tool_search_max_calls` (3), `_LLM_MAX_SELECTED` (5), `_DIGEST_MAX_CHARS` (400), `_TOOL_DIGEST_MAX_CHARS` (600). Per-context `max_tokens` caps listed above (50–1500 depending on task — the intent judge's 1500 covers reasoning + answer on reasoning models; rewrite tasks scale with input length).
 
@@ -239,11 +239,13 @@ Anything that reorders messages between calls, injects a changing value at the h
 
 ```
 user input
-  └─▶ [2] Intent Judge            (voice only, SMALL)
-        └─▶ [7] Tool router (narrows catalogue for the planner)
+  ├─▶ edge wake address           (voice only, deterministic)
+  └─▶ [2] Intent Judge            (contextual voice only, SMALL)
+        └─▶ [7] Tool router (static vectors warmed; narrows catalogue)
               └─▶ [12] Planner (gates memory; advisory for the router allow-list)
                     ├─ plan requests searchMemory  → [3] Enrichment extract → [4] Memory digest (optional)
                     ├─ plan empty (fail-open)      → [3] Enrichment extract → [4] Memory digest
+                    ├─ planner disabled            → skip #3 and #4
                     └─ plan reply-only             → skip #3 and #4 entirely
                     └─▶ AGENTIC LOOP  (≤ agentic_max_turns)
                                       ├─ [13] Plan step resolver (SMALL, direct-exec)
@@ -261,26 +263,27 @@ user input
 
 1. Batch multi-chunk memory digests (#4) into a single call with explicit markers.
 2. Parallelise multiple tool-result digests (#5) when several results land at once.
-3. Pre-warm the intent-judge model before TTS finishes.
+3. Keep the intent-judge model resident throughout active voice sessions.
 4. Cache tool-router (#7) output by query hash.
 5. Give each digest its own timeout budget rather than sharing `llm_digest_timeout_sec` (today a slow memory digest can starve the max-turn digest).
 6. Consider single-model deployments: the FAST tier prefers a small dedicated model while the planner tracks `llm_chat_model`; loading a second model hurts cold-start latency on small hardware. (On an OpenAI-compatible chat provider an unset `fast_model` already resolves to the chat model, so every context rides the one served model.)
 7. Narrow `llm_thinking_enabled` to router/planner only, not every context.
-8. `intent_judge_timeout_sec` was already reduced from 15s → 6s. Consider racing it against text-based wake detection to avoid blocking the audio loop entirely.
+8. Keep contextual intent judging off the deterministic edge-wake path.
 
-## 21. Model warm-up probe (OpenAI-compatible path)
+## 21. Model and reply-prefix warm-up
 
-- **Source**: `src/jarvis/llm/openai_compatible.py` — `warm_up()` (Phase 2)
-- **Trigger**: once per model (chat, judge, router) at listener startup, run in parallel daemon threads; the embed model takes a separate path via `backend.embed()` (see Notes)
-- **Model / gating**: the model being warmed, via direct `requests.post` (not via `chat()`, no response parsing). The two-phase probe (GET /models + POST /chat/completions) is specific to the `openai_compatible` provider; on the Ollama path the warmup uses `POST /api/generate` instead.
-- **What is sent**: a fixed `{"role": "user", "content": "ping"}` message, `max_tokens=1`, `stream=False`
+- **Source**: provider `warm_up()` plus `warm_up_reply_prefix()` in `src/jarvis/reply/engine.py`.
+- **Trigger**: once per configured model at listener startup in parallel daemon threads. After the chat-model reachability/weight probe succeeds, the chat thread also prefills the main reply prefix. The embedding model takes the static-catalogue path described below.
+- **Model / gating**: the configured chat model through `get_llm_backend(cfg).chat`. The prefill runs only after the provider warmup succeeds. Judge/router models use only their provider warmup unless they are the chat model.
+- **What is sent**: `build_reply_prompt_prefix(cfg)` as the system message and `Reply with OK.` as the user message. The prefix contains the persona, model-size prompt components, and configured voice-language constraint. Query-dependent profile, memory, plan, time, and tool descriptions follow this prefix only on live turns.
+- **Prefix contract**: `_build_initial_system_message()` begins with the exact string returned by `build_reply_prompt_prefix()`. This is the cache boundary covered by `tests/test_response_latency.py`.
 - **Gating**: the warmup always fires when a model is configured (regardless of provider). What differs between providers is the *probe behaviour*: the two-phase chat-completion probe described here is specific to `openai_compatible`; the Ollama warmup sends `POST /api/generate` with `keep_alive`.
 - **Output**: `True`/`False` — consumed by the listener startup dashboard (shown as `⚠️ warmup failed — will load on first use`)
-- **Limits**: preceded by `GET /models` (Phase 1, capped at 25 % of budget, max 5 s); Phase 2 timeout is `max(0.1, timeout_sec - list_to)` with caller default 60 s. The embed warmup path does not use this two-phase split — it passes the full timeout directly to `backend.embed()`.
+- **Limits**: provider warmup uses the shared 60 s startup budget. Reply-prefix prefill uses the same remaining per-thread timeout, `max_tokens: 1`, `keep_alive: 30m`, no tools, and thinking disabled.
 - **Data flow**: `warm_up()` → raw `requests.post` → `resp.ok` (any 2xx) → `bool` returned to `_start_llm_warmup()` → listener startup print
-- **Notes**: Best-effort and non-blocking. A failed warmup never prevents the listener from starting. Mirrors the Ollama warmup path (`POST /api/generate` in `src/jarvis/llm/ollama.py:335`), which is not tracked as a separate context since it sends no real inference (empty prompt, `num_predict=0`).
+- **Notes**: Best-effort and non-blocking. A failed warmup never prevents the listener from starting. Ollama uses `POST /api/generate` for residency before the cache-prefill chat request.
 
-    The **embed warmup** is a separate path: `listener.py:_start_llm_warmup` calls `backend.embed("ping", embed_model)` instead of `backend.warm_up()`. This is because embedding-only models (e.g. nomic-embed-text, modernbert) are not served on the `/chat/completions` endpoint. The embed probe uses the `/embeddings` endpoint with a single-token input and has no Phase 1 reachability check.
+    The **embed warmup** is a separate path: `listener.py:_start_llm_warmup` embeds every static builtin and cached MCP tool summary through the embedding backend. Embedding-only models are not served on chat endpoints, and the resulting vectors are the same cached values consumed by live embedding selection.
 
 ---
 

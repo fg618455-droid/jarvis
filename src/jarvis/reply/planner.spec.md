@@ -122,16 +122,16 @@ The planner prompt instructs the model to emit:
   and markdown fences are stripped.
 - Overlong steps (>200 chars) are truncated with an ellipsis.
 - The list is capped at `MAX_STEPS`.
-- The planner no longer filters out 1-step plans. A single
+- The planner preserves 1-step plans. A single
   `["Reply to the user."]` plan is the planner's *positive* decision
   that no memory or tools are needed — the engine uses that to skip
-  the memory extractor, the tool router, and the direct-exec path
-  entirely. A single-step tool plan like `["getWeather query='tomorrow'"]`
+  the memory extractor and the direct-exec path. The router has already
+  completed and its selection remains authoritative. A single-step tool plan like `["getWeather query='tomorrow'"]`
   is also preserved: `tool_steps_of` returns it as a tool step, the
   engine injects the ACTION PLAN block, and direct-exec runs the tool
   without waiting for the chat model. Only an **empty** list means
-  "planner failed / disabled; fall open to legacy safe defaults"
-  (run memory enrichment + tool router). The two states must stay
+  "planner failed; fall open to safe defaults" (run memory enrichment
+  and retain the router selection). The two states must stay
   distinguishable.
 
 ### Engine integration
@@ -218,16 +218,21 @@ The engine consumes the plan in two phases.
 
 - Timeout, empty response, or exception in the planner LLM call →
   return `[]`.
+- When the planner feature is enabled, `[]` runs speculative memory
+  enrichment so an LLM failure cannot silently omit relevant recall.
+- When `planner_enabled` is false, the engine does not call the planner
+  and does not interpret the absence of a plan as a failure. It skips
+  speculative long-term recall, while retaining recent dialogue, the
+  warm profile, and router-selected tools.
 - Invalid JSON in the step resolver → return `None` and let the chat
   model handle the turn normally.
-- No plan never worsens the baseline; the engine behaves exactly as it
-  did pre-planner.
+- A planner failure retains the fail-open recall path.
 
 ## Configuration
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `planner_enabled` | `True` | Feature gate. |
+| `planner_enabled` | `True` | Enables planning and planner-gated long-term recall. When false, both are skipped. |
 | `planner_timeout_sec` | `3.0` | Timeout for plan and step-resolver LLM calls. Planner fails open on timeout — an empty list is returned and the engine behaves as if the planner never ran. |
 
 ## Non-goals

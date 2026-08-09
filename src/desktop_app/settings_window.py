@@ -290,20 +290,7 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("max_utterance_ms", "Max Utterance",
       "Maximum single utterance duration",
       "vad", "int", min_val=1000, max_val=60000, step=1000, suffix="ms")
-    f("tts_max_utterance_ms", "Max Utterance (During TTS)",
-      "Shorter timeout during TTS for quick stop detection",
-      "vad", "int", min_val=500, max_val=10000, step=500, suffix="ms")
-
     # --- Timing & Windows ---
-    f("voice_block_seconds", "Block Duration",
-      "Audio block size for processing",
-      "timing", "float", min_val=0.5, max_val=10.0, step=0.5, suffix="s")
-    f("voice_collect_seconds", "Collect Window",
-      "Time to collect speech after wake word",
-      "timing", "float", min_val=1.0, max_val=30.0, step=0.5, suffix="s")
-    f("voice_max_collect_seconds", "Max Collect Window",
-      "Maximum time to collect continuous speech",
-      "timing", "float", min_val=10.0, max_val=600.0, step=10, suffix="s")
     f("hot_window_enabled", "Hot Window",
       "Enable follow-up window after responses",
       "timing", "bool")
@@ -404,9 +391,6 @@ def _build_field_metadata() -> List[FieldMeta]:
       "features", "list")
 
     # --- Advanced ---
-    f("echo_energy_threshold", "Echo Energy Threshold",
-      "Threshold for echo detection",
-      "advanced", "float", min_val=0.0, max_val=10.0, step=0.1)
     f("echo_tolerance", "Echo Tolerance",
       "Time tolerance for echo detection",
       "advanced", "float", min_val=0.0, max_val=2.0, step=0.05, suffix="s")
