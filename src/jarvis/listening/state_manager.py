@@ -44,6 +44,9 @@ class StateManager:
         self._timer_lock = threading.Lock()
         self._voice_debug: bool = False  # Cache for use in timer callbacks
 
+        # Conversation mode: the follow-up window held open indefinitely
+        self._conversation_active = False
+
         # Stop flag for background threads
         self._should_stop = False
 
@@ -55,6 +58,68 @@ class StateManager:
     def is_hot_window_active(self) -> bool:
         """Check if hot window is currently active."""
         return self.get_state() == ListeningState.HOT_WINDOW
+
+    @property
+    def is_conversation_active(self) -> bool:
+        """Whether a wake-word-free conversation is running."""
+        with self._state_lock:
+            return self._conversation_active
+
+    def start_conversation(self) -> None:
+        """Hold the follow-up window open until the conversation is ended.
+
+        The follow-up window already accepts speech without a wake word, so
+        a conversation is that window with no expiry: every utterance counts
+        as addressed to Jarvis until the user says otherwise.
+        """
+        self._cancel_hot_window_expiry_timer()
+        self.cancel_hot_window_activation()
+
+        with self._state_lock:
+            already_running = self._conversation_active
+            self._conversation_active = True
+            self._state = ListeningState.HOT_WINDOW
+            self._hot_window_start_time = time.time()
+            self._hot_window_span_start = 0.0
+            self._hot_window_span_end = 0.0
+
+        if already_running:
+            return
+
+        self._set_face_state("LISTENING", "conversation started")
+        debug_log("conversation mode started", "state")
+        try:
+            print("💬 Conversation mode on — no wake word needed", flush=True)
+        except Exception:
+            pass
+
+    def end_conversation(self) -> None:
+        """Return to wake-word listening."""
+        with self._state_lock:
+            if not self._conversation_active:
+                return
+            self._conversation_active = False
+            self._state = ListeningState.WAKE_WORD
+            self._hot_window_span_end = time.time()
+
+        self._cancel_hot_window_expiry_timer()
+        self._set_face_state("IDLE", "conversation ended")
+        debug_log("conversation mode ended", "state")
+        try:
+            print("💤 Conversation mode off — wake word needed again\n", flush=True)
+        except Exception:
+            pass
+
+    def _set_face_state(self, state_name: str, reason: str) -> None:
+        """Move the desktop face to a state, if a desktop app is running."""
+        try:
+            from desktop_app.face_widget import JarvisState, get_jarvis_state
+            get_jarvis_state().set_state(getattr(JarvisState, state_name))
+            debug_log(f"face state set to {state_name} ({reason})", "state")
+        except ImportError:
+            pass
+        except Exception as e:
+            debug_log(f"failed to set face state to {state_name}: {e}", "state")
 
     def was_speech_during_hot_window(self, utterance_start_time: float,
                                      utterance_end_time: float = 0.0) -> bool:
@@ -79,6 +144,10 @@ class StateManager:
             - Speech started before the span but ended during it (overlap)
         """
         with self._state_lock:
+            # A running conversation accepts every utterance; there is no
+            # window to fall outside of.
+            if self._conversation_active:
+                return True
             is_active = self._state == ListeningState.HOT_WINDOW
             span_start = self._hot_window_span_start
             span_end = self._hot_window_span_end
@@ -171,6 +240,8 @@ class StateManager:
 
         def _expire():
             with self._state_lock:
+                if self._conversation_active:
+                    return
                 if self._state != ListeningState.HOT_WINDOW:
                     return
                 self._state = ListeningState.WAKE_WORD
@@ -280,6 +351,8 @@ class StateManager:
         Note: With timer-based expiry, this is now mainly a fallback check.
         The timer should handle expiry automatically.
         """
+        if self.is_conversation_active:
+            return False
         if not self.is_hot_window_active():
             return False
         current_time = time.time()
@@ -336,6 +409,10 @@ class StateManager:
         Args:
             voice_debug: Whether to enable debug logging
         """
+        if self.is_conversation_active:
+            debug_log("hot window expiry ignored — conversation mode is on", "state")
+            return
+
         # Cancel expiry timer since we're manually expiring
         self._cancel_hot_window_expiry_timer()
 
@@ -373,3 +450,4 @@ class StateManager:
 
         with self._state_lock:
             self._state = ListeningState.WAKE_WORD
+            self._conversation_active = False
