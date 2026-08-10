@@ -125,6 +125,13 @@ class Settings:
     telegram_bot_token: str
     telegram_chat_id: str
 
+    # Control centre (local web interface served by the daemon)
+    webui_enabled: bool
+    webui_port: int
+    webui_bind_host: str
+    webui_token: str
+    webui_open_browser: bool
+
     # Screen Capture
     allowlist_bundles: list[str]
 
@@ -533,6 +540,13 @@ def get_default_config() -> Dict[str, Any]:
         "telegram_bot_token": "",
         "telegram_chat_id": "",
 
+        # Control centre
+        "webui_enabled": True,
+        "webui_port": 5055,
+        "webui_bind_host": "127.0.0.1",
+        "webui_token": "",
+        "webui_open_browser": False,
+
         # Screen Capture
         "allowlist_bundles": [
             "com.apple.Terminal",
@@ -930,6 +944,21 @@ def load_settings() -> Settings:
         or ""
     ).strip()
 
+    webui_enabled = bool(merged.get("webui_enabled", True))
+    # A port below 1024 needs rights the daemon does not run with, and a
+    # hand-edited config is the usual source of an unusable value. Falling
+    # back to the default keeps the control centre reachable rather than
+    # failing the whole daemon start.
+    try:
+        webui_port = int(merged.get("webui_port", 5055))
+    except (TypeError, ValueError):
+        webui_port = 5055
+    if not 1024 <= webui_port <= 65535:
+        webui_port = 5055
+    webui_bind_host = str(merged.get("webui_bind_host", "") or "").strip() or "127.0.0.1"
+    webui_token = str(merged.get("webui_token", "") or "").strip()
+    webui_open_browser = bool(merged.get("webui_open_browser", False))
+
     return Settings(
         # Database & Storage
         db_path=db_path,
@@ -964,6 +993,13 @@ def load_settings() -> Settings:
         security_confirmation_timeout_sec=security_confirmation_timeout_sec,
         telegram_bot_token=telegram_bot_token,
         telegram_chat_id=telegram_chat_id,
+
+        # Control centre
+        webui_enabled=webui_enabled,
+        webui_port=webui_port,
+        webui_bind_host=webui_bind_host,
+        webui_token=webui_token,
+        webui_open_browser=webui_open_browser,
 
         # Screen Capture
         allowlist_bundles=allowlist_bundles,

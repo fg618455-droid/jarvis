@@ -323,6 +323,12 @@ def main(smoke_test: bool = False) -> None:
     print(f"🧠 Using chat model: {cfg.llm_chat_model}", flush=True)
     print(f"🎤 Using whisper model: {cfg.whisper_model}", flush=True)
 
+    # Control centre: started early so the interface is already reachable
+    # while Whisper and the models are still loading.
+    from .webui import start_from_settings as _start_webui
+
+    webui_server = _start_webui(cfg)
+
     # MCP preflight: discover and cache external MCP tools
     mcps = getattr(cfg, "mcps", {}) or {}
     if mcps:
@@ -593,6 +599,9 @@ def main(smoke_test: bool = False) -> None:
                 pass
             _warm_profile_graph_listener = None
 
+        if webui_server is not None:
+            webui_server.stop()
+
         # Reset module-level globals so in-process re-entry is clean.
         _global_dialogue_memory = None
         _global_tts_engine = None
@@ -729,6 +738,9 @@ def main(smoke_test: bool = False) -> None:
             except Exception:
                 pass
             _warm_profile_graph_listener = None
+
+        if webui_server is not None:
+            webui_server.stop()
 
         debug_log("daemon stopped", "jarvis")
         print("👋 Daemon stopped", flush=True)

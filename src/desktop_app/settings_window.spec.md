@@ -8,7 +8,7 @@ The Settings Window provides a graphical interface for editing `config.json` wit
 
 ## Design Principles
 
-1. **Metadata-driven**: All fields are defined in a `FIELD_METADATA` registry. Adding a new config parameter to the settings UI requires only adding a `FieldMeta` entry — no widget code changes.
+1. **Metadata-driven**: All fields are defined in the `FIELD_METADATA` registry in `src/jarvis/config_metadata.py`, shared with the control centre's settings view. Adding a new config parameter to both settings interfaces requires only adding a `FieldMeta` entry — no widget code changes.
 2. **Minimal config files**: Only non-default values are written to `config.json`. Removing a field from the config reverts it to the default.
 3. **Preserves unknown keys**: Keys not managed by the UI (e.g. `mcps`, `_config_version`, future additions) are preserved when saving.
 4. **Theme-consistent**: Uses the shared Jarvis theme from `themes.py`.
@@ -16,7 +16,7 @@ The Settings Window provides a graphical interface for editing `config.json` wit
 ## Architecture
 
 ```
-FieldMeta (dataclass)
+FieldMeta (dataclass, src/jarvis/config_metadata.py)
   ├── key: str           # config.json key name
   ├── label: str         # Human-readable label
   ├── description: str   # Tooltip text
@@ -60,10 +60,12 @@ The settings window uses a sidebar navigation pattern: a fixed-width `QListWidge
 9. Voice Activity Detection
 10. Timing & Windows
 11. Memory & Dialogue
-12. Location
-13. Features (includes Dictation Mode toggle and hotkey)
-14. MCP Servers
-15. Advanced
+12. Security
+13. Location
+14. Features (includes Dictation Mode toggle and hotkey)
+15. Control Centre
+16. MCP Servers
+17. Advanced
 
 ### LLM Provider
 
