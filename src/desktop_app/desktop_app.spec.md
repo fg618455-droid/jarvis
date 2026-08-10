@@ -86,7 +86,7 @@ The central controller that manages:
 
 - **System tray icon** with context menu
 - **Daemon lifecycle** (start/stop the Jarvis voice assistant)
-- **Window management** (log viewer, memory viewer, face window)
+- **Window management** (log viewer, control centre, face window)
 - **Update checking** on startup and on-demand
 
 ### Windows
@@ -277,7 +277,7 @@ sequenceDiagram
 ### Fallbacks
 
 - **No Ollama**: Shows setup wizard or auto-starts
-- **No WebEngine**: Opens memory viewer in system browser
+- **No WebEngine**: Opens the control centre in the system browser
 - **Model not supported**: Warning dialog with option to change
 - **Update failed**: Error dialog with details
 
@@ -288,7 +288,7 @@ sequenceDiagram
 | Tray icon | Native menu bar | System tray | System tray |
 | Ollama start | `open -a Ollama` | `ollama serve` (hidden) | `ollama serve` |
 | Crash logs | `~/Library/Logs/Jarvis` | `%LOCALAPPDATA%\Jarvis` | `~/.jarvis` |
-| Memory viewer | System browser* | Embedded WebEngine | Embedded WebEngine |
+| Control centre | System browser* | Embedded WebEngine | Embedded WebEngine |
 
 *macOS bundled apps use system browser due to QtWebEngine sandbox issues.
 

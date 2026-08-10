@@ -50,7 +50,7 @@ _lock_file_handle = None
 # at byte 0 would make the PID unreadable by a second instance.
 _LOCK_OFFSET = 1024
 
-# Try to import WebEngine (optional dependency for embedded memory viewer)
+# Try to import WebEngine (optional dependency for the embedded control centre)
 try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
     HAS_WEBENGINE = True
@@ -1100,7 +1100,7 @@ class ControlCentreWindow(QMainWindow):
                     "Check the console output for details."
                 )
         except Exception as e:
-            debug_log(f"error in memory viewer showEvent: {e}", "desktop")
+            debug_log(f"error in control centre showEvent: {e}", "desktop")
             self._show_error_page(f"Error: {e}")
 
     def closeEvent(self, event) -> None:
@@ -1135,7 +1135,7 @@ class JarvisSystemTray:
         self.log_signals.new_log.connect(self.log_viewer.append_log)
         self.log_signals.security_request.connect(self._handle_security_request)
 
-        # Create memory viewer window (hidden by default)
+        # Create control centre window (hidden by default)
         self.control_centre = ControlCentreWindow()
 
         # Create face window (hidden by default)
@@ -1242,7 +1242,7 @@ class JarvisSystemTray:
         self.logs_action.triggered.connect(self.show_log_viewer)
         self.menu.addAction(self.logs_action)
 
-        # Memory viewer action
+        # Control centre action
         self.memory_action = QAction("🖥️ Control Centre")
         self.memory_action.triggered.connect(self.show_control_centre)
         self.menu.addAction(self.memory_action)
