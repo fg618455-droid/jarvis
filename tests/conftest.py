@@ -54,6 +54,11 @@ class MockConfig:
     # ``__post_init__`` — same shape ``load_settings()`` produces.
     llm_chat_model: str = ""
     whisper_model: str = "small"
+    whisper_device: str = "cpu"
+    voice_device: Optional[str] = None
+    sample_rate: int = 16000
+    wake_word: str = "jarvis"
+    webui_enabled: bool = False
     embedding_provider: str = ""
     embedding_base_url: str = ""
     embedding_api_key: str = ""
