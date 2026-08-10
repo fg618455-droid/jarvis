@@ -321,6 +321,9 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("telegram_chat_id", "Telegram Chat ID",
       "Only decisions from this chat are accepted; leave empty to disable Telegram",
       "security", "str", nullable=True)
+    f("telegram_api_base_url", "Telegram API Host",
+      "Bot API server to call; point it at a self-hosted instance to keep confirmations local",
+      "security", "str")
 
     # --- Location ---
     f("location_enabled", "Enable Location",

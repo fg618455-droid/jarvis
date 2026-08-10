@@ -69,6 +69,7 @@ class SecurityGate:
                     cfg.telegram_bot_token,
                     cfg.telegram_chat_id,
                     timeout_seconds=timeout,
+                    api_base_url=cfg.telegram_api_base_url,
                 ),
                 "voice": VoiceConsoleConfirm(timeout_seconds=timeout),
             }
@@ -88,6 +89,7 @@ class SecurityGate:
             cfg.security_confirmation_timeout_sec,
             bool(cfg.telegram_bot_token),
             cfg.telegram_chat_id,
+            cfg.telegram_api_base_url,
         )
 
     @classmethod

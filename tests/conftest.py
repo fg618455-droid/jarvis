@@ -106,6 +106,7 @@ class MockConfig:
     security_confirmation_timeout_sec: int = 60
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    telegram_api_base_url: str = "https://api.telegram.org"
 
     def __post_init__(self) -> None:
         # Mirror ``load_settings``: when the provider-aware fields are

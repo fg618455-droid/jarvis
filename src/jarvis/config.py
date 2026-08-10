@@ -49,6 +49,10 @@ DEFAULT_CHAT_MODEL = "gemma4:e2b"
 # this pull-name only exists on Ollama.
 DEFAULT_FAST_MODEL = "gemma4:e2b"
 
+# Host serving the Telegram Bot API. The server is published as software, so
+# a local instance keeps confirmation traffic off a third party's machine.
+DEFAULT_TELEGRAM_API_BASE_URL = "https://api.telegram.org"
+
 
 def get_supported_model_ids() -> set[str]:
     """Get set of supported model IDs for quick lookup."""
@@ -124,6 +128,7 @@ class Settings:
     security_confirmation_timeout_sec: int
     telegram_bot_token: str
     telegram_chat_id: str
+    telegram_api_base_url: str
 
     # Control centre (local web interface served by the daemon)
     webui_enabled: bool
@@ -539,6 +544,7 @@ def get_default_config() -> Dict[str, Any]:
         "security_confirmation_timeout_sec": 60,
         "telegram_bot_token": "",
         "telegram_chat_id": "",
+        "telegram_api_base_url": DEFAULT_TELEGRAM_API_BASE_URL,
 
         # Control centre
         "webui_enabled": True,
@@ -943,6 +949,10 @@ def load_settings() -> Settings:
         or os.environ.get("TELEGRAM_CHAT_ID")
         or ""
     ).strip()
+    telegram_api_base_url = str(
+        merged.get("telegram_api_base_url", "")
+        or DEFAULT_TELEGRAM_API_BASE_URL
+    ).strip().rstrip("/")
 
     webui_enabled = bool(merged.get("webui_enabled", True))
     # A port below 1024 needs rights the daemon does not run with, and a
@@ -993,6 +1003,7 @@ def load_settings() -> Settings:
         security_confirmation_timeout_sec=security_confirmation_timeout_sec,
         telegram_bot_token=telegram_bot_token,
         telegram_chat_id=telegram_chat_id,
+        telegram_api_base_url=telegram_api_base_url,
 
         # Control centre
         webui_enabled=webui_enabled,
