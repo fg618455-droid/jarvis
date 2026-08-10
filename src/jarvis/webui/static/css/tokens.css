@@ -1,0 +1,59 @@
+/* Design tokens.
+
+   A measuring instrument, not a film prop. Colour is the exception rather
+   than the rule: one accent, used for what is active, focused, selected,
+   or newly learned. Everything else is graphite and a 1px line.
+
+   Fonts are the system stack. Nothing here reaches the network. */
+
+:root {
+  --bg: #0d0e11;
+  --surface: #14161b;
+  --surface-2: #191c22;
+  --surface-3: #1e222a;
+  --line: #23262e;
+  --line-soft: #1b1e24;
+
+  --fg: #e8eaed;
+  --fg-dim: #9aa1ac;
+  --fg-mute: #6b7280;
+
+  --accent: #7dd3fc;
+  --accent-soft: rgba(125, 211, 252, 0.12);
+  --accent-line: rgba(125, 211, 252, 0.35);
+
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --bad: #f87171;
+
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "Consolas", "SF Mono", monospace;
+
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+
+  --r: 10px;
+  --r-sm: 6px;
+
+  --sidebar: 240px;
+  --header: 56px;
+  --content-max: 1200px;
+
+  --t-fast: 120ms ease-out;
+  --t-view: 200ms ease-out;
+
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

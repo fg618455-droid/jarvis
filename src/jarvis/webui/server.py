@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 
 from jarvis.debug import debug_log
 from jarvis.security.web_confirm import get_web_confirmations
@@ -140,6 +140,10 @@ def create_app(cfg: WebUIConfig) -> Flask:
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         return response
+
+    @app.route("/")
+    def _index():  # noqa: ANN202 - Flask hook
+        return send_from_directory(STATIC_DIR, "index.html")
 
     @app.route("/api/health")
     def _health():  # noqa: ANN202 - Flask hook
