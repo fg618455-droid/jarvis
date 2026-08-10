@@ -29,6 +29,7 @@ if sys.platform == 'win32' and not getattr(sys, 'frozen', False):
     except Exception:
         pass
 
+from pathlib import Path
 from typing import Optional
 from faster_whisper import WhisperModel
 
@@ -323,6 +324,28 @@ def main(smoke_test: bool = False) -> None:
     print(f"🧠 Using chat model: {cfg.llm_chat_model}", flush=True)
     print(f"🎤 Using whisper model: {cfg.whisper_model}", flush=True)
 
+    # Live state and per-turn timings, described before anything can report.
+    from .runtime import Phase, get_recorder, get_runtime_state, set_phase
+
+    runtime_state = get_runtime_state()
+    runtime_state.reset()
+    runtime_state.describe_models(
+        chat=cfg.llm_chat_model,
+        fast=getattr(cfg, "fast_model", "") or cfg.llm_chat_model,
+        embedding=cfg.embedding_model,
+        whisper=cfg.whisper_model,
+        whisper_device=cfg.whisper_device,
+        tts_engine=cfg.tts_engine,
+        tts_voice=getattr(cfg, "tts_piper_model_path", None) or cfg.tts_voice,
+    )
+    runtime_state.describe_audio(
+        device=cfg.voice_device,
+        sample_rate=cfg.sample_rate,
+        wake_word=cfg.wake_word,
+        language=getattr(cfg, "whisper_language", "") or "auto",
+    )
+    get_recorder().use_journal(Path(cfg.db_path).parent / "turns.jsonl")
+
     # Control centre: started early so the interface is already reachable
     # while Whisper and the models are still loading.
     from .webui import start_from_settings as _start_webui
@@ -495,6 +518,7 @@ def main(smoke_test: bool = False) -> None:
         voice_thread.request_security_confirmation if tts.enabled else None
     )
     print("✓ Voice listener thread started (loading Whisper model in background)", flush=True)
+    set_phase(Phase.IDLE)
 
     # Initialize dictation engine (hold-to-dictate)
     dictation = None

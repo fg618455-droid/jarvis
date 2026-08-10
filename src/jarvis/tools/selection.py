@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, TYPE_CHECKING
 
 from ..debug import debug_log
 from ..llm import LLMBackend
+from ..runtime import stage as telemetry_stage
 
 if TYPE_CHECKING:
     from .base import Tool
@@ -510,24 +511,25 @@ def select_tools(
     Returns:
         List of tool name strings.
     """
-    if strategy == ToolSelectionStrategy.KEYWORD:
-        return _select_keyword(query, builtin_tools, mcp_tools)
-    elif strategy == ToolSelectionStrategy.EMBEDDING:
-        if embedding_backend is None:
-            debug_log("Embedding tool selection: no backend supplied, falling back to all tools", "planning")
-            return _all_tool_names(builtin_tools, mcp_tools)
-        return _select_embedding(
-            query, builtin_tools, mcp_tools,
-            embedding_backend, embed_model, embed_timeout_sec,
-        )
-    elif strategy == ToolSelectionStrategy.LLM:
-        if llm_backend is None:
-            debug_log("LLM tool selection: no backend supplied, falling back to keyword strategy", "planning")
+    with telemetry_stage("tool_routing"):
+        if strategy == ToolSelectionStrategy.KEYWORD:
             return _select_keyword(query, builtin_tools, mcp_tools)
-        return _select_llm(
-            query, builtin_tools, mcp_tools,
-            llm_backend, llm_model, llm_timeout_sec,
-            context_hint=context_hint,
-        )
-    else:
-        return _all_tool_names(builtin_tools, mcp_tools)
+        elif strategy == ToolSelectionStrategy.EMBEDDING:
+            if embedding_backend is None:
+                debug_log("Embedding tool selection: no backend supplied, falling back to all tools", "planning")
+                return _all_tool_names(builtin_tools, mcp_tools)
+            return _select_embedding(
+                query, builtin_tools, mcp_tools,
+                embedding_backend, embed_model, embed_timeout_sec,
+            )
+        elif strategy == ToolSelectionStrategy.LLM:
+            if llm_backend is None:
+                debug_log("LLM tool selection: no backend supplied, falling back to keyword strategy", "planning")
+                return _select_keyword(query, builtin_tools, mcp_tools)
+            return _select_llm(
+                query, builtin_tools, mcp_tools,
+                llm_backend, llm_model, llm_timeout_sec,
+                context_hint=context_hint,
+            )
+        else:
+            return _all_tool_names(builtin_tools, mcp_tools)

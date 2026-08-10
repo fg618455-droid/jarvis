@@ -33,6 +33,7 @@ from ..config import resolve_transcription_language
 from ..debug import debug_log
 from ..llm import get_embedding_backend
 from ..reply.engine import warm_up_reply_prefix
+from ..runtime import Phase, get_recorder, get_runtime_state, set_phase, set_phase_if
 from ..utils.location import is_location_available
 
 if TYPE_CHECKING:
@@ -1152,6 +1153,16 @@ class VoiceListener(threading.Thread):
         # Clear audio buffers to prevent stale audio from next query
         self._clear_audio_buffers()
 
+        recorder = get_recorder()
+        trace = recorder.current()
+        if trace is None:
+            # Reached from a path that did not open a turn (a query assembled
+            # across several utterances). Time it from here rather than not
+            # at all.
+            trace = recorder.begin(source="voice")
+        trace.transcript = trace.transcript or query
+        set_phase(Phase.THINKING)
+
         # Set face state to THINKING
         try:
             from desktop_app.face_widget import get_jarvis_state, JarvisState
@@ -1174,6 +1185,8 @@ class VoiceListener(threading.Thread):
             # Log the error visibly - this should never happen silently
             print(f"\n  ❌ Reply engine error: {e}", flush=True)
             debug_log(f"reply engine exception: {e}", "voice")
+            get_runtime_state().record_error(f"reply engine failed: {e}")
+            recorder.finish(error=str(e))
             self._stop_thinking_tune()
 
             # Provide user feedback via TTS
@@ -1198,16 +1211,32 @@ class VoiceListener(threading.Thread):
                 if self.echo_detector:
                     self.echo_detector._tts_exact_duration = duration
 
+            # The turn ends when sound starts, not when the reply text exists:
+            # synthesis is part of the wait. Runs on the TTS worker thread,
+            # so it holds the trace rather than looking it up.
+            speech_begun = time.perf_counter()
+
+            def _on_audio_start():
+                trace.mark(
+                    "tts_synth",
+                    (time.perf_counter() - speech_begun) * 1000.0,
+                )
+                set_phase(Phase.SPEAKING)
+                recorder.finish(reply=reply, trace=trace)
+
             # Track TTS start for echo detection with actual text
             self.track_tts_start(reply)
             debug_log(f"starting TTS for reply ({len(reply)} chars)", "voice")
 
             self.tts.speak(reply, completion_callback=_on_tts_complete,
-                          duration_callback=_on_duration_known)
+                          duration_callback=_on_duration_known,
+                          audio_start_callback=_on_audio_start)
         else:
             debug_log(f"no TTS output: reply={bool(reply)}, tts={bool(self.tts)}, enabled={getattr(self.tts, 'enabled', False) if self.tts else False}", "voice")
             # Stop thinking tune if no TTS response
             self._stop_thinking_tune()
+            recorder.finish(reply=reply)
+            set_phase_if(Phase.THINKING, Phase.IDLE)
 
     def request_security_confirmation(
         self,
@@ -2374,6 +2403,7 @@ class VoiceListener(threading.Thread):
                     if not self.is_speech_active:
                         if is_voice:
                             self.is_speech_active = True
+                            set_phase_if(Phase.IDLE, Phase.CAPTURING)
 
                             # Backdate start time by pre-roll duration — the
                             # actual speech onset was before VAD triggered.
@@ -2424,7 +2454,20 @@ class VoiceListener(threading.Thread):
                                 break
 
     def _finalize_utterance(self) -> None:
-        """Process completed utterance through speech recognition."""
+        """Process completed utterance through speech recognition.
+
+        Wraps the work so that an utterance which never became a reply, and
+        the phase it was measured in, are both cleared on the way out.
+        """
+        try:
+            self._transcribe_and_route()
+        finally:
+            get_recorder().abandon()
+            set_phase_if(Phase.CAPTURING, Phase.IDLE)
+            set_phase_if(Phase.TRANSCRIBING, Phase.IDLE)
+
+    def _transcribe_and_route(self) -> None:
+        """Transcribe the captured utterance and decide what to do with it."""
         if np is None or not self._utterance_frames:
             self.is_speech_active = False
             self._silence_frames = 0
@@ -2433,6 +2476,9 @@ class VoiceListener(threading.Thread):
 
         # Track when utterance ends - but don't overwrite global timing yet
         utterance_end_time = time.time()
+        # The turn's clock starts the moment speaking stopped: that is when
+        # the wait the user feels begins.
+        trace = get_recorder().begin(source="voice", started_at=utterance_end_time)
         utterance_start_time = self.echo_detector._utterance_start_time
 
         if self.cfg.voice_debug:
@@ -2468,10 +2514,14 @@ class VoiceListener(threading.Thread):
         min_duration = getattr(self.cfg, "whisper_min_audio_duration", 0.3)
         if audio_duration < min_duration:
             debug_log(f"audio too short ({audio_duration:.2f}s < {min_duration}s), ignoring", "voice")
+            get_runtime_state().count_discard("too_short")
             self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
             return
 
         # Speech recognition with appropriate backend
+        set_phase(Phase.TRANSCRIBING)
+        discard_reason = "no_speech"
+        transcription_begun = time.perf_counter()
         try:
             if self._whisper_backend == "mlx":
                 # MLX Whisper transcription
@@ -2557,12 +2607,15 @@ class VoiceListener(threading.Thread):
                 min_language_probability = getattr(
                     self.cfg, "whisper_min_language_probability", 0.0
                 )
+                trace.language = detected if isinstance(detected, str) else None
+                trace.language_probability = language_probability
                 if is_uncertain_language(language_probability, min_language_probability):
                     debug_log(
                         f"utterance filtered (language={detected} at "
                         f"{language_probability:.2f} < {min_language_probability:.2f})",
                         "voice",
                     )
+                    discard_reason = "language_probability"
                     segments_list = []
                 filtered_segments = self._filter_noisy_segments(segments_list)
                 text = " ".join(seg.text for seg in filtered_segments).strip()
@@ -2570,11 +2623,18 @@ class VoiceListener(threading.Thread):
             debug_log(f"transcription error: {e}", "voice")
             if sys.platform == 'win32':
                 print(f"  ❌ Whisper error: {e}", flush=True)
+            discard_reason = "stt_error"
+            get_runtime_state().record_error(f"transcription failed: {e}")
             text = ""
+        finally:
+            trace.mark("stt", (time.perf_counter() - transcription_begun) * 1000.0)
 
         if not text or not text.strip():
+            get_runtime_state().count_discard(discard_reason)
             self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
             return
+
+        trace.transcript = text
 
         # Log successful transcription — separator omitted on the first utterance since
         # there is no prior turn to visually separate from.
@@ -2585,6 +2645,7 @@ class VoiceListener(threading.Thread):
         # Filter out repetitive hallucinations (e.g., "don't don't don't...")
         if self._is_repetitive_hallucination(text):
             debug_log(f"rejected repetitive hallucination: '{text[:80]}...'", "voice")
+            get_runtime_state().count_discard("repetitive")
             self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
             return
 

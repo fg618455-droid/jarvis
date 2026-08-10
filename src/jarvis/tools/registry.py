@@ -5,6 +5,7 @@ import sys
 import re
 import requests
 import threading
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import os
@@ -24,6 +25,7 @@ from .types import ToolExecutionResult
 from ..config import Settings
 from .external.mcp_client import MCPClient
 from ..debug import debug_log
+from ..runtime import Phase, record_tool, set_phase_if
 
 
 # Registry of all builtin tools
@@ -305,6 +307,55 @@ def _normalize_time_range(args: Optional[Dict[str, Any]]) -> Tuple[str, str]:
 
 
 def run_tool_with_retries(
+    db,
+    cfg: Settings,
+    tool_name: str,
+    tool_args: Optional[Dict[str, Any]],
+    system_prompt: str,
+    original_prompt: str,
+    redacted_text: str,
+    max_retries: int = 1,
+    language: Optional[str] = None,
+) -> ToolExecutionResult:
+    """Run one tool through the security gate and time it.
+
+    Every tool the assistant runs, builtin or MCP, passes through here, so
+    this is where a turn learns what it called and how long each call took.
+    """
+    begun = time.perf_counter()
+    set_phase_if(Phase.THINKING, Phase.TOOL)
+    try:
+        result = _run_tool_with_retries(
+            db, cfg, tool_name, tool_args, system_prompt,
+            original_prompt, redacted_text, max_retries, language,
+        )
+    except Exception as exc:
+        record_tool(
+            (tool_name or "").strip(),
+            (time.perf_counter() - begun) * 1000.0,
+            ok=False,
+            error=str(exc),
+        )
+        raise
+    finally:
+        set_phase_if(Phase.TOOL, Phase.THINKING)
+    record_tool(
+        (tool_name or "").strip(),
+        (time.perf_counter() - begun) * 1000.0,
+        ok=result.success,
+        error=result.error_message,
+        confirmed=None if result.success else _was_denied(result),
+    )
+    return result
+
+
+def _was_denied(result: ToolExecutionResult) -> Optional[bool]:
+    """Whether a failed result was a refusal rather than a fault."""
+    message = result.error_message or ""
+    return False if "denied by security confirmation" in message else None
+
+
+def _run_tool_with_retries(
     db,
     cfg: Settings,
     tool_name: str,

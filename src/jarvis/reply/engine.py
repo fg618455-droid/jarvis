@@ -10,6 +10,7 @@ from typing import Optional, TYPE_CHECKING
 from ..utils.redact import redact
 from ..system_prompt import build_system_prompt
 from ..output.tts import resolve_voice_language
+from ..runtime import mark as telemetry_mark, stage as telemetry_stage
 from ..tools.registry import run_tool_with_retries, generate_tools_description, generate_tools_json_schema, BUILTIN_TOOLS
 from ..tools.builtin.stop import STOP_SIGNAL
 from ..debug import debug_log
@@ -31,15 +32,18 @@ def chat_with_messages(cfg, messages, *, timeout_sec=30.0, extra_options=None,
 
     Kept as a module-level function so tests can patch this single symbol
     to capture every chat call rather than reaching into the backend ABC.
+    It is also the single place every chat call is timed from, so an
+    agentic turn's model time is measured wherever the loop entered it.
     """
     backend = get_llm_backend(cfg)
-    return backend.chat(
-        cfg.llm_chat_model, messages,
-        timeout_sec=timeout_sec,
-        extra_options=extra_options,
-        tools=tools,
-        thinking=thinking,
-    )
+    with telemetry_stage("llm"):
+        return backend.chat(
+            cfg.llm_chat_model, messages,
+            timeout_sec=timeout_sec,
+            extra_options=extra_options,
+            tools=tools,
+            thinking=thinking,
+        )
 from .enrichment import (
     extract_search_params_for_memory,
     digest_memory_for_query,
@@ -67,6 +71,7 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
+from time import perf_counter as _perf_counter
 from ..utils.location import get_location_context_with_timezone
 from ..utils.time_context import format_time_context
 
@@ -1228,6 +1233,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
 
     # Step 4: Memory enrichment — controlled by cfg.memory_enrichment_source
     # "all" = diary + graph, "diary" = diary only, "graph" = graph only
+    _recall_begun = _perf_counter()
     enrichment_source = getattr(cfg, "memory_enrichment_source", "diary")
     conversation_context = ""
     # For small models, the diary + graph text is replaced by a single
@@ -1385,6 +1391,8 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                             print(f"     · {name}", flush=True)
             except Exception as e:
                 debug_log(f"graph enrichment failed: {e}", "memory")
+
+    telemetry_mark("recall", (_perf_counter() - _recall_begun) * 1000.0)
 
     # Step 4c: Memory digest for small models.
     #
