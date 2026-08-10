@@ -68,6 +68,36 @@ or shared.
 Values are masked to their last four characters. Writing a credential is
 allowed; reading one back is not.
 
+## API
+
+| Route | Serves |
+|---|---|
+| `GET /api/health` | Liveness, port, bind address |
+| `GET /api/status` | Phase, uptime, tallies, last turn, models, audio |
+| `GET /api/events` | Server-sent events. Opens with the current state so a page that connects mid session is correct at once |
+| `GET /api/turns` | Recent turns with their stages and tool calls |
+| `GET /api/turns/export.csv` | The same history flattened, one column per stage |
+| `GET /api/conversation` | Recent turns plus the discarded-utterance counts |
+| `POST /api/chat` | Put text through the reply engine, optionally spoken aloud |
+| `GET /api/memories`, `/api/topics`, `/api/meals`, `/api/stats` | The diary and meal log |
+| `GET/POST/PUT/DELETE /api/graph/*` | The memory graph, its presets, and the diary import and consolidation actions |
+| `GET /api/tools`, `POST /api/tools/refresh` | The tool catalogue, MCP server state, rediscovery |
+| `GET /api/security`, `/api/security/pending`, `POST /api/security/decide` | The confirmation policy, what is waiting, and the answer |
+| `GET /api/system` | GPU, resident models, speech configuration, paths, process |
+| `GET/PUT /api/settings` | Every editable config field, and writes to it |
+
+`POST /api/chat` runs one turn at a time. A second request while a reply is
+being written is refused with 409 rather than queued: the reply engine is
+not built for concurrent turns against one dialogue memory, and a person
+typing cannot outrun it. With the daemon running, a typed turn joins the
+spoken conversation; standalone, the control centre keeps one of its own.
+
+`PUT /api/settings` follows the same two rules as the Qt settings window,
+because both write the same file: only non-default values are stored, and
+keys the registry does not describe survive untouched. A credential is sent
+back masked, and a masked value returned unchanged leaves the stored one
+alone, so saving a form never overwrites a secret with its own mask.
+
 ## Configuration
 
 | Key | Type | Default | Meaning |

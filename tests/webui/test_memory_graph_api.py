@@ -17,7 +17,7 @@ try:
 except ImportError:
     _HAS_FLASK = False
 
-from src.jarvis.memory.graph import FIXED_BRANCH_IDS, GraphMemoryStore
+from jarvis.memory.graph import FIXED_BRANCH_IDS, GraphMemoryStore
 
 
 @pytest.mark.unit
@@ -27,22 +27,21 @@ class TestGraphPresetProtection:
 
     @pytest.fixture(autouse=True)
     def setup_app(self, tmp_path):
-        from src.desktop_app import memory_viewer
+        from jarvis.webui.api import memory as memory_api
+        from tests.webui.conftest import control_centre_client
 
         db_path = str(tmp_path / "test.db")
         store = GraphMemoryStore(db_path)
 
         # Inject the store directly so we don't need to patch _get_db_path.
-        memory_viewer._graph_store = store
-
-        memory_viewer.app.config["TESTING"] = True
-        self.client = memory_viewer.app.test_client()
+        memory_api._graph_store = store
+        self.client = control_centre_client()
         self.store = store
 
         yield
 
         store.close()
-        memory_viewer._graph_store = None
+        memory_api._graph_store = None
 
     def test_presets_endpoint_lists_root_and_fixed_branches(self):
         resp = self.client.get("/api/graph/presets")

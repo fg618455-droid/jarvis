@@ -7,28 +7,12 @@ Covers:
 
 import json
 import sqlite3
-import sys
-import types
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Mock modules that may not be available in the test environment
-_MOCK_MODULES = [
-    "PyQt6", "PyQt6.QtWidgets", "PyQt6.QtCore", "PyQt6.QtGui",
-    "PyQt6.QtWebEngineWidgets", "PyQt6.sip",
-    "requests", "requests.exceptions",
-    "psutil",
-]
-for _mod in _MOCK_MODULES:
-    if _mod not in sys.modules:
-        sys.modules[_mod] = MagicMock()
-
-# Ensure requests.exceptions.Timeout is a proper exception class
-sys.modules["requests"].exceptions.Timeout = type("Timeout", (Exception,), {})
-
-from src.jarvis.memory.db import Database
+from jarvis.memory.db import Database
 
 
 # ── Database method tests ─────────────────────────────────────────────
@@ -116,7 +100,8 @@ class TestImportDiaryEndpoint:
     @pytest.fixture(autouse=True)
     def setup_app(self, tmp_path):
         """Set up Flask test client with a temporary database."""
-        from src.desktop_app.memory_viewer import app, get_graph_store
+        from jarvis.webui.api.memory import get_graph_store
+        from tests.webui.conftest import control_centre_client
 
         self.db_path = str(tmp_path / "test.db")
 
@@ -134,8 +119,7 @@ class TestImportDiaryEndpoint:
         )
         self.db.conn.commit()
 
-        app.config["TESTING"] = True
-        self.client = app.test_client()
+        self.client = control_centre_client()
 
         yield
         self.db.close()
@@ -145,8 +129,8 @@ class TestImportDiaryEndpoint:
         lines = data.decode("utf-8").strip().split("\n")
         return [json.loads(line) for line in lines if line.strip()]
 
-    @patch("src.desktop_app.memory_viewer._get_db_path")
-    @patch("src.desktop_app.memory_viewer.load_settings")
+    @patch("jarvis.webui.api.memory._get_db_path")
+    @patch("jarvis.webui.api.memory.load_settings")
     @patch("src.jarvis.memory.graph_ops.call_llm_direct")
     def test_import_streams_progress(self, mock_llm, mock_settings, mock_db_path):
         """Should stream start, progress, and complete messages."""
@@ -184,8 +168,8 @@ class TestImportDiaryEndpoint:
         complete_msg = next(m for m in messages if m["type"] == "complete")
         assert complete_msg["processed"] == 2
 
-    @patch("src.desktop_app.memory_viewer._get_db_path")
-    @patch("src.desktop_app.memory_viewer.load_settings")
+    @patch("jarvis.webui.api.memory._get_db_path")
+    @patch("jarvis.webui.api.memory.load_settings")
     def test_import_empty_diary(self, mock_settings, mock_db_path, tmp_path):
         """Should handle empty diary gracefully."""
         empty_db_path = str(tmp_path / "empty.db")
@@ -204,8 +188,8 @@ class TestImportDiaryEndpoint:
 
         empty_db.close()
 
-    @patch("src.desktop_app.memory_viewer._get_db_path")
-    @patch("src.desktop_app.memory_viewer.load_settings")
+    @patch("jarvis.webui.api.memory._get_db_path")
+    @patch("jarvis.webui.api.memory.load_settings")
     @patch("src.jarvis.memory.graph_ops.call_llm_direct")
     def test_import_continues_on_per_summary_error(self, mock_llm, mock_settings, mock_db_path):
         """If one summary fails, the import should continue with the rest."""
@@ -234,33 +218,3 @@ class TestImportDiaryEndpoint:
 
         complete_msg = next(m for m in messages if m["type"] == "complete")
         assert complete_msg["processed"] == 2
-
-
-@pytest.mark.unit
-@pytest.mark.skipif(not _HAS_FLASK, reason="Flask not available")
-class TestImportDialogueDismissal:
-    """Regression: after diary import succeeds, loadStats must not re-show the modal."""
-
-    def test_html_contains_diary_import_done_guard(self):
-        """The loadStats check should be gated by diaryImportDone flag."""
-        from src.desktop_app.memory_viewer import app
-
-        app.config["TESTING"] = True
-        client = app.test_client()
-        resp = client.get("/")
-        html = resp.data.decode("utf-8")
-
-        # The flag must be declared
-        assert "let diaryImportDone = false;" in html
-
-        # The flag must be set on import completion
-        assert "diaryImportDone = true;" in html
-
-        # The loadStats check must include the guard
-        assert "&& !diaryImportDone" in html
-
-        # The gate must be based on stored knowledge (total_tokens), not node count.
-        # Guards against a regression to the old `totalNodes <= 1` condition that kept
-        # re-prompting after a successful import filled the root node.
-        assert "totalTokens === 0" in html
-        assert "totalNodes <= 1" not in html

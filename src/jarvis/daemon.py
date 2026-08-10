@@ -16,18 +16,22 @@ os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
 os.environ.setdefault('MKL_NUM_THREADS', '1')
 os.environ.setdefault('OMP_NUM_THREADS', '1')
 
-# Fix Windows console encoding for Unicode/emoji characters
+# Windows consoles default to a codepage that cannot render the emoji this
+# app prints, so the streams are reconfigured in place.
+#
+# In place matters: wrapping ``sys.stdout.buffer`` in a fresh TextIOWrapper
+# hands ownership of that buffer to an object nothing holds a reference to,
+# and closing it on collection takes the original stream down with it. Any
+# process that captures stdout, a test runner above all, then loses it the
+# moment this module is imported.
+#
 # Skip in bundled mode (frozen) - encoding is handled by desktop_app.py
 if sys.platform == 'win32' and not getattr(sys, 'frozen', False):
-    try:
-        import io
-        # Only wrap if stdout has a proper binary buffer (not a custom writer)
-        if hasattr(sys.stdout, 'buffer') and hasattr(sys.stdout.buffer, 'write'):
-            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-        if hasattr(sys.stderr, 'buffer') and hasattr(sys.stderr.buffer, 'write'):
-            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-    except Exception:
-        pass
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
 
 from pathlib import Path
 from typing import Optional
@@ -142,6 +146,15 @@ def is_stop_requested() -> bool:
 def get_tts_engine():
     """Get the global TTS engine for speaking state polling (used by face widget)."""
     return _global_tts_engine
+
+
+def get_dialogue_memory():
+    """The running dialogue memory, or None when no daemon is up.
+
+    A typed turn from the control centre shares the spoken conversation
+    when the daemon is running, and stands alone when it is not.
+    """
+    return _global_dialogue_memory
 
 
 def get_dictation_engine():

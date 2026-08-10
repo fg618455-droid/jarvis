@@ -22,7 +22,6 @@ src/desktop_app/
 ├── face_widget.py       # Animated face visualization
 ├── themes.py            # Qt stylesheets and color palette
 ├── diary_dialog.py      # End-of-session diary update dialog
-├── memory_viewer.py     # Flask-based memory browser
 ├── updater.py           # Update checking logic
 ├── update_dialog.py     # Update notification dialogs
 └── desktop_assets/      # Icons and images
@@ -95,7 +94,7 @@ The central controller that manages:
 | Window | Purpose |
 |--------|---------|
 | **LogViewerWindow** | Real-time log output from the daemon, with "Report Issue" button |
-| **MemoryViewerWindow** | Web-based memory browser (Flask server) |
+| **ControlCentreWindow** | Embeds the control centre served by `jarvis.webui` |
 | **FaceWindow** | Animated face that reacts to speaking state |
 | **SettingsWindow** | Auto-generated config editor with tabbed categories |
 | **SetupWizard** | First-run configuration (Ollama, models, profile) |

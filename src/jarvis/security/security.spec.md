@@ -58,6 +58,9 @@ The channel implementations use their native blocking boundaries:
   mode. Source mode sends a structured request over daemon stdout and receives
   the response over daemon stdin. A `threading.Event` carries the result back
   to the blocked tool thread.
+- Web confirmation raises a card in the control centre and blocks on a
+  `threading.Event` until a button is pressed or the timeout lapses. Server
+  and daemon share one process, so no transport sits between them.
 - Telegram uses the Bot API's blocking HTTPS requests and bounded long polling.
   It does not own or create an asyncio event loop.
 - Voice confirmation speaks a challenge, consumes the active listener's audio
@@ -73,6 +76,26 @@ startup and teardown cost of an event loop per protected tool.
 The dialog displays the canonical tool name and JSON arguments. Approve and
 deny are explicit buttons. Closing the dialog or reaching the configured
 timeout denies the request. The channel requires no credentials.
+
+## Web channel
+
+The control centre shows the canonical tool name and its arguments with an
+approve and a refuse button. The channel is available only while the control
+centre is serving: a request nobody can see is worse than no channel at all,
+because the gate would wait out its whole timeout before falling through.
+
+It needs no credentials, which makes it the channel that answers on a setup
+that runs the daemon alone and watches it in a browser. Such a setup has no Qt
+tray for the desktop channel, and its speakers are not necessarily in the same
+room as its user.
+
+Every request is written to a decision log of the last fifty outcomes, kept in
+memory and readable at `/api/security`. Approval, refusal, and timeout are all
+recorded, so a tool that was refused while nobody was looking leaves a trace.
+
+Reaching the control centre already means reaching the machine on loopback,
+and requires the access token off it, so the channel's presence-evidence is
+the server's own guard rather than a challenge of its own.
 
 ## Telegram channel
 
@@ -109,11 +132,11 @@ order when stronger user presence or possession evidence is required.
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `security_level` | `critical` | `off`, `critical`, or `paranoid` |
-| `security_confirm_channels` | `desktop`, `telegram`, `voice` | Ordered channel names |
+| `security_confirm_channels` | `desktop`, `web`, `telegram`, `voice` | Ordered channel names |
 | `security_confirmation_timeout_sec` | `60` | Per-channel decision timeout, clamped to 1 through 300 seconds |
 | `telegram_bot_token` | empty | Telegram Bot API credential |
 | `telegram_chat_id` | empty | Sole chat authorised to decide requests |
 
 All keys are fields on the frozen `Settings` dataclass, are parsed and passed by
 `load_settings()`, and are exposed on the Security page in the desktop settings
-window.
+window and in the control centre's settings view.

@@ -59,7 +59,7 @@ All three rules apply in any language, not only English. The prompt states this 
 
 **Empty-rewrite guard:** if the model returns an empty string (a row that was *entirely* deflection), the original is kept and a `would_empty: true` flag is surfaced. An empty diary entry is worse than a slightly-leaky one — downstream retrieval treats absence as "no record" and the user loses the topic entirely.
 
-**Privacy:** the sweep streams per-row events as `{date_utc, chars_before, chars_after, rewritten, would_empty, embedding_refreshed, error?}` — counts and booleans only, never raw summary text. The `error` value is the exception class name only (e.g. `"RuntimeError"`), never the stringified exception message, because Python exception messages can echo offending input back to the caller. The progress-event key set is locked behind a whitelist test so any future field addition forces deliberate review (`tests/test_memory_viewer_diary_scrub_api.py::test_progress_event_keys_are_a_known_whitelist`). The diary clean button must not become a data-exfiltration channel through the streaming progress UI.
+**Privacy:** the sweep streams per-row events as `{date_utc, chars_before, chars_after, rewritten, would_empty, embedding_refreshed, error?}` — counts and booleans only, never raw summary text. The `error` value is the exception class name only (e.g. `"RuntimeError"`), never the stringified exception message, because Python exception messages can echo offending input back to the caller. The progress-event key set is locked behind a whitelist test so any future field addition forces deliberate review (`tests/webui/test_memory_diary_scrub_api.py::test_progress_event_keys_are_a_known_whitelist`). The diary clean button must not become a data-exfiltration channel through the streaming progress UI.
 
 **Audit trail:** preserves each row's original `ts_utc` on rewrite. A maintenance pass that stomped `ts_utc` would make every cleaned row look as though it had been written today, destroying the only signal users have to verify when each diary entry was actually authored.
 
@@ -106,7 +106,7 @@ Idempotent once the mapping has been applied: a second run finds no tags to chan
 | `test_preserves_legitimate_user_preferences` | `evals/test_diary_summariser_hygiene.py` | Cross-rule: hygiene must not strip real content |
 | `TestSummariserForbidsDeflectionNarration` | `tests/test_diary_poisoning_defence.py` | Prompt-content regression (rules 1–3) |
 | `TestRewriteSweepBehaviour` | `tests/test_diary_rewrite_sweep.py` | LLM-rewrite bulk sweep DB integration, fail-open, audit trail |
-| `TestDiaryScrubEndpoint` | `tests/test_memory_viewer_diary_scrub_api.py` | Endpoint streaming + privacy contract |
+| `TestDiaryScrubEndpoint` | `tests/webui/test_memory_diary_scrub_api.py` | Endpoint streaming + privacy contract |
 | `TestOptimiseContract` / `TestOptimiseMerge` / `TestOptimiseSplit` / `TestOptimiseDeduplicate` / `TestOptimiseAuditTrail` / `TestOptimiseFailOpen` / `TestOptimiseIdempotence` | `tests/test_diary_topic_optimise.py` | Tag optimisation — generator contract, merge/split semantics, dedup, audit trail, fail-open, idempotence |
 
 Live evals target the smallest supported model (gemma4:e2b) and `xfail` softly on weaker models rather than hard-failing, documenting residual risk instead of masking it.

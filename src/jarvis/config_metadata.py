@@ -310,7 +310,7 @@ def _build_field_metadata() -> List[FieldMeta]:
           ("off", "Off"),
       ])
     f("security_confirm_channels", "Confirmation Channels",
-      "Channels tried in order when an action needs approval: desktop, telegram, voice",
+      "Channels tried in order when an action needs approval: desktop, web, telegram, voice",
       "security", "list")
     f("security_confirmation_timeout_sec", "Confirmation Timeout",
       "Maximum time to wait for a decision",

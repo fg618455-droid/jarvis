@@ -22,7 +22,7 @@ warnings.filterwarnings('ignore', message='pkg_resources is deprecated',
                         category=UserWarning)
 
 # Note: QtWebEngine is not used on macOS bundled apps due to sandbox/bundling issues
-# The Memory Viewer opens in the system browser instead (see MemoryViewerWindow)
+# The control centre opens in the system browser instead (see ControlCentreWindow)
 
 import subprocess
 import signal
@@ -926,22 +926,19 @@ class LogViewerWindow(QMainWindow):
         webbrowser.open(url)
 
 
-class MemoryViewerWindow(QMainWindow):
-    """Window for viewing Jarvis memory using embedded web view."""
-
-    MEMORY_VIEWER_PORT = 5050
+class ControlCentreWindow(QMainWindow):
+    """Window showing the control centre in an embedded web view."""
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("🧠 Jarvis Memory")
-        self.setGeometry(150, 150, 1200, 900)
+        self.setWindowTitle("🖥️ Jarvis Control Centre")
+        self.setGeometry(150, 150, 1280, 920)
 
         # Apply theme
         self.setStyleSheet(JARVIS_THEME_STYLESHEET)
 
-        self.server_process: Optional[subprocess.Popen] = None
-        self.server_thread: Optional[threading.Thread] = None
-        self.is_server_running = False
+        self._server = None
+        self._url: Optional[str] = None
 
         # Create central widget and layout
         central_widget = QWidget()
@@ -979,7 +976,7 @@ class MemoryViewerWindow(QMainWindow):
             icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             fallback_layout.addWidget(icon_label)
 
-            title_label = QLabel("Memory Viewer")
+            title_label = QLabel("Control Centre")
             title_label.setStyleSheet("""
                 font-size: 24px;
                 font-weight: 600;
@@ -1008,183 +1005,55 @@ class MemoryViewerWindow(QMainWindow):
             layout.addWidget(fallback_container)
 
     def start_server(self) -> bool:
-        """Start the memory viewer Flask server."""
-        if self.is_server_running:
-            debug_log("memory viewer server already running (skipping start)", "desktop")
+        """Make sure a control centre is reachable, serving one if not.
+
+        A running daemon already serves it, and that instance is the one
+        worth showing because it holds the live state. Only when nothing
+        answers does this process serve its own, read-only copy.
+        """
+        if self._url:
             return True
 
-        print("🧠 Starting memory viewer server...", flush=True)
+        from jarvis.config import load_settings
+        from jarvis.webui import WebUIConfig, WebUIServer, resolve_token
 
+        cfg = load_settings()
+        port = cfg.webui_port
+
+        import socket
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        already_serving = sock.connect_ex(("127.0.0.1", port)) == 0
+        sock.close()
+
+        if already_serving:
+            self._url = f"http://127.0.0.1:{port}"
+            debug_log(f"control centre already served on port {port}", "desktop")
+            return True
+
+        webui_cfg = WebUIConfig(
+            host="127.0.0.1",
+            port=port,
+            token=resolve_token("127.0.0.1", cfg.webui_token),
+        )
+        self._server = WebUIServer(webui_cfg)
         try:
-            # Check if server is already running on the port
-            import socket
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            result = sock.connect_ex(('localhost', self.MEMORY_VIEWER_PORT))
-            sock.close()
-
-            if result == 0:
-                # Port is already in use, assume server is running
-                self.is_server_running = True
-                print(f"   ✓ Server already running on port {self.MEMORY_VIEWER_PORT}", flush=True)
-                debug_log(f"memory viewer server already running on port {self.MEMORY_VIEWER_PORT}", "desktop")
-                return True
-
-            # Check if we're running as a frozen/bundled app
-            is_frozen = getattr(sys, 'frozen', False)
-            print(f"   → Frozen app: {is_frozen}", flush=True)
-
-            if is_frozen:
-                # Bundled app: run Flask server in a thread
-                try:
-                    from desktop_app.memory_viewer import app as flask_app
-                except Exception as import_err:
-                    debug_log(f"failed to import memory_viewer: {import_err}", "desktop")
-                    return False
-
-                def run_flask_server():
-                    try:
-                        # Suppress Werkzeug's development server warning in bundled apps
-                        import logging
-                        logging.getLogger('werkzeug').setLevel(logging.ERROR)
-
-                        # Disable Flask's reloader and debug mode
-                        flask_app.run(
-                            host="127.0.0.1",
-                            port=self.MEMORY_VIEWER_PORT,
-                            debug=False,
-                            use_reloader=False,
-                            threaded=True
-                        )
-                    except Exception as server_err:
-                        debug_log(f"memory viewer server error: {server_err}", "desktop")
-
-                self.server_thread = threading.Thread(target=run_flask_server, daemon=True)
-                self.server_thread.start()
-                debug_log("memory viewer server started in thread (bundled mode)", "desktop")
-
-                # For bundled mode, use simple wait - Flask thread starts quickly
-                # The complex socket polling below is for subprocess mode reliability
-                import time
-                time.sleep(1)
-                self.is_server_running = True
-                return True
-            else:
-                # Development: start server in subprocess
-                python_exe = sys.executable
-
-                # Set up environment with PYTHONPATH for source runs
-                env = os.environ.copy()
-                src_path = Path(__file__).parent.parent  # Go up to src/
-                if "PYTHONPATH" in env:
-                    env["PYTHONPATH"] = f"{src_path}{os.pathsep}{env['PYTHONPATH']}"
-                else:
-                    env["PYTHONPATH"] = str(src_path)
-
-                # Ensure UTF-8 encoding for subprocess (Windows cp1252 can't handle emojis)
-                env["PYTHONIOENCODING"] = "utf-8"
-
-                # Use creationflags to prevent console window popup on Windows
-                creationflags = 0
-                if sys.platform == 'win32':
-                    creationflags = subprocess.CREATE_NO_WINDOW
-
-                print(f"   -> Python: {python_exe}", flush=True)
-                print(f"   -> PYTHONPATH: {env.get('PYTHONPATH', 'not set')}", flush=True)
-
-                self.server_process = subprocess.Popen(
-                    [python_exe, "-m", "desktop_app.memory_viewer"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    stdin=subprocess.PIPE,
-                    text=True,
-                    encoding='utf-8',
-                    errors='replace',
-                    env=env,
-                    creationflags=creationflags,
-                )
-                print(f"   → Subprocess PID: {self.server_process.pid}", flush=True)
-                debug_log("memory viewer server started in subprocess (development mode)", "desktop")
-
-            # Wait for server to actually start (with verification)
-            import time
-            import socket
-            max_wait = 5  # seconds
-            start_time = time.time()
-
-            print(f"   → Waiting for server (max {max_wait}s)...", flush=True)
-
-            while time.time() - start_time < max_wait:
-                # Check if subprocess died
-                if self.server_process and self.server_process.poll() is not None:
-                    # Process exited - read any error output
-                    print(f"   ✗ Subprocess exited with code {self.server_process.returncode}", flush=True)
-                    try:
-                        stdout, _ = self.server_process.communicate(timeout=1)
-                        if stdout:
-                            print(f"   → Output:\n{stdout}", flush=True)
-                        debug_log(f"memory viewer subprocess exited: {stdout}", "desktop")
-                    except Exception as e:
-                        print(f"   → Error reading output: {e}", flush=True)
-                    self.server_process = None
-                    return False
-
-                # Check if server is listening
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                result = sock.connect_ex(('127.0.0.1', self.MEMORY_VIEWER_PORT))
-                sock.close()
-
-                if result == 0:
-                    self.is_server_running = True
-                    print(f"   ✓ Server running on port {self.MEMORY_VIEWER_PORT}", flush=True)
-                    debug_log(f"memory viewer server confirmed running on port {self.MEMORY_VIEWER_PORT}", "desktop")
-                    return True
-
-                time.sleep(0.2)
-
-            # Timeout - server didn't start
-            print(f"   ✗ Server failed to start within {max_wait}s", flush=True)
-            debug_log(f"memory viewer server failed to start within {max_wait}s", "desktop")
-            if self.server_process:
-                # Try to get any output
-                try:
-                    poll_result = self.server_process.poll()
-                    print(f"   → Process poll result: {poll_result}", flush=True)
-                    self.server_process.terminate()
-                    stdout, _ = self.server_process.communicate(timeout=2)
-                    if stdout:
-                        print(f"   → Server output:\n{stdout}", flush=True)
-                        debug_log(f"memory viewer subprocess output: {stdout}", "desktop")
-                    else:
-                        print("   → No output from server process", flush=True)
-                except Exception as e:
-                    print(f"   → Error getting output: {e}", flush=True)
-                self.server_process = None
+            self._server.start()
+        except OSError as exc:
+            debug_log(f"control centre could not bind port {port}: {exc}", "desktop")
+            self._server = None
             return False
 
-        except Exception as e:
-            print(f"   ✗ Exception starting server: {e}", flush=True)
-            debug_log(f"failed to start memory viewer server: {e}", "desktop")
-            return False
+        self._url = self._server.url
+        print(f"🖥️ Control centre: {self._url}", flush=True)
+        return True
 
     def stop_server(self) -> None:
-        """Stop the memory viewer Flask server."""
-        if self.server_process:
-            try:
-                self.server_process.terminate()
-                self.server_process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.server_process.kill()
-                self.server_process.wait()
-            except Exception as e:
-                debug_log(f"error stopping memory viewer server: {e}", "desktop")
-            finally:
-                self.server_process = None
-                self.is_server_running = False
-
-        # Thread-based server (bundled mode) will stop when app exits (daemon thread)
-        if self.server_thread:
-            self.server_thread = None
-            self.is_server_running = False
+        """Stop the control centre this window started, if it started one."""
+        if self._server is not None:
+            self._server.stop()
+            self._server = None
+        self._url = None
 
     def _show_error_page(self, message: str) -> None:
         """Show an error page in the web view."""
@@ -1218,11 +1087,11 @@ class MemoryViewerWindow(QMainWindow):
             if self.start_server():
                 if self.web_view:
                     # Set URL and load (URL is set here, not in __init__, to avoid WebEngine crash)
-                    self.web_view.setUrl(QUrl(f"http://localhost:{self.MEMORY_VIEWER_PORT}"))
+                    self.web_view.setUrl(QUrl(self._url))
                 else:
                     # Open in system browser as fallback
                     import webbrowser
-                    webbrowser.open(f"http://localhost:{self.MEMORY_VIEWER_PORT}")
+                    webbrowser.open(self._url)
             else:
                 # Server failed to start - show error message
                 debug_log("memory viewer server failed to start", "desktop")
@@ -1267,7 +1136,7 @@ class JarvisSystemTray:
         self.log_signals.security_request.connect(self._handle_security_request)
 
         # Create memory viewer window (hidden by default)
-        self.memory_viewer = MemoryViewerWindow()
+        self.control_centre = ControlCentreWindow()
 
         # Create face window (hidden by default)
         # Note: Creating the face window also initializes the SpeakingState singleton
@@ -1341,8 +1210,8 @@ class JarvisSystemTray:
         if self.is_listening:
             self.stop_daemon()
         # Stop memory viewer server
-        if hasattr(self, 'memory_viewer'):
-            self.memory_viewer.stop_server()
+        if hasattr(self, 'control_centre'):
+            self.control_centre.stop_server()
         # Safety net: if daemon process exists but is_listening was False, still clean up
         # (This shouldn't happen in normal operation, but handles edge cases)
         if self.daemon_process:
@@ -1374,8 +1243,8 @@ class JarvisSystemTray:
         self.menu.addAction(self.logs_action)
 
         # Memory viewer action
-        self.memory_action = QAction("🧠 Memory Viewer")
-        self.memory_action.triggered.connect(self.show_memory_viewer)
+        self.memory_action = QAction("🖥️ Control Centre")
+        self.memory_action.triggered.connect(self.show_control_centre)
         self.menu.addAction(self.memory_action)
 
         # Dictation history action
@@ -1622,11 +1491,11 @@ class JarvisSystemTray:
         self.log_viewer.raise_()
         self.log_viewer.activateWindow()
 
-    def show_memory_viewer(self) -> None:
-        """Show the memory viewer window and bring it to front."""
-        self.memory_viewer.show()
-        self.memory_viewer.raise_()
-        self.memory_viewer.activateWindow()
+    def show_control_centre(self) -> None:
+        """Show the control centre window and bring it to front."""
+        self.control_centre.show()
+        self.control_centre.raise_()
+        self.control_centre.activateWindow()
 
     def show_dictation_history(self) -> None:
         """Show the dictation history window and bring it to front."""

@@ -43,7 +43,7 @@ class SecurityGate:
         self._confirm_channels = (
             list(confirm_channels)
             if confirm_channels is not None
-            else ["desktop", "telegram", "voice"]
+            else ["desktop", "web", "telegram", "voice"]
         )
         self._fingerprint: tuple | None = None
         SecurityGate._instance = self
@@ -61,10 +61,12 @@ class SecurityGate:
             from .desktop_confirm import DesktopConfirm
             from .telegram_confirm import TelegramConfirm
             from .voice_confirm import VoiceConsoleConfirm
+            from .web_confirm import WebConfirm
 
             timeout = cfg.security_confirmation_timeout_sec
             channels = {
                 "desktop": DesktopConfirm(timeout_seconds=timeout),
+                "web": WebConfirm(timeout_seconds=timeout),
                 "telegram": TelegramConfirm(
                     cfg.telegram_bot_token,
                     cfg.telegram_chat_id,

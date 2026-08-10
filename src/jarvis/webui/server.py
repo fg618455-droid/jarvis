@@ -34,6 +34,7 @@ from typing import Optional
 from flask import Flask, jsonify, request
 
 from jarvis.debug import debug_log
+from jarvis.security.web_confirm import get_web_confirmations
 
 
 UI_HEADER = "X-Jarvis-UI"
@@ -178,9 +179,13 @@ class WebUIServer:
             daemon=True,
         )
         self._thread.start()
+        # The confirmation channel is only honest about being available
+        # while there is a page that could show a request.
+        get_web_confirmations().set_serving(True)
         debug_log(f"webui listening on {self.cfg.host}:{self.cfg.port}", "webui")
 
     def stop(self, timeout: float = 3.0) -> None:
+        get_web_confirmations().set_serving(False)
         if self._server is not None:
             try:
                 self._server.shutdown()

@@ -1,0 +1,172 @@
+"""Behaviour tests for editing config.json from the control centre.
+
+Two invariants carry over from the Qt settings window, because both write
+the same file: only non-default values are stored, and keys the registry
+does not describe survive untouched. A third is new here, because a browser
+tab can be left open where a desktop dialog would not: a credential is
+writable but never readable.
+"""
+
+import json
+
+import pytest
+
+from jarvis.config import get_default_config
+from jarvis.webui.server import WebUIConfig, create_app
+
+
+HEADERS = {"Host": "127.0.0.1:5055"}
+WRITE_HEADERS = {**HEADERS, "X-Jarvis-UI": "1"}
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "whisper_language": "de",
+        "telegram_bot_token": "12345:SECRETVALUE",
+        "mcps": {"rube": {"command": "npx", "args": ["-y", "mcp-remote"]}},
+        "_config_version": 3,
+    }), encoding="utf-8")
+    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
+
+    app = create_app(WebUIConfig(host="127.0.0.1", port=5055, token=""))
+    app.config.update(TESTING=True)
+    test_client = app.test_client()
+    test_client.config_path = config_path
+    return test_client
+
+
+def _stored(client) -> dict:
+    return json.loads(client.config_path.read_text(encoding="utf-8"))
+
+
+def _field(body, key):
+    return next(f for f in body["fields"] if f["key"] == key)
+
+
+class TestReading:
+    def test_every_registry_field_is_offered(self, client):
+        from jarvis.config_metadata import FIELD_METADATA
+
+        body = client.get("/api/settings", headers=HEADERS).get_json()
+
+        assert {f["key"] for f in body["fields"]} == {m.key for m in FIELD_METADATA}
+
+    def test_a_configured_value_is_shown(self, client):
+        body = client.get("/api/settings", headers=HEADERS).get_json()
+
+        assert _field(body, "whisper_language")["value"] == "de"
+
+    def test_an_unset_field_falls_back_to_its_default(self, client):
+        body = client.get("/api/settings", headers=HEADERS).get_json()
+
+        assert _field(body, "webui_port")["value"] == get_default_config()["webui_port"]
+        assert _field(body, "webui_port")["is_default"] is True
+
+    def test_a_field_says_how_to_render_it(self, client):
+        body = client.get("/api/settings", headers=HEADERS).get_json()
+
+        level = _field(body, "security_level")
+        assert level["type"] == "choice"
+        assert {choice["value"] for choice in level["choices"]} == {"critical", "paranoid", "off"}
+
+    def test_fields_that_only_take_effect_after_a_restart_say_so(self, client):
+        body = client.get("/api/settings", headers=HEADERS).get_json()
+
+        assert _field(body, "whisper_language")["restart_required"] is True
+
+
+class TestSecrets:
+    def test_a_stored_credential_is_never_returned(self, client):
+        body = client.get("/api/settings", headers=HEADERS).get_json()
+
+        token = _field(body, "telegram_bot_token")
+        assert "SECRETVALUE" not in json.dumps(body)
+        assert token["value"].endswith("ALUE")
+        assert token["is_set"] is True
+
+    def test_sending_the_mask_back_leaves_the_credential_alone(self, client):
+        body = client.get("/api/settings", headers=HEADERS).get_json()
+        masked = _field(body, "telegram_bot_token")["value"]
+
+        client.put("/api/settings", headers=WRITE_HEADERS,
+                   json={"changes": {"telegram_bot_token": masked}})
+
+        assert _stored(client)["telegram_bot_token"] == "12345:SECRETVALUE"
+
+    def test_a_new_credential_replaces_the_old_one(self, client):
+        client.put("/api/settings", headers=WRITE_HEADERS,
+                   json={"changes": {"telegram_bot_token": "999:NEW"}})
+
+        assert _stored(client)["telegram_bot_token"] == "999:NEW"
+
+
+class TestWriting:
+    def test_a_changed_value_is_stored(self, client):
+        client.put("/api/settings", headers=WRITE_HEADERS,
+                   json={"changes": {"whisper_language": "nl"}})
+
+        assert _stored(client)["whisper_language"] == "nl"
+
+    def test_a_value_set_back_to_its_default_is_removed(self, client):
+        default = get_default_config()["whisper_language"]
+
+        client.put("/api/settings", headers=WRITE_HEADERS,
+                   json={"changes": {"whisper_language": default}})
+
+        assert "whisper_language" not in _stored(client)
+
+    def test_keys_the_registry_does_not_describe_survive(self, client):
+        client.put("/api/settings", headers=WRITE_HEADERS,
+                   json={"changes": {"whisper_language": "nl"}})
+
+        stored = _stored(client)
+        assert stored["mcps"]["rube"]["command"] == "npx"
+        assert stored["_config_version"] == 3
+
+    def test_a_number_outside_its_bounds_is_brought_back_inside(self, client):
+        client.put("/api/settings", headers=WRITE_HEADERS,
+                   json={"changes": {"webui_port": 99}})
+
+        assert _stored(client)["webui_port"] == 1024
+
+    def test_a_boolean_arrives_as_a_boolean(self, client):
+        client.put("/api/settings", headers=WRITE_HEADERS,
+                   json={"changes": {"webui_enabled": False}})
+
+        assert _stored(client)["webui_enabled"] is False
+
+    def test_a_list_field_accepts_a_list(self, client):
+        client.put("/api/settings", headers=WRITE_HEADERS,
+                   json={"changes": {"security_confirm_channels": ["web", "voice"]}})
+
+        assert _stored(client)["security_confirm_channels"] == ["web", "voice"]
+
+    def test_the_answer_names_what_needs_a_restart(self, client):
+        body = client.put("/api/settings", headers=WRITE_HEADERS,
+                          json={"changes": {"whisper_language": "nl"}}).get_json()
+
+        assert body["written"] == ["whisper_language"]
+        assert body["restart_required"] == ["whisper_language"]
+
+
+class TestRefusals:
+    def test_an_unknown_key_is_refused_rather_than_written(self, client):
+        response = client.put("/api/settings", headers=WRITE_HEADERS,
+                              json={"changes": {"not_a_setting": 1}})
+
+        assert response.status_code == 400
+        assert "not_a_setting" not in _stored(client)
+
+    def test_a_malformed_body_is_refused(self, client):
+        response = client.put("/api/settings", headers=WRITE_HEADERS, json={"changes": "nope"})
+
+        assert response.status_code == 400
+
+    def test_writing_needs_the_write_header(self, client):
+        response = client.put("/api/settings", headers=HEADERS,
+                              json={"changes": {"whisper_language": "nl"}})
+
+        assert response.status_code == 403
+        assert _stored(client)["whisper_language"] == "de"

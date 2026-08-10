@@ -293,6 +293,18 @@ def default_config_path() -> Path:
     return Path.home() / ".config" / "jarvis" / "config.json"
 
 
+def resolve_config_path() -> Path:
+    """The config file this process reads and writes.
+
+    ``JARVIS_CONFIG_PATH`` points a run at a different file, which is how
+    tests and side-by-side installs stay off the real one. Anything that
+    edits the config has to resolve it the same way the loader does, or it
+    writes to a file nothing reads.
+    """
+    override = os.environ.get("JARVIS_CONFIG_PATH")
+    return Path(override).expanduser() if override else default_config_path()
+
+
 def _load_json(path: Path) -> Dict[str, Any]:
     try:
         if path.exists():
@@ -535,7 +547,7 @@ def get_default_config() -> Dict[str, Any]:
 
         # Security confirmation
         "security_level": "critical",
-        "security_confirm_channels": ["desktop", "telegram", "voice"],
+        "security_confirm_channels": ["desktop", "web", "telegram", "voice"],
         "security_confirmation_timeout_sec": 60,
         "telegram_bot_token": "",
         "telegram_chat_id": "",
@@ -707,8 +719,7 @@ def load_settings() -> Settings:
     load_dotenv(override=False)
 
     # Resolve config path
-    cfg_path_env = os.environ.get("JARVIS_CONFIG_PATH")
-    cfg_path = Path(cfg_path_env).expanduser() if cfg_path_env else default_config_path()
+    cfg_path = resolve_config_path()
     cfg_dir = cfg_path.parent
     try:
         cfg_dir.mkdir(parents=True, exist_ok=True)
