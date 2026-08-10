@@ -17,6 +17,7 @@ Any code change must either adhere to our spec files perfectly or you should ask
 | `src/jarvis/webui/webui.spec.md` | Control centre: in-process web interface, request guards, standalone mode | One process so views read live objects; offline, no build step; a failed start never stops the daemon |
 | `src/jarvis/runtime/runtime.spec.md` | Live phase, per-turn stage timings, discarded-utterance counts, event bus | The ruler must not weigh; a turn belongs to its thread; absent instrumentation is not an error |
 | `src/desktop_app/setup_wizard.spec.md` | First-run wizard (Ollama, models, Whisper, location) | Minimal friction; only shown when user action required; doesn't configure everything |
+| `src/desktop_app/chat_window.spec.md` | Text chat interface alongside voice; shared conversation, no TTS, bundled callbacks + subprocess IPC | One conversation for voice + text; text never speaks; redaction shared with voice path |
 | `src/jarvis/dictation/dictation.spec.md` | Hold-to-dictate engine, hotkey, clipboard paste | Independent from assistant pipeline; shared Whisper model; pause flag on listener |
 | `src/jarvis/listening/listening.spec.md` | Voice listener, wake word detection, audio pipeline | — |
 | `src/jarvis/reply/reply.spec.md` | LLM reply generation, tool use, profiles | Tools return raw data; profiles handle formatting |

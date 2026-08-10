@@ -90,11 +90,14 @@ allowed; reading one back is not.
 | `GET /api/system` | GPU, resident models, speech configuration, paths, process |
 | `GET/PUT /api/settings` | Every editable config field, and writes to it |
 
-`POST /api/chat` runs one turn at a time. A second request while a reply is
-being written is refused with 409 rather than queued: the reply engine is
-not built for concurrent turns against one dialogue memory, and a person
-typing cannot outrun it. With the daemon running, a typed turn joins the
-spoken conversation; standalone, the control centre keeps one of its own.
+`POST /api/chat` runs one turn at a time, and the turn it waits for may not
+be its own. Voice, the desktop chat window and this endpoint all reach the
+same reply engine against the same dialogue memory, so all three take the
+daemon's shared query lock (`daemon.chat_query_lock`). A request that finds
+it held, by a spoken turn or a typed one, is refused with 409 rather than
+queued: a person typing cannot outrun a turn. With the daemon running, a
+typed turn joins the spoken conversation; standalone, the control centre
+keeps one of its own.
 
 `PUT /api/settings` follows the same two rules as the Qt settings window,
 because both write the same file: only non-default values are stored, and

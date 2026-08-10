@@ -192,6 +192,42 @@ class TestChat:
 
         assert response.status_code == 403
 
+    def test_typing_waits_for_a_turn_already_running(self, client, monkeypatch):
+        """A spoken turn and a typed one must not run the engine at once.
+
+        Voice, the desktop chat window and the control centre all reach the
+        same reply engine against the same dialogue memory. The daemon owns
+        the one lock that serialises them, so a typed turn submitted while a
+        spoken one is in flight is refused rather than run alongside it.
+        """
+        import jarvis.daemon as daemon
+
+        monkeypatch.setattr(
+            "jarvis.reply.engine.run_reply_engine",
+            lambda *a, **k: "sollte nie laufen",
+        )
+
+        with daemon.query_lock():
+            response = client.post(
+                "/api/chat", headers=WRITE_HEADERS, json={"text": "hallo"},
+            )
+
+        assert response.status_code == 409
+
+    def test_the_lock_is_free_again_after_a_typed_turn(self, client, monkeypatch):
+        """A finished turn must not leave the shared lock held."""
+        import jarvis.daemon as daemon
+
+        monkeypatch.setattr(
+            "jarvis.reply.engine.run_reply_engine",
+            lambda *a, **k: "fertig",
+        )
+
+        client.post("/api/chat", headers=WRITE_HEADERS, json={"text": "hallo"})
+
+        with daemon.query_lock():
+            pass
+
 
 class TestTools:
     def test_every_builtin_tool_is_listed(self, client):

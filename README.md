@@ -35,7 +35,6 @@
 **📊 Transparent progress** - We track what works (and what doesn't) with automated evals. [See current accuracy →](EVALS.md)
 
 **🚧 Known limitations:** Jarvis is under active development. Primary development happens on macOS. Windows/Linux support may lag behind. We're building in the open, [issues](https://github.com/isair/jarvis/issues) and [contributions](https://github.com/isair/jarvis/pulls) welcome!
-- Voice-only for now—no text chat interface yet ([#35](https://github.com/isair/jarvis/issues/35))
 - No mobile apps ([#17](https://github.com/isair/jarvis/issues/17))
 - "Stop" commands during speech sometimes get filtered as echo ([#24](https://github.com/isair/jarvis/issues/24))
 - Dictation is not available on macOS 26+ (Tahoe) due to a pynput incompatibility ([#172](https://github.com/isair/jarvis/issues/172))
@@ -162,6 +161,7 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 ## Features
 
 - **Conversational Awareness** - Understands ongoing discussions. Ask "Jarvis, what do you think?" and it knows what you're talking about. Works naturally in multi-person conversations.
+- **Text Chat** - Type to Jarvis alongside voice. Voice and text share one conversation, so a follow-up typed in the chat window continues a voice discussion. Text never speaks. Open it from the tray menu (`💬 Chat…`) while Jarvis is listening. The window shows a local status banner while Jarvis starts, stops, or needs to be restarted.
 - **Unlimited Memory** - Never forgets. Searches across all your conversation history. Browse and edit it in the Control Centre.
 - **Control Centre** - A local web interface the daemon serves at `http://127.0.0.1:5055`: live state, memory, conversation, tools, security, technical readings, and every setting. Offline, no build step, nothing leaves the machine.
 - **Adaptive Tone** - Automatically surgical for code, pragmatic for business, encouraging for wellbeing — no manual mode switching
@@ -169,6 +169,7 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 - **Built-in Tools** - Screenshot OCR, web search (DuckDuckGo → Brave → Wikipedia fallback chain with auto-fetch), weather, file access, nutrition tracking, location awareness, plus a tool-discovery escape hatch the agent uses to widen its own toolset mid-reply
 - **Knowledge Graph Memory** - Self-organising memory that learns from conversations, auto-splits by topic, and surfaces relevant knowledge automatically
 - **Natural Voice** - Address Jarvis at either end of your sentence, then follow up without repeating the wake word after the reply finishes
+- **Fast Stop** - Use the tray action `⚡ Stop Now (Skip Diary)` to release local model resources quickly when you need your machine back immediately.
 - **Dictation Mode** - Free, offline alternative to WisprFlow — hold a hotkey, speak, release to paste text into any app
 - **MCP Integration** - Connect to thousands of external tools (Home Assistant, GitHub, Slack, etc.)
 
@@ -265,6 +266,26 @@ For reference, the underlying config keys are:
 ```
 
 Leave `embedding_provider` empty to use the same provider as chat. With no working embeddings, memory search degrades gracefully to keyword search.
+
+</details>
+
+<details>
+<summary><strong>Power and Startup</strong></summary>
+
+Jarvis favours fast first responses by default: it warms Whisper, the chat
+model, and the intent judge before announcing that it is listening. On Macs or
+laptops where heat and battery matter more than instant first-token latency,
+enable **⚙️ Settings → ✨ Features → Low Power Mode**.
+
+```json
+{
+  "low_power_mode": true
+}
+```
+
+Low Power Mode skips LLM startup warmup and shortens Ollama model residency for
+the intent judge from 30 minutes to 1 minute. Whisper still warms so voice input
+is ready. The first LLM-backed request after startup or idle may be slower.
 
 </details>
 
@@ -584,11 +605,19 @@ Get API key at [composio.dev](https://composio.dev)
 <details>
 <summary><strong>Common issues</strong></summary>
 
-**First startup takes a bit** - Jarvis pre-warms the Whisper, chat, and intent-judge models before announcing "Listening!" so the first engagement feels instant. This adds a few seconds on cold start and is bounded at 60 s — if Ollama is slow, Jarvis will start listening anyway and load the models on demand.
+**First startup takes a bit** - Jarvis pre-warms the Whisper, chat, and intent-judge models before announcing "Listening!" so the first engagement feels instant. This adds a few seconds on cold start and is bounded at 60 s. If Ollama is slow, Jarvis will start listening anyway and load the models on demand. Enable **Low Power Mode** in Settings to skip LLM startup warmup.
 
 **Jarvis doesn't hear me** - Check microphone permissions, speak clearly after "Jarvis"
 
+**Not sure what is running** - Open the tray menu and click **🩺 Runtime Status**. It shows whether Jarvis is listening, whether Low Power Mode is active, whether Ollama is needed/running, which models are configured, and how many MCP servers are enabled.
+
 **Responses are slow** - Ensure you have enough VRAM (8GB+ for default model; see System Requirements for other models)
+
+**Mac gets warm while Jarvis is active** - Enable **⚙️ Settings → ✨ Features → Low Power Mode**. This keeps voice recognition ready while avoiding background LLM warmup and shortening Ollama's idle residency window.
+
+**Need to cool down immediately** - Use the tray action **⚡ Stop Now (Skip Diary)**. It stops the voice daemon without running the final diary LLM pass. Regular **Stop Listening** still saves the diary before shutdown.
+
+**Mac is still warm after quitting** - If Jarvis starts Ollama for you, quitting Jarvis also stops that owned Ollama runtime. If Ollama was already running before Jarvis opened, Jarvis leaves it running so it does not interrupt your other local AI tools.
 
 **Windows: App won't start** - Extract full zip first, check Windows Defender
 

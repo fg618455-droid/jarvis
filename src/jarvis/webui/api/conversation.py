@@ -9,7 +9,6 @@ to try something without speaking out loud.
 from __future__ import annotations
 
 import sys
-import threading
 
 from flask import Blueprint, Response, jsonify, request
 
@@ -21,10 +20,6 @@ from jarvis.runtime import Phase, get_recorder, get_runtime_state, set_phase, se
 bp = Blueprint("conversation", __name__, url_prefix="/api")
 
 MAX_TEXT_CHARS = 4000
-
-# One typed turn at a time. The reply engine is not built for concurrent
-# turns against one dialogue memory, and a person typing cannot outrun it.
-_typing_lock = threading.Lock()
 
 
 @bp.route("/conversation")
@@ -52,7 +47,14 @@ def chat() -> Response:
     if len(text) > MAX_TEXT_CHARS:
         return jsonify(error=f"text exceeds {MAX_TEXT_CHARS} characters"), 400
 
-    if not _typing_lock.acquire(blocking=False):
+    # One turn at a time, across every way in. Voice, the desktop chat window
+    # and this endpoint all run the reply engine against the same dialogue
+    # memory, and the daemon owns the lock that serialises them. A person
+    # typing cannot outrun a turn, so a busy lock is refused rather than
+    # queued.
+    from jarvis.daemon import chat_query_lock
+
+    if not chat_query_lock().acquire(blocking=False):
         return jsonify(error="a reply is already being written"), 409
 
     recorder = get_recorder()
@@ -78,7 +80,7 @@ def chat() -> Response:
     finally:
         if database is not None:
             database.close()
-        _typing_lock.release()
+        chat_query_lock().release()
 
     record = recorder.finish(reply=reply)
     set_phase_if(Phase.THINKING, Phase.IDLE)

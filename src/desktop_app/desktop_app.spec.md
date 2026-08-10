@@ -22,6 +22,7 @@ src/desktop_app/
 ├── face_widget.py       # Animated face visualization
 ├── themes.py            # Qt stylesheets and color palette
 ├── diary_dialog.py      # End-of-session diary update dialog
+├── chat_window.py       # Text chat interface (see chat_window.spec.md)
 ├── updater.py           # Update checking logic
 ├── update_dialog.py     # Update notification dialogs
 └── desktop_assets/      # Icons and images
@@ -67,7 +68,7 @@ flowchart TD
 
 1. **Splash Screen**: Shows immediately to provide visual feedback while loading
 2. **Provider-aware Ollama gating** (`_ollama_runtime_flags` in `app.py`): The Ollama server-start and model-verification steps run only when a local provider actually uses Ollama. A pure OpenAI-compatible setup (chat and embeddings both remote) skips them entirely. `get_required_models()` is provider-aware, so model verification pulls exactly the models that run locally: chat + intent-judge when chat is on Ollama, and the embedding model when embeddings are on Ollama. When chat is on Ollama, a missing model opens the setup wizard; when only embeddings are local (remote chat), a missing embedding model surfaces a clear non-blocking instruction (memory search falls back to keyword matching until it is pulled). The unsupported-chat-model check runs only on the Ollama chat path. `should_show_setup_wizard()` returns False for an OpenAI-compatible chat provider.
-3. **Ollama Auto-Start**: When Ollama is in use and not running, automatically starts it (up to 15s wait). If the wait times out, the setup wizard opens so the user can diagnose connectivity; cancelling the wizard exits the app.
+3. **Ollama Auto-Start**: When Ollama is in use and not running, automatically starts it (up to 15s wait). If the wait times out, the setup wizard opens so the user can diagnose connectivity; cancelling the wizard exits the app. The desktop app records ownership only for an Ollama runtime it launches in this session. On app exit, it stops that owned runtime and leaves any pre-existing user-managed Ollama process running.
 3a. **OpenAI-compatible reachability check** (`_check_openai_compat_reachable` in `app.py`): Jarvis cannot start a third-party server the way it starts Ollama, so on a pure OpenAI-compatible setup it checks the server answers `GET /v1/models` and, if not, shows a one-off warning naming the address (never the API key) and pointing to Settings, then continues. The user only otherwise discovers a down server when their first request fails.
 4. **Single Instance Lock**: Prevents multiple copies from running simultaneously. If another instance is detected, shows a dialog offering to close the existing instance and start fresh.
 5. **Crash Detection**: Detects previous crashes and offers to submit bug reports
@@ -88,6 +89,8 @@ The central controller that manages:
 - **Daemon lifecycle** (start/stop the Jarvis voice assistant)
 - **Window management** (log viewer, control centre, face window)
 - **Update checking** on startup and on-demand
+- **Runtime diagnostics** (`🩺 Runtime Status`): shows whether the assistant is listening, the daemon mode/PID, whether Low Power Mode is active, whether Ollama is needed/running, whether Jarvis owns the current Ollama runtime, active chat/embedding models, and configured MCP server count. The dialog is informational and never starts or stops services.
+- **Fast stop** (`⚡ Stop Now (Skip Diary)`): available only while the daemon is running. It stops the voice daemon without the final shutdown diary LLM pass so local model resources are released quickly. Normal `⏸️ Stop Listening` still performs the shutdown diary save.
 
 ### Windows
 
@@ -99,6 +102,7 @@ The central controller that manages:
 | **SettingsWindow** | Auto-generated config editor with tabbed categories |
 | **SetupWizard** | First-run configuration (Ollama, models, profile) |
 | **DictationHistoryWindow** | Scrollable list of past dictations with copy/delete/clear actions |
+| **ChatWindow** | Text chat interface alongside voice; shares one conversation with the voice path and is enabled only while the daemon is running (see `chat_window.spec.md`) |
 
 ### Tray Menu: GPU Library Recovery (Windows)
 
@@ -160,12 +164,33 @@ The desktop app runs the Jarvis daemon in a **QThread** (bundled mode) or **subp
 └─────────────────────────────────────────┘
 ```
 
+### Threading: worker QThreads never die while running
+
+All long-lived worker QThreads in the desktop app inherit `KeepAliveWorker`
+(`src/desktop_app/qt_worker.py`): `DaemonThread`, `SetupCheckWorker`,
+`_LLMReachWorker`, `ServerCheckWorker` (app.py) and every setup-wizard
+worker. The class keeps each started worker referenced in a class-level
+registry until its OS thread has fully finished (released via the built-in
+`finished` signal). Dropping the last Python reference to a winding-down
+QThread — for example from a completion slot that clears the attribute
+holding it — destroys a running QThread and Qt aborts the whole app with
+"Fatal Python error: Aborted" on the main thread (#584/#575/#576; the
+setup-wizard crash class #509/#407/#239). Because of this, worker
+subclasses must never shadow the built-in `finished` signal — custom
+completion signals use other names (`check_done`, `completed`, `done`).
+
+`DaemonThread`'s `finished` slot (`_on_daemon_finished`) is connected with
+`Qt.QueuedConnection`: the signal is emitted from the worker's OS thread,
+and the slot mutates Qt UI state (menu actions, tray icon, face state), so
+it must run on the main thread.
+
 ### Daemon Callbacks
 
 The desktop app registers callbacks with the daemon for:
 
 - **Diary updates**: Shows DiaryUpdateDialog when session ends
 - **Clean shutdown**: Ensures graceful exit with diary save
+- **Fast shutdown**: Calls `request_stop(skip_diary_update=True)` in bundled mode, or sends `SHUTDOWN_SKIP_DIARY` over daemon stdin in subprocess mode. This skips only the final forced diary update; dictation, voice, TTS, MCP runtime, and database cleanup still run.
 
 #### Bundled Mode (QThread)
 
@@ -178,9 +203,12 @@ In bundled mode, the daemon runs in the same process, so callbacks can be set di
 #### Subprocess Mode (Development)
 
 In subprocess mode, the daemon runs as a separate process. IPC is achieved via stdout:
-- Daemon emits JSON events prefixed with `__DIARY__:` (e.g., `__DIARY__:{"type":"token","data":"Hello"}`)
+- **Diary updates**: Daemon emits JSON events prefixed with `__DIARY__:` (e.g., `__DIARY__:{"type":"token","data":"Hello"}`)
+- **Chat events**: Daemon emits `__CHAT__:` events (start/complete/busy); the desktop app sends queries in via `__CHAT_QUERY__:` lines on the daemon's stdin (see `chat_window.spec.md`)
 - Desktop app intercepts these lines from the log stream
 - DiaryUpdateDialog's `process_log_line()` parses and emits signals
+- Chat IPC lines are marshalled onto the Qt main thread via `ChatIpcSignals`, then `_on_chat_ipc_line()` forwards them to `ChatWindow.process_ipc_line()`
+- When the daemon starts, stops, or a subprocess exits unexpectedly, the tray updates any open ChatWindow lifecycle banner and clears or refreshes its subprocess stdin submit function so the window never writes to a dead pipe.
 - Same UI experience as bundled mode
 
 ## Theme System
@@ -273,6 +301,18 @@ sequenceDiagram
 2. On clean exit, removes the marker
 3. On next startup, if marker exists → previous session crashed
 4. Offers to submit crash report to GitHub Issues
+
+### Crash Reports Carry the Native Stack (macOS)
+
+"Fatal Python error: Aborted" crashes are C-level aborts whose native
+stack faulthandler cannot capture — it only dumps Python frames, which for
+the abort family (#584/#575/#576) shows nothing but the main thread parked
+in `app.exec()`. On macOS the OS still writes a full report with native
+frames to `~/Library/Logs/DiagnosticReports/Jarvis-*.ips`. On the next
+launch, `collect_macos_crash_report()` finds the newest report newer than
+the previous crash log and appends its exception type, termination
+indicator and the crashed thread's top native frames to the crash-dialog
+content and the report-issue body, so these aborts become diagnosable.
 
 ### Fallbacks
 
