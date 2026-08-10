@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 
@@ -136,6 +137,262 @@ class TestOpenAICompatStartupCheck:
         assert "http://localhost:1234/v1" in msg
         assert "sk-secret" not in msg
         assert "Setup Wizard" in msg
+
+
+class TestOllamaRuntimeOwnership:
+    """Jarvis only stops Ollama when this desktop session launched it."""
+
+    class FakeProcess:
+        def __init__(self):
+            self.terminated = False
+            self.killed = False
+            self.waited_timeout = None
+
+        def poll(self):
+            return 0 if self.terminated or self.killed else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            self.waited_timeout = timeout
+            return 0
+
+        def kill(self):
+            self.killed = True
+
+    def test_stop_owned_runtime_noops_when_not_started_by_jarvis(self):
+        from desktop_app.app import (
+            OllamaRuntimeOwnership,
+            _stop_owned_ollama_runtime,
+        )
+
+        process = self.FakeProcess()
+        ownership = OllamaRuntimeOwnership(
+            started_by_jarvis=False,
+            launch_method="serve",
+            process=process,
+        )
+
+        stopped = _stop_owned_ollama_runtime(ownership)
+
+        assert stopped is False
+        assert process.terminated is False
+        assert ownership.stopped is False
+
+    def test_stop_owned_runtime_terminates_direct_serve_process(self):
+        from desktop_app.app import (
+            OllamaRuntimeOwnership,
+            _stop_owned_ollama_runtime,
+        )
+
+        process = self.FakeProcess()
+        ownership = OllamaRuntimeOwnership(
+            started_by_jarvis=True,
+            launch_method="serve",
+            process=process,
+        )
+
+        stopped = _stop_owned_ollama_runtime(ownership, timeout_sec=2)
+
+        assert stopped is True
+        assert process.terminated is True
+        assert process.killed is False
+        assert process.waited_timeout == 2
+        assert ownership.stopped is True
+
+    def test_stop_owned_runtime_quits_macos_app_when_owned(self):
+        from desktop_app.app import (
+            OllamaRuntimeOwnership,
+            _stop_owned_ollama_runtime,
+        )
+
+        commands = []
+
+        def runner(command, **_kwargs):
+            commands.append(command)
+            return MagicMock(returncode=0)
+
+        ownership = OllamaRuntimeOwnership(
+            started_by_jarvis=True,
+            launch_method="macos_app",
+            process=None,
+        )
+
+        with patch("sys.platform", "darwin"):
+            stopped = _stop_owned_ollama_runtime(
+                ownership,
+                command_runner=runner,
+            )
+
+        assert stopped is True
+        assert ownership.stopped is True
+        assert commands == [["osascript", "-e", 'tell application "Ollama" to quit']]
+
+    def test_cleanup_on_exit_stops_owned_ollama_runtime(self):
+        from desktop_app.app import JarvisSystemTray, OllamaRuntimeOwnership
+
+        stopped = []
+        tray = JarvisSystemTray.__new__(JarvisSystemTray)
+        tray.is_listening = False
+        tray.daemon_process = None
+        tray._ollama_runtime_ownership = OllamaRuntimeOwnership(
+            started_by_jarvis=True,
+            launch_method="serve",
+        )
+        tray.memory_viewer = MagicMock()
+
+        with patch(
+            "desktop_app.app._stop_owned_ollama_runtime",
+            side_effect=lambda ownership: stopped.append(ownership) or True,
+        ):
+            tray.cleanup_on_exit()
+
+        assert stopped == [tray._ollama_runtime_ownership]
+
+
+class TestRuntimeStatusSnapshot:
+    """The tray runtime status reports Jarvis, Ollama, and config state."""
+
+    def _settings(self, **overrides):
+        values = {
+            "llm_provider": "ollama",
+            "embedding_provider": "",
+            "llm_chat_model": "gemma4:e2b",
+            "embedding_model": "nomic-embed-text",
+            "low_power_mode": False,
+            "mcps": {"github": {}, "browser": {}},
+        }
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    def test_collect_snapshot_reports_subprocess_and_owned_ollama(self):
+        from desktop_app.app import (
+            OllamaRuntimeOwnership,
+            _collect_runtime_status_snapshot,
+        )
+
+        process = MagicMock()
+        process.pid = 12345
+        process.poll.return_value = None
+
+        snapshot = _collect_runtime_status_snapshot(
+            is_listening=True,
+            is_bundled=False,
+            daemon_process=process,
+            daemon_thread=None,
+            ollama_runtime_ownership=OllamaRuntimeOwnership(
+                started_by_jarvis=True,
+                launch_method="serve",
+            ),
+            settings_loader=lambda: self._settings(),
+            ollama_checker=lambda: (True, "0.9.1"),
+        )
+
+        assert snapshot.daemon_state == "Listening"
+        assert snapshot.daemon_mode == "subprocess"
+        assert snapshot.daemon_pid == 12345
+        assert snapshot.ollama_needed is True
+        assert snapshot.ollama_running is True
+        assert snapshot.ollama_version == "0.9.1"
+        assert snapshot.ollama_owner == "Jarvis"
+        assert snapshot.low_power_mode is False
+        assert snapshot.mcp_count == 2
+
+    def test_collect_snapshot_reports_low_power_mode(self):
+        from desktop_app.app import _collect_runtime_status_snapshot
+
+        snapshot = _collect_runtime_status_snapshot(
+            is_listening=True,
+            is_bundled=True,
+            daemon_process=None,
+            daemon_thread=object(),
+            ollama_runtime_ownership=None,
+            settings_loader=lambda: self._settings(low_power_mode=True),
+            ollama_checker=lambda: (False, None),
+        )
+
+        assert snapshot.low_power_mode is True
+
+    def test_collect_snapshot_fails_open_when_checks_error(self):
+        from desktop_app.app import _collect_runtime_status_snapshot
+
+        snapshot = _collect_runtime_status_snapshot(
+            is_listening=False,
+            is_bundled=True,
+            daemon_process=None,
+            daemon_thread=None,
+            ollama_runtime_ownership=None,
+            settings_loader=lambda: (_ for _ in ()).throw(RuntimeError("bad config")),
+            ollama_checker=lambda: (_ for _ in ()).throw(RuntimeError("down")),
+        )
+
+        assert snapshot.daemon_state == "Stopped"
+        assert snapshot.daemon_mode == "bundled"
+        assert snapshot.daemon_pid is None
+        assert snapshot.ollama_needed is True
+        assert snapshot.ollama_running is False
+        assert snapshot.ollama_version is None
+        assert snapshot.low_power_mode is False
+        assert snapshot.chat_model == "unknown"
+        assert snapshot.mcp_count == 0
+
+    def test_format_runtime_status_is_scannable(self):
+        from desktop_app.app import RuntimeStatusSnapshot, _format_runtime_status
+
+        text = _format_runtime_status(
+            RuntimeStatusSnapshot(
+                daemon_state="Listening",
+                daemon_mode="subprocess",
+                daemon_pid=12345,
+                ollama_needed=True,
+                ollama_running=True,
+                ollama_version="0.9.1",
+                ollama_owner="Jarvis",
+                ollama_launch_method="serve",
+                low_power_mode=True,
+                llm_provider="ollama",
+                chat_model="gemma4:e2b",
+                embedding_provider="ollama",
+                embedding_model="nomic-embed-text",
+                mcp_count=2,
+            )
+        )
+
+        assert text.startswith("🩺 Runtime Status")
+        assert "\n🎙️ Assistant\n  State: Listening" in text
+        assert "  Low Power Mode: On" in text
+        assert "\n🦙 Ollama\n  Needed: Yes\n  Running: Yes (0.9.1)" in text
+        assert "\n🔌 MCP\n  Configured servers: 2" in text
+
+
+class TestQuickStopAction:
+    """The tray exposes a fast stop path that skips the final diary LLM pass."""
+
+    def test_quick_stop_noops_when_already_stopped(self):
+        from desktop_app.app import JarvisSystemTray
+
+        tray = JarvisSystemTray.__new__(JarvisSystemTray)
+        tray.is_listening = False
+        tray.stop_daemon = MagicMock()
+
+        tray.quick_stop_daemon()
+
+        tray.stop_daemon.assert_not_called()
+
+    def test_quick_stop_skips_diary_update_when_listening(self):
+        from desktop_app.app import JarvisSystemTray
+
+        tray = JarvisSystemTray.__new__(JarvisSystemTray)
+        tray.is_listening = True
+        tray.stop_daemon = MagicMock()
+
+        tray.quick_stop_daemon()
+
+        tray.stop_daemon.assert_called_once_with(
+            show_diary_dialog=False,
+            skip_diary_update=True,
+        )
 
 
 class TestGetCrashPaths:
