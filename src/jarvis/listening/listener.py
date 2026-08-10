@@ -19,6 +19,7 @@ from datetime import datetime
 from rapidfuzz import fuzz
 from contextlib import contextmanager
 
+from .conversation_mode import register_conversation_controller
 from .echo_detection import EchoDetector
 from .state_manager import StateManager
 from ..utils.audio_lock import portaudio_lock
@@ -490,6 +491,7 @@ class VoiceListener(threading.Thread):
     def stop(self) -> None:
         """Stop the voice listener."""
         self._should_stop = True
+        register_conversation_controller(None)
         self.state_manager.stop()
         self._stop_thinking_tune()
 
@@ -785,9 +787,31 @@ class VoiceListener(threading.Thread):
                 current_text=text_lower,
             )
 
+            if (
+                intent_judgment is not None
+                and intent_judgment.stop
+                and self.state_manager.is_conversation_active
+            ):
+                # The judge decides what counts as asking Jarvis to stop, so
+                # ending a conversation works in any language without a list
+                # of stop words to maintain.
+                debug_log(
+                    f"conversation ended by request: \"{text_lower[:50]}\"", "voice"
+                )
+                self._stop_thinking_tune()
+                self._transcript_buffer.mark_segment_processed(text_lower)
+                self._clear_audio_buffers()
+                self.state_manager.end_conversation()
+                return
+
             if intent_judgment is not None:
                 # Log intent judge decision for user visibility
-                mode_str = "hot window" if could_be_hot_window else "wake word"
+                if self.state_manager.is_conversation_active:
+                    mode_str = "conversation"
+                elif could_be_hot_window:
+                    mode_str = "hot window"
+                else:
+                    mode_str = "wake word"
                 if intent_judgment.directed:
                     print(f"  🧠 Intent ({mode_str}): directed → \"{intent_judgment.query or text_lower}\"", flush=True)
                 else:
@@ -1746,6 +1770,10 @@ class VoiceListener(threading.Thread):
 
     def run(self) -> None:
         """Main voice listening loop."""
+        # Publish the conversation switch so interfaces outside the voice
+        # loop can turn it on without reaching into the listener.
+        register_conversation_controller(self.state_manager)
+
         if sd is None:
             debug_log("sounddevice not available", "voice")
             print("  ❌ Audio system not available - sounddevice failed to load", flush=True)

@@ -138,7 +138,7 @@ On small models, a caveat line is appended above a more involved example to set 
 
 **Best-effort semantics:** Every warmup path swallows its own errors and returns a bool. A failed warmup prints `⚠️ … warmup failed — will load on first use` but never blocks or crashes the listener — voice input is prioritised over startup latency.
 
-## The Three Listening Modes
+## The Listening Modes
 
 ### 1. Wake Word Mode (Default)
 
@@ -176,7 +176,35 @@ After TTS finishes, allow wake-word-free follow-up.
 
 **Expiry:** Timer-based, guaranteed to fire even if no audio
 
-### 3. During TTS
+### 3. Conversation Mode
+
+The follow-up window held open with no expiry: every utterance is treated as
+addressed to Jarvis until the conversation ends, so no question needs the wake
+word.
+
+**Activation:** `set_conversation_mode(True)` in
+`jarvis.listening.conversation_mode`. The listener registers its state manager
+there when its loop starts and withdraws it on stop, so an interface outside
+the voice loop (the control centre, the tray) flips the switch without holding
+a reference to the listener. The switch reports whether it reached a listener
+at all, which is how a caller distinguishes "turned on" from "nothing is
+listening".
+
+**Behaviour:** `was_speech_during_hot_window` answers True for every utterance,
+which is what routes speech through the same acceptance path as a follow-up:
+echo checks, intent judge, and the hot-window override. Both expiry paths and
+the expiry timer decline to act while a conversation runs, so the window
+cannot quietly close underneath it.
+
+**Ending:** the intent judge's `stop` decision ends the conversation, and the
+listener returns to wake-word mode. Deciding what counts as asking Jarvis to
+stop belongs to the judge rather than to a list of stop words, so it holds in
+every language. A `stop` decision outside a conversation does nothing: Jarvis
+does not support spoken interruption, and a stop while it is answering is not
+an escape hatch to the same behaviour by another route. Stopping the listener
+also ends any conversation.
+
+### 4. During TTS
 
 Playback is a closed listening interval. The listener clears its audio queues when TTS starts, the sounddevice callback discards microphone frames while TTS is speaking, and a transcript that crosses the playback boundary is rejected defensively. Jarvis does not support barge-in or spoken interruption. After playback and the `echo_tolerance` delay, the hot window accepts a follow-up without another wake name.
 
@@ -329,6 +357,7 @@ stateDiagram-v2
 
     WakeWord: Listening for Wake Word
     HotWindow: Listening for Follow-up
+    Conversation: Listening without Wake Word
     DuringTTS: TTS Playing
 
     WakeWord --> DuringTTS: Edge wake address dispatched
@@ -338,6 +367,9 @@ stateDiagram-v2
     DuringTTS --> HotWindow: TTS ends + echo_tolerance
     HotWindow --> IntentJudge: Speech detected
     HotWindow --> WakeWord: Timer expires
+    WakeWord --> Conversation: Conversation switched on
+    Conversation --> IntentJudge: Speech detected
+    Conversation --> WakeWord: Judge returns stop
 ```
 
 ## Audio Pipeline

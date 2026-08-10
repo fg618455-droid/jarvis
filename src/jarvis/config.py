@@ -49,6 +49,10 @@ DEFAULT_CHAT_MODEL = "gemma4:e2b"
 # this pull-name only exists on Ollama.
 DEFAULT_FAST_MODEL = "gemma4:e2b"
 
+# Host serving the Telegram Bot API. The server is published as software, so
+# a local instance keeps confirmation traffic off a third party's machine.
+DEFAULT_TELEGRAM_API_BASE_URL = "https://api.telegram.org"
+
 
 def get_supported_model_ids() -> set[str]:
     """Get set of supported model IDs for quick lookup."""
@@ -124,6 +128,7 @@ class Settings:
     security_confirmation_timeout_sec: int
     telegram_bot_token: str
     telegram_chat_id: str
+    telegram_api_base_url: str
 
     # Control centre (local web interface served by the daemon)
     webui_enabled: bool
@@ -469,6 +474,25 @@ def _expand_path(value: Any) -> Optional[str]:
         return str(value)
 
 
+def _expand_model_reference(value: Any) -> Optional[str]:
+    """Normalise a model setting that may name a model rather than a file.
+
+    A Whisper model is given as a size ("medium"), a Hugging Face repo ID
+    ("owner/model"), or a directory on disk. Only the last is a path, and
+    path normalisation would rewrite the repo ID's separator to a backslash
+    on Windows, leaving an identifier the loader cannot resolve. Expansion
+    therefore applies to what is recognisably a path and nothing else.
+    """
+    if value in (None, "", "null"):
+        return None
+    raw = str(value)
+    try:
+        is_a_path = raw.startswith("~") or Path(raw).is_absolute() or Path(raw).exists()
+    except Exception:
+        is_a_path = False
+    return _expand_path(raw) if is_a_path else raw
+
+
 def _normalise_language_code(value: Any) -> str:
     """Normalise a user-supplied language setting to a bare lowercase code.
 
@@ -551,6 +575,7 @@ def get_default_config() -> Dict[str, Any]:
         "security_confirmation_timeout_sec": 60,
         "telegram_bot_token": "",
         "telegram_chat_id": "",
+        "telegram_api_base_url": DEFAULT_TELEGRAM_API_BASE_URL,
 
         # Control centre
         "webui_enabled": True,
@@ -816,9 +841,7 @@ def load_settings() -> Settings:
     wake_word = str(merged.get("wake_word", "jarvis")).strip().lower()
     wake_aliases = [a.strip().lower() for a in _ensure_list(merged.get("wake_aliases")) if a.strip()]
     wake_fuzzy_ratio = float(merged.get("wake_fuzzy_ratio", 0.78))
-    # whisper_model accepts a size name ("medium") or a local model
-    # directory; _expand_path is a no-op for plain names.
-    whisper_model = _expand_path(merged.get("whisper_model")) or "medium"
+    whisper_model = _expand_model_reference(merged.get("whisper_model")) or "medium"
     whisper_backend = os.environ.get("JARVIS_WHISPER_BACKEND", "").lower() or str(merged.get("whisper_backend", "auto")).lower()
     if whisper_backend not in ("auto", "mlx", "faster-whisper"):
         whisper_backend = "auto"
@@ -954,6 +977,10 @@ def load_settings() -> Settings:
         or os.environ.get("TELEGRAM_CHAT_ID")
         or ""
     ).strip()
+    telegram_api_base_url = str(
+        merged.get("telegram_api_base_url", "")
+        or DEFAULT_TELEGRAM_API_BASE_URL
+    ).strip().rstrip("/")
 
     webui_enabled = bool(merged.get("webui_enabled", True))
     # A port below 1024 needs rights the daemon does not run with, and a
@@ -1004,6 +1031,7 @@ def load_settings() -> Settings:
         security_confirmation_timeout_sec=security_confirmation_timeout_sec,
         telegram_bot_token=telegram_bot_token,
         telegram_chat_id=telegram_chat_id,
+        telegram_api_base_url=telegram_api_base_url,
 
         # Control centre
         webui_enabled=webui_enabled,

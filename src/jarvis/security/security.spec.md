@@ -106,6 +106,11 @@ variables. A configured value wins, and the environment is read only when the
 setting is empty, so a token belonging to an unrelated project cannot hijack
 the channel.
 
+`telegram_api_base_url` names the Bot API server the channel calls. The Bot API
+server is published as software, so pointing the key at a local instance keeps
+tool names and arguments on the user's own machine and off a third party's.
+The public host is the default because a bot token is useless without it.
+
 The channel sends an inline-button request containing the tool and bounded
 arguments. It accepts only an approve or deny callback whose random request ID
 matches the pending request and whose chat ID matches the configured chat.
@@ -136,6 +141,7 @@ order when stronger user presence or possession evidence is required.
 | `security_confirmation_timeout_sec` | `60` | Per-channel decision timeout, clamped to 1 through 300 seconds |
 | `telegram_bot_token` | empty | Telegram Bot API credential |
 | `telegram_chat_id` | empty | Sole chat authorised to decide requests |
+| `telegram_api_base_url` | `https://api.telegram.org` | Bot API server to call; a self-hosted instance keeps confirmations local |
 
 All keys are fields on the frozen `Settings` dataclass, are parsed and passed by
 `load_settings()`, and are exposed on the Security page in the desktop settings

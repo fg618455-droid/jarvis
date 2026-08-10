@@ -300,6 +300,7 @@ def test_every_security_config_key_is_exposed_in_settings_metadata() -> None:
         "security_confirmation_timeout_sec",
         "telegram_bot_token",
         "telegram_chat_id",
+        "telegram_api_base_url",
     } <= exposed
 
 
@@ -472,6 +473,63 @@ def test_telegram_denial_is_a_final_false_decision() -> None:
     )
 
     assert channel.ask("mail__send", {}) is False
+
+
+def test_telegram_transport_talks_to_the_configured_bot_api_host() -> None:
+    """A self-hosted Bot API server keeps the channel on the user's own machine."""
+    from jarvis.security.telegram_confirm import RequestsTelegramTransport
+
+    transport = RequestsTelegramTransport(
+        "secret-token",
+        base_url="http://127.0.0.1:8081/",
+    )
+
+    assert transport.endpoint("sendMessage") == (
+        "http://127.0.0.1:8081/botsecret-token/sendMessage"
+    )
+
+
+def test_telegram_transport_defaults_to_the_public_bot_api() -> None:
+    from jarvis.security.telegram_confirm import (
+        DEFAULT_TELEGRAM_API_BASE_URL,
+        RequestsTelegramTransport,
+    )
+
+    transport = RequestsTelegramTransport("secret-token")
+
+    assert transport.endpoint("getUpdates") == (
+        f"{DEFAULT_TELEGRAM_API_BASE_URL}/botsecret-token/getUpdates"
+    )
+
+
+def test_telegram_api_base_url_is_read_from_the_config_file(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "telegram_bot_token": "configured-token",
+        "telegram_chat_id": "111",
+        "telegram_api_base_url": "http://127.0.0.1:8081",
+    }), encoding="utf-8")
+    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "")
+
+    cfg = load_settings()
+
+    assert cfg.telegram_api_base_url == "http://127.0.0.1:8081"
+
+
+def test_changing_the_bot_api_host_rebuilds_the_live_gate(mock_config) -> None:
+    """The host is part of the channel's identity, not a cosmetic setting."""
+    mock_config.security_level = "critical"
+    mock_config.security_confirm_channels = ["telegram"]
+    mock_config.telegram_api_base_url = "https://api.telegram.org"
+
+    first = SecurityGate.from_settings(mock_config, channels={"telegram": DecisionChannel(True)})
+    assert SecurityGate.get_or_create(mock_config) is first
+
+    mock_config.telegram_api_base_url = "http://127.0.0.1:8081"
+
+    assert SecurityGate.get_or_create(mock_config) is not first
 
 
 def test_telegram_timeout_is_testable_without_network_or_token() -> None:

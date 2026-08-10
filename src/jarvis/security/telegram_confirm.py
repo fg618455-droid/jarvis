@@ -11,6 +11,7 @@ from typing import Any, Protocol
 
 import requests
 
+from jarvis.config import DEFAULT_TELEGRAM_API_BASE_URL
 from jarvis.debug import debug_log
 
 
@@ -19,13 +20,28 @@ class TelegramTransport(Protocol):
 
 
 class RequestsTelegramTransport:
-    def __init__(self, bot_token: str) -> None:
-        self._base_url = f"https://api.telegram.org/bot{bot_token}"
+    """Bot API calls against whichever server hosts the API.
+
+    The Bot API server is published as software, so pointing this at a
+    local instance keeps confirmation traffic on the user's own machine.
+    """
+
+    def __init__(
+        self,
+        bot_token: str,
+        *,
+        base_url: str = DEFAULT_TELEGRAM_API_BASE_URL,
+    ) -> None:
+        host = (base_url or DEFAULT_TELEGRAM_API_BASE_URL).strip().rstrip("/")
+        self._base_url = f"{host}/bot{bot_token}"
         self._session = requests.Session()
+
+    def endpoint(self, method: str) -> str:
+        return f"{self._base_url}/{method}"
 
     def post(self, method: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
         response = self._session.post(
-            f"{self._base_url}/{method}",
+            self.endpoint(method),
             json=payload,
             timeout=timeout,
         )
@@ -45,6 +61,7 @@ class TelegramConfirm:
         chat_id: str | None,
         timeout_seconds: int = 60,
         *,
+        api_base_url: str = DEFAULT_TELEGRAM_API_BASE_URL,
         transport: TelegramTransport | None = None,
         request_id_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
         clock: Callable[[], float] = time.monotonic,
@@ -53,7 +70,9 @@ class TelegramConfirm:
         self.chat_id = str(chat_id or "").strip()
         self.timeout = timeout_seconds
         self._transport = transport or (
-            RequestsTelegramTransport(self.bot_token) if self.bot_token else None
+            RequestsTelegramTransport(self.bot_token, base_url=api_base_url)
+            if self.bot_token
+            else None
         )
         self._request_id_factory = request_id_factory
         self._clock = clock
