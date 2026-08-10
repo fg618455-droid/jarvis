@@ -28,6 +28,10 @@ Plugins = PyQt6/Qt6/plugins
 # Manual collection can conflict with hooks and cause crashes
 datas = [
     (str(src_path / 'desktop_app' / 'desktop_assets' / '*.png'), 'desktop_app/desktop_assets'),
+    # The control centre serves its interface from disk, and Flask resolves
+    # that folder relative to the module. Without it the bundled app answers
+    # every page with a 404 while the API works perfectly.
+    (str(src_path / 'jarvis' / 'webui' / 'static'), 'jarvis/webui/static'),
 ]
 
 # Collect Piper TTS data files (espeak-ng-data is required for phonemization)

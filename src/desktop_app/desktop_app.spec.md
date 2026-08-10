@@ -251,14 +251,19 @@ sequenceDiagram
 - **Quarantine stripping (macOS)**: The shell script runs `xattr -dr com.apple.quarantine` on the newly-installed bundle. Builds are unsigned (ad-hoc signing breaks Qt WebEngine's symlinks — see `release.yml`), so without this step Gatekeeper may re-trigger the "unidentified developer" prompt on every update
 - **One-generation rollback (macOS, Linux)**: The previous `.app` / directory is moved aside to `<name>.backup` rather than deleted outright, so a user can restore the prior version manually if the new one fails to launch. The backup from the previous update is cleared before creating a new one, so at most one backup exists on disk at a time. This is a simplified version of Squirrel's versioned-folder rollback — enough safety for a single-bundle install, without the architectural overhead
 
-## Memory Viewer
+## Control Centre
 
-A Flask-based web interface for browsing conversation history:
+`ControlCentreWindow` is a frame around the control centre the core serves
+(`src/jarvis/webui/webui.spec.md`), not an interface of its own.
 
-- Runs on `localhost:5050`
-- **Bundled mode**: Flask runs in a daemon thread
-- **Development mode**: Flask runs as subprocess
-- Opens in embedded QWebEngineView or system browser (macOS fallback)
+- **Never serves over a running daemon**: the window probes `webui_port`
+  first. Something answering there is the daemon's own instance, which holds
+  the live state, so that is what gets shown. Only when nothing answers does
+  the desktop process start a read-only copy of its own
+- **Its own copy is stopped when the app exits**, so quitting the tray does
+  not leave a port listening
+- Opens in embedded QWebEngineView, or the system browser when WebEngine is
+  unavailable or the app is a macOS bundle
 
 ## Error Handling
 

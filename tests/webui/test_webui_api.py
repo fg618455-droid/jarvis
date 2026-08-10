@@ -6,6 +6,7 @@ would skip.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -252,3 +253,15 @@ class TestSystem:
         labels = {entry["label"] for entry in body["paths"]}
         assert {"config", "database"} <= labels
         assert all("exists" in entry for entry in body["paths"])
+
+    def test_the_config_named_is_the_one_this_run_reads(self, client, tmp_path, monkeypatch):
+        """A side-by-side run must not be told it is editing the real file."""
+        elsewhere = tmp_path / "elsewhere" / "config.json"
+        elsewhere.parent.mkdir()
+        elsewhere.write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(elsewhere))
+
+        body = client.get("/api/system", headers=HEADERS).get_json()
+
+        config = next(entry for entry in body["paths"] if entry["label"] == "config")
+        assert Path(config["path"]) == elsewhere

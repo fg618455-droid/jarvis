@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 from flask import Blueprint, Response, jsonify
 
-from jarvis.config import default_config_path, load_settings
+from jarvis.config import load_settings, resolve_config_path
 from jarvis.debug import debug_log
 
 
@@ -208,7 +208,7 @@ def system() -> Response:
             "language": resolve_voice_language(piper_model),
         },
         "paths": [
-            _path_reading("config", str(default_config_path())),
+            _path_reading("config", str(resolve_config_path())),
             _path_reading("database", cfg.db_path),
             _path_reading("turn journal", str(Path(cfg.db_path).parent / "turns.jsonl")),
             _path_reading("speech model", cfg.whisper_model),

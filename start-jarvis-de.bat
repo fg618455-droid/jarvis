@@ -16,6 +16,9 @@ echo.
 echo  Starte JARVIS ... (erster Start laedt Modelle, dauert ~30-60 s)
 echo  🎙️ Sag "Jarvis" am Anfang oder Ende des Satzes. Beenden mit Strg+C.
 echo.
+echo  Control Center im Browser: http://127.0.0.1:5055
+echo  (Die tatsaechliche Adresse steht gleich unten im Log, Zeile "Control centre".)
+echo.
 
 ".venv\Scripts\python.exe" -X utf8 -m jarvis.main
 

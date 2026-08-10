@@ -1094,9 +1094,9 @@ class ControlCentreWindow(QMainWindow):
                     webbrowser.open(self._url)
             else:
                 # Server failed to start - show error message
-                debug_log("memory viewer server failed to start", "desktop")
+                debug_log("control centre server failed to start", "desktop")
                 self._show_error_page(
-                    "The memory viewer server failed to start. "
+                    "The control centre server failed to start. "
                     "Check the console output for details."
                 )
         except Exception as e:
@@ -1209,7 +1209,7 @@ class JarvisSystemTray:
         set_desktop_confirmation_requester(None)
         if self.is_listening:
             self.stop_daemon()
-        # Stop memory viewer server
+        # Stop the control centre this process serves, if any
         if hasattr(self, 'control_centre'):
             self.control_centre.stop_server()
         # Safety net: if daemon process exists but is_listening was False, still clean up
