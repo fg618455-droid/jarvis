@@ -47,6 +47,49 @@ async function request(path, options = {}) {
   return payload;
 }
 
+async function streamRequest(path, onEvent) {
+  const headers = { "X-Jarvis-UI": "1" };
+  if (TOKEN) headers["X-Jarvis-Token"] = TOKEN;
+
+  const response = await fetch(url(path), { method: "POST", headers });
+  if (!response.ok) {
+    const text = await response.text();
+    let payload = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = null;
+    }
+    const error = new Error(payload?.error || `${response.status} ${response.statusText}`);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  let finalEvent = null;
+
+  function consume(line) {
+    if (!line.trim()) return;
+    const event = JSON.parse(line);
+    finalEvent = event;
+    if (onEvent) onEvent(event);
+  }
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffered += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffered.split("\n");
+    buffered = lines.pop() || "";
+    for (const line of lines) consume(line);
+    if (done) break;
+  }
+  consume(buffered);
+  return finalEvent;
+}
+
 export const api = {
   status: () => request("/api/status"),
   turns: (limit = 50) => request(`/api/turns?limit=${limit}`),
@@ -82,6 +125,12 @@ export const api = {
 
   memories: (query) => request(`/api/memories${query ? `?search=${encodeURIComponent(query)}` : ""}`),
   memoryStats: () => request("/api/stats"),
+  meals: () => request("/api/meals"),
+  topics: () => request("/api/topics"),
+  importDiary: (onEvent) => streamRequest("/api/graph/import-diary", onEvent),
+  consolidateAll: (onEvent) => streamRequest("/api/graph/consolidate-all", onEvent),
+  scrubDeflections: (onEvent) => streamRequest("/api/diary/scrub-deflections", onEvent),
+  optimiseTopics: (onEvent) => streamRequest("/api/diary/optimise-topics", onEvent),
 
   exportUrl: () => url("/api/turns/export.csv"),
 };

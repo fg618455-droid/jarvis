@@ -74,13 +74,28 @@ All three rules apply in any language, not only English. The prompt states this 
 
 **Read paths:** none. The rewrite only touches the bulk sweep. Read-time diary retrieval is untouched.
 
-## Bulk Sweep UI
+## Maintenance UI
 
-The memory viewer's diary tab carries a Maintenance section in the sidebar with two operations:
+The control centre's Memory view contains a Maintenance section with two diary
+operations. Both show incremental NDJSON progress and an action-specific final
+summary, and both require confirmation before stored rows are rewritten.
 
-**"🧹 Clean up deflection narration"** — asks the chat model to rewrite each old diary entry, removing only sentences that narrate assistant failures. The rest of each entry is preserved verbatim, no diary entries are deleted, and a summary that is *entirely* deflection narration is kept rather than emptied. Requires the chat model to be running. Backed by `POST /api/diary/scrub-deflections` (NDJSON-streaming) which calls `rewrite_all_diary_summaries`. The endpoint URL still says "scrub" for backwards compatibility; the implementation is now LLM-driven.
+**Clean deflection narration** asks the chat model to rewrite each diary entry,
+removing only sentences that narrate assistant failures. The rest of each entry
+is preserved verbatim, no diary entries are deleted, and a summary that is
+entirely deflection narration is kept rather than emptied. It requires the chat
+model to be running. `POST /api/diary/scrub-deflections` calls
+`rewrite_all_diary_summaries`.
 
-**"🏷️ Optimise tags"** — normalises topic tags across all diary entries using the configured chat model. Because each diary write generates topics independently, the same concept may accumulate multiple surface forms over time ("cook", "cooking", "meal prep"). The optimiser collects all unique tags, makes a single LLM call to propose a normalised taxonomy (merging synonyms, splitting compound tags), then applies the mapping to every row whose tags change. Backed by `POST /api/diary/optimise-topics` (NDJSON-streaming) which calls `optimise_diary_topics`. Requires the chat model to be running. Diary text is untouched; only the `topics` column is rewritten. Preserves `ts_utc` on every rewrite. Re-embeds updated rows best-effort. Fail-open: LLM failure or bad JSON leaves all rows unchanged.
+**Optimise topics** normalises topic tags across all diary entries using the
+configured chat model. Because each diary write generates topics independently,
+the same concept may accumulate multiple surface forms ("cook", "cooking",
+"meal prep"). The optimiser collects all unique tags, makes a single LLM call
+to propose a normalised taxonomy, then applies the mapping to every row whose
+tags change. `POST /api/diary/optimise-topics` calls `optimise_diary_topics`.
+Diary text is untouched; only the `topics` column is rewritten. Every rewrite
+preserves `ts_utc` and refreshes embeddings best-effort. LLM failure or bad JSON
+leaves all rows unchanged.
 
 ## Tag Optimisation
 

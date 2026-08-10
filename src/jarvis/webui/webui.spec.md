@@ -79,8 +79,12 @@ allowed; reading one back is not.
 | `GET /api/turns/export.csv` | The same history flattened, one column per stage |
 | `GET /api/conversation` | Recent turns plus the discarded-utterance counts |
 | `POST /api/chat` | Put text through the reply engine, optionally spoken aloud |
-| `GET /api/memories`, `/api/topics`, `/api/meals`, `/api/stats` | The diary and meal log |
-| `GET/POST/PUT/DELETE /api/graph/*` | The memory graph, its presets, and the diary import and consolidation actions |
+| `GET /api/memories`, `/api/topics`, `/api/meals`, `/api/stats` | The diary, topic tally, meal log, and memory statistics |
+| `GET/POST/PUT/DELETE /api/graph/*` | The memory graph and its presets |
+| `POST /api/graph/import-diary` | Feed every diary summary through graph extraction and placement, streaming NDJSON progress |
+| `POST /api/graph/consolidate-all` | Rewrite every populated graph node with the current merge rules, streaming NDJSON progress |
+| `POST /api/diary/scrub-deflections` | Rewrite diary summaries without deflection narration, streaming NDJSON progress |
+| `POST /api/diary/optimise-topics` | Normalise topic tags across diary rows, streaming NDJSON progress |
 | `GET /api/tools`, `POST /api/tools/refresh` | The tool catalogue, MCP server state, rediscovery |
 | `GET /api/security`, `/api/security/pending`, `POST /api/security/decide` | The confirmation policy, what is waiting, and the answer |
 | `GET /api/system` | GPU, resident models, speech configuration, paths, process |
@@ -97,6 +101,30 @@ because both write the same file: only non-default values are stored, and
 keys the registry does not describe survive untouched. A credential is sent
 back masked, and a masked value returned unchanged leaves the stored one
 alone, so saving a form never overwrites a secret with its own mask.
+
+## Memory view
+
+The Memory view places the graph tree and selected-node editor side by side,
+followed by a Maintenance section, the diary, and a responsive two-column row
+for the meal log and topic tally. The meal log shows each meal's date,
+description, energy, protein, carbohydrate, and fat. The topic tally shows
+each normalised topic with the number of diary entries that carry it. All
+stored content is rendered as text nodes.
+
+The Maintenance section exposes four long-running local-model actions:
+
+| Action | Route | Confirmation |
+|---|---|---|
+| Import diary | `POST /api/graph/import-diary` | Not required; graph facts are added through the normal learning pipeline |
+| Consolidate graph | `POST /api/graph/consolidate-all` | Explains that every populated graph node is rewritten |
+| Clean deflection narration | `POST /api/diary/scrub-deflections` | Explains that stored diary summaries are rewritten and other text is preserved |
+| Optimise topics | `POST /api/diary/optimise-topics` | Explains that stored topic tags are rewritten while diary text stays unchanged |
+
+Each action disables the maintenance controls while it runs and consumes its
+NDJSON stream incrementally. Its card shows the processed and total counts, a
+live progress bar, and a result summary using the endpoint's action-specific
+completion fields. Network failures and streamed `error` events remain visible
+in the same status area. The memory data is re-read after a completed action.
 
 ## Configuration
 
