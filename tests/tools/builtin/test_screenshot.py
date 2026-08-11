@@ -25,9 +25,9 @@ class TestScreenshotTool:
         assert self.tool.inputSchema["type"] == "object"
         assert self.tool.inputSchema["required"] == []
 
+    @patch('src.jarvis.tools.builtin.screenshot._capture_to', return_value=(True, ''))
     @patch('shutil.which')
-    @patch('subprocess.run')
-    def test_run_success(self, mock_run, mock_which):
+    def test_run_success(self, mock_which, _capture):
         """Test successful screenshot capture with inlined OCR logic."""
         # Lightweight stubs so dynamic imports succeed without heavy deps.
         # Saved and restored so the stubs don't leak into later tests that
@@ -50,21 +50,10 @@ class TestScreenshotTool:
         sys.modules['PIL'] = type('StubPIL', (), {'Image': _StubImage})
         sys.modules['PIL.Image'] = _StubImage
 
-        # Indicate tools exist
-        def which_side_effect(name):
-            return f"/usr/bin/{name}" if name in ("screencapture", "tesseract") else None
-        mock_which.side_effect = which_side_effect
-
-        mock_proc = Mock()
-        mock_proc.returncode = 0
-        mock_run.return_value = mock_proc
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}" if name == "tesseract" else None
 
         try:
-            with patch('tempfile.mkdtemp', return_value='/tmp/jarvis_ocr_test'), \
-                 patch('os.path.exists', return_value=True), \
-                 patch('os.remove'), \
-                 patch('os.rmdir'):
-                result = self.tool.run({}, self.context)
+            result = self.tool.run({}, self.context)
         finally:
             for _name, _saved in _saved_modules.items():
                 if _saved is None:
@@ -77,22 +66,10 @@ class TestScreenshotTool:
         assert result.reply_text == 'Sample OCR text'
         self.context.user_print.assert_called()
 
-    @patch('shutil.which')
-    @patch('subprocess.run')
-    def test_run_empty_ocr(self, mock_run, mock_which):
-        """Test screenshot with empty OCR result (tesseract missing)."""
-        # screencapture present, tesseract missing
-        def which_side_effect(name):
-            if name == 'screencapture':
-                return '/usr/bin/screencapture'
-            return None
-        mock_which.side_effect = which_side_effect
-        mock_proc = Mock(); mock_proc.returncode = 0; mock_run.return_value = mock_proc
-        with patch('tempfile.mkdtemp') as mock_tmp, \
-             patch('os.path.exists') as mock_exists:
-            mock_tmp.return_value = '/tmp/jarvis_ocr_test'
-            mock_exists.return_value = True
-            result = self.tool.run({}, self.context)
+    @patch('shutil.which', return_value=None)
+    def test_run_without_ocr_dependency_reports_unsupported(self, _which):
+        """A missing OCR binary must never be reported as successful capture."""
+        result = self.tool.run({}, self.context)
         assert isinstance(result, ToolExecutionResult)
-        assert result.success is True
-        assert result.reply_text == ''
+        assert result.success is False
+        assert result.error_code == "unsupported"

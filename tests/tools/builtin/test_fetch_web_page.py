@@ -91,7 +91,7 @@ class TestFetchWebPageTool:
 
         assert isinstance(result, ToolExecutionResult)
         assert result.success is True
-        assert "Raw Content" in result.reply_text
+        assert "raw content" in result.reply_text.lower()
 
     @patch('requests.get')
     def test_run_http_error(self, mock_get):
@@ -105,7 +105,7 @@ class TestFetchWebPageTool:
 
         assert isinstance(result, ToolExecutionResult)
         assert result.success is False
-        assert "Failed to fetch page" in result.reply_text
+        assert "failed to fetch" in result.reply_text.lower()
 
     @patch('requests.get')
     def test_run_request_error(self, mock_get):
@@ -117,7 +117,7 @@ class TestFetchWebPageTool:
 
         assert isinstance(result, ToolExecutionResult)
         assert result.success is False
-        assert "Failed to fetch page" in result.reply_text
+        assert "failed to fetch" in result.reply_text.lower()
 
     def test_run_invalid_url(self):
         """Test fetch web page with invalid URL."""
@@ -125,7 +125,7 @@ class TestFetchWebPageTool:
         result = self.tool.run(args, self.context)
         assert isinstance(result, ToolExecutionResult)
         assert result.success is False
-        assert "failed" in result.reply_text.lower() or "error" in result.reply_text.lower()
+        assert "resolved" in result.reply_text.lower() or "url" in result.reply_text.lower()
 
     @patch('requests.get')
     def test_run_with_links_extraction(self, mock_get):

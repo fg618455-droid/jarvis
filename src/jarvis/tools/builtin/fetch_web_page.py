@@ -1,123 +1,172 @@
-"""Fetch web page tool implementation for extracting content from URLs."""
+"""Safe, bounded web-page fetching for tool use.
+
+Web pages are untrusted input.  The fetch policy blocks local/private targets,
+re-checks every redirect, and limits both time and bytes before extraction.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import socket
+from typing import Any, Dict, Optional
+from urllib.parse import urljoin, urlparse
 
 import requests
-from typing import Dict, Any, Optional
+
 from ...debug import debug_log
 from ..base import Tool, ToolContext
-from ..types import ToolExecutionResult
+from ..types import ToolErrorCode, ToolExecutionResult
+
+_MAX_BYTES = 2_000_000
+_TIMEOUT = (5, 15)
+
+
+def _validate_public_url(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("URL must be an absolute http or https address.")
+    if parsed.username or parsed.password:
+        raise ValueError("URLs with embedded credentials are not allowed.")
+    hostname = parsed.hostname.rstrip(".")
+    try:
+        addresses = {item[4][0] for item in socket.getaddrinfo(hostname, parsed.port or 443, type=socket.SOCK_STREAM)}
+    except socket.gaierror as exc:
+        raise ValueError("The host name could not be resolved.") from exc
+    if not addresses:
+        raise ValueError("The host name did not resolve to a public address.")
+    for raw_address in addresses:
+        address = ipaddress.ip_address(raw_address)
+        if not address.is_global:
+            raise ValueError("Local, private, or reserved network targets are not allowed.")
+    return value
+
+
+def _read_limited(response: requests.Response) -> bytes:
+    response_headers = getattr(response, "headers", {})
+    header = response_headers.get("content-length", "") if hasattr(response_headers, "get") else ""
+    try:
+        if header and int(header) > _MAX_BYTES:
+            raise ValueError("The page is larger than the 2 MB safety limit.")
+    except ValueError:
+        raise
+    except Exception:
+        pass
+    chunks: list[bytes] = []
+    total = 0
+    iterator = getattr(response, "iter_content", None)
+    if callable(iterator):
+        try:
+            for chunk in iterator(chunk_size=64 * 1024):
+                if not isinstance(chunk, bytes):
+                    continue
+                total += len(chunk)
+                if total > _MAX_BYTES:
+                    raise ValueError("The page exceeded the 2 MB safety limit.")
+                chunks.append(chunk)
+        except TypeError:
+            # Lightweight test/custom response adapters may expose a mock
+            # method rather than an iterable; use their content fallback.
+            chunks = []
+        if chunks:
+            return b"".join(chunks)
+    # Compatibility for lightweight mocked responses and older adapters.
+    content = response.content
+    if len(content) > _MAX_BYTES:
+        raise ValueError("The page exceeded the 2 MB safety limit.")
+    return content
 
 
 class FetchWebPageTool(Tool):
-    """Tool for fetching and extracting content from web pages."""
-
     @property
     def name(self) -> str:
         return "fetchWebPage"
 
     @property
     def description(self) -> str:
-        return "Fetch and extract text content from a web page URL."
+        return "Fetch a public web page and extract untrusted text content."
 
     @property
     def inputSchema(self) -> Dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "The URL to fetch content from"},
-                "include_links": {"type": "boolean", "description": "Whether to include links found on the page"}
-            },
-            "required": ["url"]
-        }
+        return {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Public http(s) URL to fetch"},
+            "include_links": {"type": "boolean", "description": "Include public page links"},
+        }, "required": ["url"]}
 
     def run(self, args: Optional[Dict[str, Any]], context: ToolContext) -> ToolExecutionResult:
-        """Fetch and extract content from a web page."""
         context.user_print("🌐 Fetching page content…")
+        if not isinstance(args, dict) or not str(args.get("url", "")).strip():
+            return ToolExecutionResult.failure(ToolErrorCode.INVALID_ARGUMENT,
+                "fetchWebPage requires a public URL.", phase="validation")
+        url = str(args["url"]).strip()
+        if "://" not in url:
+            url = "https://" + url
+        include_links = bool(args.get("include_links", False))
         try:
-            if not (args and isinstance(args, dict)):
-                return ToolExecutionResult(success=False, reply_text="fetchWebPage requires a JSON object with 'url'.")
-            url = str(args.get("url", "")).strip()
-            include_links = bool(args.get("include_links", False))
-            if not url:
-                return ToolExecutionResult(success=False, reply_text="fetchWebPage requires a valid 'url'.")
-            if not url.startswith(('http://', 'https://')):
-                url = 'https://' + url
-            debug_log(f"fetchWebPage: fetching {url}", "web")
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-            }
-            # ``with`` releases the connection back to the pool deterministically
-            # even if BeautifulSoup or the link extraction raises midway.
-            with requests.get(url, headers=headers, timeout=15, allow_redirects=True) as response:
+            _validate_public_url(url)
+        except ValueError as exc:
+            return ToolExecutionResult.failure(ToolErrorCode.INVALID_ARGUMENT, str(exc), phase="validation")
+
+        headers = {
+            "User-Agent": "Jarvis/1.0 safe-page-fetcher",
+            "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
+            "Accept-Language": "en-US,en;q=0.5",
+        }
+        try:
+            debug_log(f"fetchWebPage: fetching host={urlparse(url).hostname}", "web")
+            with requests.get(url, headers=headers, timeout=_TIMEOUT, allow_redirects=True, stream=True) as response:
+                # Verify every redirect target, not just the final destination.
+                history = getattr(response, "history", [])
+                if not isinstance(history, (list, tuple)):
+                    history = []
+                for hop in [*history, response]:
+                    hop_url = getattr(hop, "url", "")
+                    if isinstance(hop_url, str) and hop_url:
+                        _validate_public_url(hop_url)
                 response.raise_for_status()
-                response_content = response.content
-                response_text = response.text
-            try:
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(response_content, 'html.parser')
-                for script in soup(["script", "style", "meta", "link", "noscript"]):
-                    script.decompose()
-                title = ""
-                title_tag = soup.find('title')
-                if title_tag:
-                    title = title_tag.get_text().strip()
-                text_content = soup.get_text()
-                lines = []
-                for line in text_content.split('\n'):
-                    cleaned_line = line.strip()
-                    if cleaned_line and len(cleaned_line) > 3:
-                        lines.append(cleaned_line)
-                seen_lines = set()
-                unique_lines = []
-                for line in lines:
-                    if line not in seen_lines:
-                        unique_lines.append(line)
-                        seen_lines.add(line)
-                content = '\n'.join(unique_lines[:500])
-                links_section = ""
-                if include_links:
-                    links = []
-                    for link in soup.find_all('a', href=True):
-                        href = link.get('href', '').strip()
-                        link_text = link.get_text().strip()
-                        if href and link_text and len(link_text) > 3:
-                            if href.startswith('/'):
-                                from urllib.parse import urljoin
-                                href = urljoin(url, href)
-                            elif not href.startswith(('http://', 'https://', 'mailto:', 'tel:')):
-                                continue
-                            links.append(f"• {link_text}: {href}")
-                    if links:
-                        links_section = f"\n\n**Links found on page:**\n" + '\n'.join(links[:20])
-                reply_parts = []
-                if title:
-                    reply_parts.append(f"**Title:** {title}")
-                reply_parts.append(f"**URL:** {url}")
-                reply_parts.append(f"**Content:**\n{content}")
-                if links_section:
-                    reply_parts.append(links_section)
-                reply_text = '\n\n'.join(reply_parts)
-                max_chars = 50_000
-                if len(reply_text) > max_chars:
-                    reply_text = f"[Truncated to {max_chars} chars]\n\n" + reply_text[:max_chars]
-                debug_log(f"fetchWebPage: extracted {len(content)} chars of content", "web")
-                context.user_print("✅ Page content fetched.")
-                return ToolExecutionResult(success=True, reply_text=reply_text)
-            except ImportError:
-                text = response_text[:10000]
-                reply_text = f"**URL:** {url}\n**Raw Content:**\n{text}"
-                debug_log("fetchWebPage: BeautifulSoup not available, returning raw text", "web")
-                context.user_print("✅ Page content fetched (raw).")
-                return ToolExecutionResult(success=True, reply_text=reply_text)
-        except requests.exceptions.RequestException as e:
-            debug_log(f"fetchWebPage: request failed: {e}", "web")
-            context.user_print("⚠️ Failed to fetch page.")
-            return ToolExecutionResult(success=False, reply_text=f"Failed to fetch page: {e}")
-        except Exception as e:  # pragma: no cover (safety net)
-            debug_log(f"fetchWebPage: error: {e}", "web")
-            context.user_print("⚠️ Error fetching page.")
-            return ToolExecutionResult(success=False, reply_text=f"Error fetching page: {e}")
+                content_bytes = _read_limited(response)
+                final_url = getattr(response, "url", url)
+                if not isinstance(final_url, str):
+                    final_url = url
+        except requests.exceptions.Timeout as exc:
+            return ToolExecutionResult.failure(ToolErrorCode.TIMEOUT, "Fetching the page timed out.",
+                retryable=True, technical_details=type(exc).__name__)
+        except requests.exceptions.RequestException as exc:
+            return ToolExecutionResult.failure(ToolErrorCode.UNAVAILABLE, "Failed to fetch the page.",
+                retryable=True, technical_details=type(exc).__name__)
+        except ValueError as exc:
+            return ToolExecutionResult.failure(ToolErrorCode.INVALID_ARGUMENT, str(exc), phase="validation")
+
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(content_bytes, "html.parser")
+            for element in soup(["script", "style", "meta", "link", "noscript"]):
+                element.decompose()
+            title_tag = soup.find("title")
+            title = title_tag.get_text(" ", strip=True) if title_tag else ""
+            lines = [line.strip() for line in soup.get_text("\n").splitlines() if len(line.strip()) > 3]
+            content = "\n".join(dict.fromkeys(lines))[:50_000]
+            parts = ([f"**Title:** {title}"] if title else []) + [
+                f"**URL:** {final_url}",
+                "**Untrusted web content:**\n" + content,
+            ]
+            if include_links:
+                links = []
+                for link in soup.find_all("a", href=True):
+                    href, label = link["href"].strip(), link.get_text(" ", strip=True)
+                    resolved = urljoin(final_url, href)
+                    if label and len(label) > 3 and urlparse(resolved).scheme in {"http", "https"}:
+                        links.append(f"• {label}: {resolved}")
+                if links:
+                    parts.append("**Links found on page:**\n" + "\n".join(links[:20]))
+            reply = "\n\n".join(parts)
+        except ImportError:
+            reply = f"**URL:** {final_url}\n**Untrusted raw content:**\n" + content_bytes.decode("utf-8", errors="replace")[:10_000]
+        except Exception as exc:
+            return ToolExecutionResult.failure(ToolErrorCode.EXECUTION_FAILED,
+                "The page was fetched but could not be extracted.", technical_details=type(exc).__name__)
+
+        if not content_bytes or not reply.strip():
+            return ToolExecutionResult.failure(ToolErrorCode.EXECUTION_FAILED,
+                "The page returned no usable content.", technical_details="empty response")
+        context.user_print("✅ Page content fetched.")
+        return ToolExecutionResult(success=True, reply_text=reply, phase="extraction")
