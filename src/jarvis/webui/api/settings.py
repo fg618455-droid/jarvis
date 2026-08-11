@@ -26,7 +26,7 @@ MASK = "•" * 8
 # that read them are built once at start-up.
 RESTART_REQUIRED_PREFIXES = (
     "whisper_", "vad_", "voice_", "sample_rate", "wake_", "tts_",
-    "webui_", "dictation_", "llm_provider", "ollama_", "embedding_",
+    "webui_", "dictation_", "llm_provider", "llm_routes", "ollama_", "embedding_",
 )
 
 

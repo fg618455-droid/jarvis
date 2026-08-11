@@ -108,6 +108,11 @@ export const api = {
 
   system: () => request("/api/system"),
 
+  llmRoutes: () => request("/api/llm/routes"),
+  saveLlmRoutes: (routes) => request("/api/llm/routes", { method: "PUT", body: { routes } }),
+  probeLlmRoutes: () => request("/api/llm/routes/probe", { method: "POST" }),
+  resetLlmRoutes: () => request("/api/llm/routes/reset", { method: "POST" }),
+
   settings: () => request("/api/settings"),
   saveSettings: (changes) => request("/api/settings", { method: "PUT", body: { changes } }),
 

@@ -428,3 +428,9 @@
 .settings-bar .spacer {
   margin-left: auto;
 }
+.route-editor {
+  width: 100%;
+  min-height: 18rem;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  resize: vertical;
+}
