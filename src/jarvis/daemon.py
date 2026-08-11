@@ -17,28 +17,11 @@ os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
 os.environ.setdefault('MKL_NUM_THREADS', '1')
 os.environ.setdefault('OMP_NUM_THREADS', '1')
 
-# Windows consoles default to a codepage that cannot render the emoji this
-# app prints, so the streams are reconfigured in place.
-#
-# In place matters: wrapping ``sys.stdout.buffer`` in a fresh TextIOWrapper
-# hands ownership of that buffer to an object nothing holds a reference to,
-# and closing it on collection takes the original stream down with it. Any
-# process that captures stdout, a test runner above all, then loses it the
-# moment this module is imported.
-#
-# Only the real console streams are touched. Test harnesses (pytest) and
-# embedding code substitute their own capture objects for sys.stdout/stderr,
-# and reconfiguring those corrupts capture for the rest of the process.
-#
-# Skip in bundled mode (frozen) - encoding is handled by desktop_app.py
+from .console import force_utf8_console
+
+# Bundled mode configures streams from the desktop entry point.
 if sys.platform == 'win32' and not getattr(sys, 'frozen', False):
-    for _stream, _real in ((sys.stdout, sys.__stdout__), (sys.stderr, sys.__stderr__)):
-        if _stream is not _real or _stream is None:
-            continue
-        try:
-            _stream.reconfigure(encoding='utf-8', errors='replace')
-        except Exception:
-            pass
+    force_utf8_console()
 
 from pathlib import Path
 from typing import Optional
