@@ -222,9 +222,11 @@ Telegram is optional and remains unavailable until both credentials are set. Jar
 </details>
 
 <details>
-<summary><strong>LLM Provider (Ollama or OpenAI-compatible)</strong></summary>
+<summary><strong>LLM routes (local or OpenAI-compatible)</strong></summary>
 
-By default Jarvis runs everything locally through [Ollama](https://ollama.com): no API keys, nothing leaves your machine. If you already run an OpenAI-compatible server you can point Jarvis at it instead. Your data still only travels to the servers you control.
+By default Jarvis runs everything locally through [Ollama](https://ollama.com): no API keys, nothing leaves your machine. Optional generic OpenAI-compatible routes can serve the FAST and CHAT lanes. Each configured chain falls back in order and ends at local Ollama.
+
+Diary summaries, topic cleanup, knowledge-graph writes, and embeddings always use loopback Ollama. Cloud-routed memory reads send only the snippets selected for that call. Changing the embedding model or endpoint is deliberately unsupported because it would invalidate the stored vector space.
 
 Pick the provider in the Setup Wizard's first step, or under **⚙️ Settings → 🔌 LLM Provider**. No JSON editing required. On the OpenAI-compatible page the wizard does the legwork for you: it auto-detects running local servers, offers a one-click preset for your app, and when you press **Connect** it loads the server's model list and checks the chosen model for chat, tool calling, and embeddings, so you know it works before you finish setup.
 
@@ -240,32 +242,37 @@ Tested local servers (all run on your own machine):
 | vLLM | `http://localhost:8000/v1` | Tool calling depends on the model. |
 | oMLX (Apple Silicon) | varies | No embeddings endpoint, so memory uses keyword search unless you route embeddings to Ollama (below). |
 
-For reference, the underlying config keys are:
+The control centre's **LLM routes** view shows active routes, cooldowns, failures, and masked keys. It performs no outbound request until you press **Probe models**. A route entry has this shape:
 
 ```json
 {
-  "llm_provider": "openai_compatible",
-  "llm_base_url": "http://localhost:1234/v1",
-  "llm_api_key": "",
-  "llm_chat_model": "your-served-model-name"
+  "llm_routes": [
+    {
+      "name": "my-chat-endpoint",
+      "provider": "openai_compatible",
+      "base_url": "http://localhost:1234/v1",
+      "api_key": "",
+      "model": "your-served-model-name",
+      "tier": "chat",
+      "timeout_sec": 4.0
+    }
+  ]
 }
 ```
 
-- `llm_base_url`: your server's OpenAI API base URL.
-- `llm_api_key`: only if your server requires one; leave empty otherwise.
-- `llm_chat_model`: whatever model name your server exposes.
-- `fast_model` (optional): the small, quick model used for real-time work (voice intent, tool routing, quick classifications). Leave empty for automatic: `gemma4:e2b` on Ollama, your chat model on an OpenAI-compatible server. Set it to pin a dedicated small model.
+- `tier` is `fast` for short classification work or `chat` for replies and planning.
+- `timeout_sec` is a per-route deadline. A timeout moves the call to the next candidate.
+- HTTP rate limits and quota resets are persisted in `~/.jarvis/llm_routes_state.json`, so restarting does not immediately retry a blocked key.
+- HTTP 401 and 403 responses remove the key for the process lifetime.
 
-**Embeddings** (used for memory search) can run on a different backend. If your chat server has no embeddings endpoint, memory falls back to keyword search. To keep full semantic memory, route embeddings to Ollama (the wizard offers this automatically when it detects a server that cannot embed):
+To inspect current catalogues and import FCC credentials once:
 
-```json
-{
-  "embedding_provider": "ollama",
-  "embedding_model": "nomic-embed-text"
-}
+```bash
+python -m jarvis.llm.probe
+python scripts/import_fcc_keys.py
 ```
 
-Leave `embedding_provider` empty to use the same provider as chat. With no working embeddings, memory search degrades gracefully to keyword search.
+Neither command prints a credential. The importer writes only routes whose endpoint advertises a model during that run. Config and route-state files are restricted to the current user where POSIX permissions are available.
 
 </details>
 

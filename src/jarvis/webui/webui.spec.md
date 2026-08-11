@@ -1,8 +1,8 @@
 # Control Centre Specification
 
 The control centre is the local web interface for the whole assistant: live
-state, memory, conversation, tools, security, technical readings, and
-settings. The daemon serves it in-process.
+state, memory, conversation, tools, security, LLM routes, technical readings,
+and settings. The daemon serves it in-process.
 
 ## Design Principles
 
@@ -89,6 +89,10 @@ allowed; reading one back is not.
 | `GET /api/security`, `/api/security/pending`, `POST /api/security/decide` | The confirmation policy, what is waiting, and the answer |
 | `GET /api/system` | GPU, resident models, speech configuration, paths, process |
 | `GET/PUT /api/settings` | Every editable config field, and writes to it |
+| `GET /api/llm/routes` | FAST, CHAT, and PRIVATE chains with masked credentials and persisted health state; performs no outbound request |
+| `POST /api/llm/routes/probe` | User-triggered model catalogue and credential probe |
+| `POST /api/llm/routes/reset` | Clear persisted cooldowns and process-local invalid-key marks |
+| `PUT /api/llm/routes` | Validate and replace generic route configuration while preserving unchanged masked credentials |
 
 `POST /api/chat` runs one turn at a time, and the turn it waits for may not
 be its own. Voice, the desktop chat window and this endpoint all reach the
@@ -104,6 +108,18 @@ because both write the same file: only non-default values are stored, and
 keys the registry does not describe survive untouched. A credential is sent
 back masked, and a masked value returned unchanged leaves the stored one
 alone, so saving a form never overwrites a secret with its own mask.
+
+## LLM routes view
+
+The LLM routes view displays the ordered FAST, CHAT, and PRIVATE chains. Each
+row shows active state, protocol, model, masked credential, hit and failure
+counts, block time, and the last safe error label. The PRIVATE chain is
+read-only and contains one loopback Ollama route. Configured FAST and CHAT
+entries are editable using only the route schema described by the LLM spec.
+
+Loading and refreshing the view reads local config and cooldown state only.
+The only control that contacts a configured endpoint is **Probe models**.
+Resetting cooldowns and saving routes are local file writes.
 
 ## Memory view
 
