@@ -132,6 +132,18 @@ for the same reason: the query runs in this process, so the flag has to be set
 in it. Lines that don't match any prefix are ignored (the monitor still treats
 bare ``SHUTDOWN`` and EOF as shutdown signals, unchanged).
 
+Rewind travels the same pipe (the conversation lives in the daemon's memory,
+which the desktop process cannot touch in subprocess mode):
+
+```json
+__CHAT_REWIND__:{"user_index": 2}        // roll memory back to before user turn #2
+```
+
+`user_index` is 1-based (the first user message is 1); the rewound message
+itself is dropped so a re-submission does not duplicate it. Malformed
+rewind lines are swallowed (consumed, ignored), mirroring
+`__CHAT_QUERY__:` handling.
+
 Chat IPC lines are routed to the chat window and then **not** emitted to the
 general log viewer. The ``complete`` event carries the whole assistant reply,
 which can echo back whatever the user typed, and the log window is outside the
@@ -142,10 +154,17 @@ viewer, which is what it is for.
 
 ### `ChatWindow` (in `desktop_app.chat_window`)
 
-A `QMainWindow` with:
+A `QMainWindow` styled like an SMS thread with a single contact:
 
-- A read-only transcript area (chat bubbles or monospaced log style; theme
-  colours from `themes.py`).
+- A contact header (avatar, "Jarvis", and a presence line such as "Online" or
+  "Typing…" while a query is in flight).
+- A read-only transcript area: a scrollable stack of speech bubbles (theme
+  colours from `themes.py`). The user's messages are right-aligned accent
+  bubbles, Jarvis's replies are left-aligned dark bubbles, and local notices
+  are small centred lines. Each bubble carries a small muted timestamp. Sent
+  messages additionally carry a subtle `⟲` rewind button (see **Rewind**
+  below) to the left of the bubble. The transcript mirrors the single
+  conversation's message list and is rebuilt atomically on rewind.
 - A multi-line input box with send button. Enter sends; Shift+Enter inserts a
   newline (multi-line input).
 - A "Stop" button. It marks the exchange abandoned locally, routes the
@@ -158,9 +177,38 @@ A `QMainWindow` with:
   unexpectedly, the same area stays visible as a local lifecycle banner and
   explains whether the user should wait or start listening again.
 
+### One conversation, like an SMS contact
+
+There is exactly one chat: the daemon's single dialogue memory, displayed as a
+text-message thread. There is no session list, no "new session" button, and
+nothing is written to disk, so a fresh app run starts blank (the transcript is
+in-memory and authoritative for the session thereafter; the daemon's hot
+window seeds recent voice turns on first show).
+
+### Rewind
+
+Every sent message carries a subtle `⟲` button to the left of its bubble.
+Clicking it:
+
+1. Truncates the window's transcript to keep the message itself (its old
+   reply and everything after it are dropped).
+2. Rolls the shared daemon memory back to before that user turn
+   (`daemon.rewind_chat_to_user(user_index)`, or `__CHAT_REWIND__:`
+   subprocess line). The rewound message itself is dropped so the
+   regeneration does not duplicate it. Hot-window caches and tool carryover
+   are cleared with it.
+3. Re-submits the same message text, so the agent generates a fresh reply
+   that lands through the normal `complete` path.
+
+Rewind is disabled while a query is in flight and when the daemon is not
+running. Rewinding rolls back the voice context too (same shared memory), and
+the message-ordinal anchor assumes the transcript and the memory hold the
+same user turns — which holds in bundled mode and in subprocess mode when the
+window's transcript was not seeded from invisible voice turns.
+
 ### Tray integration
 
-A `💬 Chat...` entry is added to the tray menu, below the existing
+A `💬 Chat` entry is added to the tray menu, below the existing
 face/logs/memory entries. Clicking it shows (or raises) the `ChatWindow`. The
 window is created lazily on first open and kept alive for the session
 (same lifecycle as `DictationHistoryWindow`).
@@ -225,3 +273,5 @@ the app.
   judge, no echo detection, no wake word. The user typing is the intent.
 - **No TTS.** Text chat is silent. If the user wants spoken replies, they use
   the voice path.
+- **No chat sessions.** The window shows one continuous conversation with the
+  daemon's shared memory; there is no new-session / session-switching UI.

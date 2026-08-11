@@ -50,7 +50,6 @@ from .utils.location import get_location_context, is_location_available
 # Global instances for coordination between modules
 _global_dialogue_memory: Optional[DialogueMemory] = None
 _global_stop_requested: bool = False
-_global_skip_shutdown_diary_update: bool = False
 _warm_profile_graph_listener = None  # registered callback, kept for shutdown unregister
 _global_tts_engine = None  # TTS engine reference for face animation polling
 _global_dictation_engine = None  # Dictation engine reference for history UI
@@ -94,25 +93,18 @@ CHAT_QUERY_IPC_PREFIX = "__CHAT_QUERY__:"
 # different instance from the desktop app's: calling the cancel
 # function over there sets a flag nobody in this process reads.
 CHAT_CANCEL_IPC_PREFIX = "__CHAT_CANCEL__"
-SHUTDOWN_SKIP_DIARY_COMMAND = "SHUTDOWN_SKIP_DIARY"
+# Session control (subprocess mode): new session (bare line), rewind to a
+# user turn, and restore an archived session. All operate on the daemon's
+# shared dialogue memory, which is where the conversation actually lives.
+CHAT_NEW_SESSION_IPC_PREFIX = "__CHAT_NEW_SESSION__"
+CHAT_REWIND_IPC_PREFIX = "__CHAT_REWIND__:"
+CHAT_RESTORE_IPC_PREFIX = "__CHAT_RESTORE__:"
 
 
-def request_stop(skip_diary_update: bool = False) -> None:
-    """Request the daemon to stop gracefully.
-
-    ``skip_diary_update`` is reserved for explicit fast-stop UI paths where
-    freeing local model resources is more important than the final shutdown
-    diary pass. The normal stop path keeps diary saving enabled.
-    """
-    global _global_stop_requested, _global_skip_shutdown_diary_update
+def request_stop() -> None:
+    """Request the daemon to stop gracefully."""
+    global _global_stop_requested
     _global_stop_requested = True
-    if skip_diary_update:
-        _global_skip_shutdown_diary_update = True
-
-
-def is_shutdown_diary_update_skipped() -> bool:
-    """Check whether shutdown should skip the final diary update."""
-    return _global_skip_shutdown_diary_update
 
 
 def set_diary_update_callbacks(
@@ -166,6 +158,83 @@ def get_hot_window_messages() -> list:
     if _global_dialogue_memory is None:
         return []
     return _global_dialogue_memory.get_recent_messages()
+
+
+def new_chat_session() -> bool:
+    """Start a fresh conversation: clear the shared dialogue memory.
+
+    Voice and text share this memory, so a new session resets both. The
+    previous conversation is not lost anywhere else — the chat window
+    keeps an in-memory archive of its transcript for the session list.
+    Nothing is written to disk. Returns False when a query is currently
+    running (the engine appends its turns after we clear, resurrecting
+    the conversation); the caller should retry after the query finishes.
+    """
+    global _global_dialogue_memory
+    if _global_dialogue_memory is None:
+        return False
+    if not _chat_query_lock.acquire(blocking=False):
+        debug_log("new chat session rejected: a query is in flight", "chat")
+        return False
+    try:
+        _global_dialogue_memory.clear()
+        return True
+    finally:
+        _chat_query_lock.release()
+
+
+def rewind_chat_to_user(user_index: int) -> bool:
+    """Roll the shared dialogue memory back to before a given user turn.
+
+    ``user_index`` is 1-based (the first user message is 1). Every turn
+    from that user message on is dropped — including the message itself,
+    so the caller can re-submit it and get a fresh reply. Returns True
+    when a rewind happened, False when the turn is not in memory or a
+    query is currently running (the engine's late turn-append would
+    resurrect turns past the rewind point).
+    """
+    global _global_dialogue_memory
+    if _global_dialogue_memory is None:
+        return False
+    if not _chat_query_lock.acquire(blocking=False):
+        debug_log("chat rewind rejected: a query is in flight", "chat")
+        return False
+    try:
+        return _global_dialogue_memory.rewind_before_user_message(user_index)
+    finally:
+        _chat_query_lock.release()
+
+
+def set_chat_messages(messages: list) -> bool:
+    """Restore an archived session into the shared dialogue memory.
+
+    Used when the chat window switches back to a session from its
+    in-memory list. Redaction is applied here, on the daemon side, so the
+    diary (written at session end from this memory) never sees raw user
+    text even if the window's archive holds it. Returns False when a
+    query is currently running (see ``rewind_chat_to_user``).
+    """
+    global _global_dialogue_memory
+    if _global_dialogue_memory is None:
+        return False
+    if not _chat_query_lock.acquire(blocking=False):
+        debug_log("chat restore rejected: a query is in flight", "chat")
+        return False
+    try:
+        from .utils.redact import redact
+
+        scrubbed = []
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            role = m.get("role")
+            content = m.get("content")
+            if isinstance(role, str) and isinstance(content, str) and role in ("user", "assistant"):
+                scrubbed.append({"role": role, "content": redact(content)})
+        _global_dialogue_memory.set_messages(scrubbed)
+        return True
+    finally:
+        _chat_query_lock.release()
 
 
 # Diary IPC protocol prefix - desktop app intercepts lines starting with this
@@ -419,6 +488,66 @@ def handle_chat_cancel_stdin_line(line: str) -> bool:
     return True
 
 
+def handle_chat_new_session_stdin_line(line: str) -> bool:
+    """Parse a stdin line as a chat new-session instruction (subprocess mode).
+
+    Returns True when the line was the new-session instruction and was
+    handled, False otherwise so the caller can apply its own semantics.
+    """
+    if line.strip() != CHAT_NEW_SESSION_IPC_PREFIX:
+        return False
+    new_chat_session()
+    return True
+
+
+def handle_chat_rewind_stdin_line(line: str) -> bool:
+    """Parse a stdin line as a chat rewind instruction (subprocess mode).
+
+    Payload is ``{"user_index": N}`` with N 1-based. Returns True when
+    the line was a rewind instruction and was handled (whether or not a
+    rewind actually happened), False for anything else.
+    """
+    line = line.strip()
+    if not line.startswith(CHAT_REWIND_IPC_PREFIX):
+        return False
+    import json
+    try:
+        payload = json.loads(line[len(CHAT_REWIND_IPC_PREFIX):])
+        user_index = int(payload.get("user_index"))
+    except Exception:
+        debug_log("malformed __CHAT_REWIND__ line ignored", "chat_ipc")
+        return True
+    if user_index < 1:
+        debug_log("__CHAT_REWIND__ user_index out of range, ignored", "chat_ipc")
+        return True
+    rewind_chat_to_user(user_index)
+    return True
+
+
+def handle_chat_restore_stdin_line(line: str) -> bool:
+    """Parse a stdin line as a session-restore instruction (subprocess mode).
+
+    Payload is ``{"messages": [{"role", "content"}, ...]}``. Returns True
+    when the line was a restore instruction and was handled (even if the
+    payload was malformed), False for anything else.
+    """
+    line = line.strip()
+    if not line.startswith(CHAT_RESTORE_IPC_PREFIX):
+        return False
+    import json
+    try:
+        payload = json.loads(line[len(CHAT_RESTORE_IPC_PREFIX):])
+        messages = payload.get("messages", [])
+    except Exception:
+        debug_log("malformed __CHAT_RESTORE__ line ignored", "chat_ipc")
+        return True
+    if not isinstance(messages, list):
+        debug_log("__CHAT_RESTORE__ messages not a list, ignored", "chat_ipc")
+        return True
+    set_chat_messages(messages)
+    return True
+
+
 def wait_for_chat_worker(timeout_sec: float = 5.0) -> bool:
     """Wait for an in-flight chat worker to finish, bounded.
 
@@ -619,11 +748,9 @@ def main(smoke_test: bool = False) -> None:
     """
     global _global_dialogue_memory, _global_stop_requested, _global_tts_engine, _global_dictation_engine
     global _warm_profile_graph_listener
-    global _global_skip_shutdown_diary_update
 
     # Reset stop flag at start (in case of restart)
     _global_stop_requested = False
-    _global_skip_shutdown_diary_update = False
 
     _install_signal_handlers()
 
@@ -935,10 +1062,6 @@ def main(smoke_test: bool = False) -> None:
                     request_stop()
                     break
                 stripped = line.strip()
-                if stripped == SHUTDOWN_SKIP_DIARY_COMMAND:
-                    debug_log("fast shutdown command received, skipping diary update", "jarvis")
-                    request_stop(skip_diary_update=True)
-                    break
                 if stripped == "SHUTDOWN":
                     debug_log("SHUTDOWN command received, requesting stop", "jarvis")
                     request_stop()
@@ -946,6 +1069,12 @@ def main(smoke_test: bool = False) -> None:
                 # Chat query-in (subprocess mode). Returns False for any other
                 # line, which we silently ignore.
                 if handle_chat_cancel_stdin_line(stripped):
+                    continue
+                if handle_chat_new_session_stdin_line(stripped):
+                    continue
+                if handle_chat_rewind_stdin_line(stripped):
+                    continue
+                if handle_chat_restore_stdin_line(stripped):
                     continue
                 if stripped.startswith(CHAT_QUERY_IPC_PREFIX):
                     handle_chat_query_stdin_line(stripped)
@@ -1014,29 +1143,25 @@ def main(smoke_test: bool = False) -> None:
         # closed-handle raise or a diary pass racing its writes.
         wait_for_chat_worker(timeout_sec=5.0)
 
-        if _global_skip_shutdown_diary_update:
-            debug_log("shutdown diary update skipped by fast stop request", "jarvis")
-            print("⏭️ Skipping diary update before shutdown", flush=True)
+        # Final diary update before shutdown
+        debug_log("performing final diary update (force=True)...", "jarvis")
+        print("📝 Updating diary before shutdown...", flush=True)
+
+        # Check dialogue memory status
+        if _global_dialogue_memory is None:
+            print("⚠️ Dialogue memory is None - nothing to save", flush=True)
         else:
-            # Final diary update before shutdown
-            debug_log("performing final diary update (force=True)...", "jarvis")
-            print("📝 Updating diary before shutdown...", flush=True)
+            # Display-only count; actual save uses the atomic snapshot path.
+            pending = _global_dialogue_memory.get_pending_chunks()
+            print(f"💬 Found {len(pending)} pending conversation chunks", flush=True)
 
-            # Check dialogue memory status
-            if _global_dialogue_memory is None:
-                print("⚠️ Dialogue memory is None - nothing to save", flush=True)
-            else:
-                # Display-only count; actual save uses the atomic snapshot path.
-                pending = _global_dialogue_memory.get_pending_chunks()
-                print(f"💬 Found {len(pending)} pending conversation chunks", flush=True)
-
-            # Use callbacks if they were set by desktop app (for live UI updates in bundled mode)
-            # Use IPC (stdout events) if callbacks not set (subprocess mode)
-            use_callbacks = any(_diary_update_callbacks.values())
-            use_ipc = not use_callbacks  # Subprocess mode - emit events to stdout
-            _check_and_update_diary(db, cfg, verbose=True, force=True, timeout_sec=SHUTDOWN_DIARY_TIMEOUT_SEC, use_callbacks=use_callbacks, use_ipc=use_ipc)
-            print("✅ Diary update complete", flush=True)
-            debug_log("diary update complete", "jarvis")
+        # Use callbacks if they were set by desktop app (for live UI updates in bundled mode)
+        # Use IPC (stdout events) if callbacks not set (subprocess mode)
+        use_callbacks = any(_diary_update_callbacks.values())
+        use_ipc = not use_callbacks  # Subprocess mode - emit events to stdout
+        _check_and_update_diary(db, cfg, verbose=True, force=True, timeout_sec=SHUTDOWN_DIARY_TIMEOUT_SEC, use_callbacks=use_callbacks, use_ipc=use_ipc)
+        print("✅ Diary update complete", flush=True)
+        debug_log("diary update complete", "jarvis")
 
         if tts is not None:
             tts.stop()
