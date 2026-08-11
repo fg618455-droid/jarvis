@@ -32,6 +32,8 @@ const dom = {
   root: document.getElementById("view-root"),
   dot: document.getElementById("phase-dot"),
   phase: document.getElementById("phase-text"),
+  passive: document.getElementById("passive-indicator"),
+  passiveText: document.getElementById("passive-text"),
   uptimeLabel: document.getElementById("uptime-label"),
   uptime: document.getElementById("uptime-value"),
   lastTurnLabel: document.getElementById("last-turn-label"),
@@ -91,6 +93,9 @@ function setBadge(view, text) {
 function paintHeader() {
   dom.uptimeLabel.textContent = t("common.uptime");
   dom.lastTurnLabel.textContent = t("common.lastTurn");
+  const passive = state.status?.passive;
+  dom.passive.hidden = !passive?.enabled;
+  dom.passiveText.textContent = passive?.enabled ? t("passive.recording") : "";
 
   if (!state.connected && !state.status) {
     dom.dot.dataset.phase = "offline";
@@ -158,6 +163,12 @@ function wireLive(router) {
   live.on("phase", (phase) => {
     if (!state.status) return;
     Object.assign(state.status, phase);
+    paintHeader();
+  });
+
+  live.on("passive", (passive) => {
+    if (!state.status) state.status = {};
+    state.status.passive = passive;
     paintHeader();
   });
 

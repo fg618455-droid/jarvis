@@ -91,6 +91,25 @@ a:hover {
   font-size: 12px;
 }
 
+.passive-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--bad);
+  font-weight: 600;
+}
+
+.passive-indicator[hidden] {
+  display: none;
+}
+
+.passive-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--bad);
+}
+
 /* ── Phase dot ───────────────────────────────────────────────────────── */
 
 .dot {

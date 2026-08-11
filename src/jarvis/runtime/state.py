@@ -56,6 +56,10 @@ class RuntimeState:
 
     models: dict[str, Any] = field(default_factory=dict)
     audio: dict[str, Any] = field(default_factory=dict)
+    passive_enabled: bool = False
+    passive_lines_written: int = 0
+    passive_digests_produced: int = 0
+    passive_last_line_at: Optional[float] = None
 
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
@@ -123,6 +127,31 @@ class RuntimeState:
         with self._lock:
             self.audio.update({k: v for k, v in audio.items() if v is not None})
 
+    def set_passive_enabled(self, enabled: bool) -> None:
+        """Publish a change to the live passive-capture switch."""
+        enabled = bool(enabled)
+        with self._lock:
+            if self.passive_enabled == enabled:
+                return
+            self.passive_enabled = enabled
+            snapshot = self._passive_snapshot()
+        get_event_bus().publish("passive", snapshot)
+
+    def record_passive_line(self) -> None:
+        """Count a text line successfully written to the passive record."""
+        with self._lock:
+            self.passive_lines_written += 1
+            self.passive_last_line_at = time.time()
+            snapshot = self._passive_snapshot()
+        get_event_bus().publish("passive", snapshot)
+
+    def record_passive_digest(self) -> None:
+        """Count a non-empty ambient digest successfully written to memory."""
+        with self._lock:
+            self.passive_digests_produced += 1
+            snapshot = self._passive_snapshot()
+        get_event_bus().publish("passive", snapshot)
+
     def reset(self) -> None:
         """Return to a fresh session. Used when the daemon restarts in-process."""
         with self._lock:
@@ -139,6 +168,10 @@ class RuntimeState:
             self.last_turn = None
             self.models = {}
             self.audio = {}
+            self.passive_enabled = False
+            self.passive_lines_written = 0
+            self.passive_digests_produced = 0
+            self.passive_last_line_at = None
 
     # ── reads ───────────────────────────────────────────────────────────
 
@@ -147,6 +180,14 @@ class RuntimeState:
             "phase": self.phase.value,
             "phase_since": self.phase_since,
             "phase_seconds": max(0.0, time.time() - self.phase_since),
+        }
+
+    def _passive_snapshot(self) -> dict:
+        return {
+            "enabled": self.passive_enabled,
+            "lines_written": self.passive_lines_written,
+            "digests_produced": self.passive_digests_produced,
+            "last_line_at": self.passive_last_line_at,
         }
 
     def snapshot(self) -> dict:
@@ -169,6 +210,7 @@ class RuntimeState:
                 "last_turn": self.last_turn,
                 "models": dict(self.models),
                 "audio": dict(self.audio),
+                "passive": self._passive_snapshot(),
             }
 
 

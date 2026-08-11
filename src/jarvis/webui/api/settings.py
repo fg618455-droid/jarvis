@@ -27,6 +27,7 @@ MASK = "•" * 8
 RESTART_REQUIRED_PREFIXES = (
     "whisper_", "vad_", "voice_", "sample_rate", "wake_", "tts_",
     "webui_", "dictation_", "llm_provider", "ollama_", "embedding_",
+    "passive_",
 )
 
 
@@ -39,6 +40,8 @@ def _mask(value: Any) -> str:
 
 
 def _needs_restart(key: str) -> bool:
+    if key == "passive_capture_enabled":
+        return False
     return key.startswith(RESTART_REQUIRED_PREFIXES)
 
 
@@ -113,6 +116,13 @@ def save() -> Response:
 
     if not _save_json(resolve_config_path(), config):
         return jsonify(error=f"could not write {resolve_config_path()}"), 500
+
+    if "passive_capture_enabled" in written:
+        from jarvis.listening.passive_capture import set_passive_capture_enabled
+
+        set_passive_capture_enabled(
+            bool(changes.get("passive_capture_enabled", False))
+        )
 
     debug_log(f"settings written from the control centre: {', '.join(written)}", "webui")
     return jsonify({"written": written, "restart_required": restart})

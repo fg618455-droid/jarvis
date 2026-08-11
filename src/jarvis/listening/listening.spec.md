@@ -241,6 +241,15 @@ class TranscriptBuffer:
 - `format_for_llm(segments)`: Format for intent judge input
 - `prune()`: Remove segments older than max_duration
 
+### Eviction hand-off
+
+A segment leaving the buffer is offered to a sink before it is dropped. By
+that point its text is final — echo salvage rewrites in place, and the
+listener has already marked whether the segment became a query or was
+rejected as echo. Nothing consumes the hand-off unless passive capture is
+switched on, in which case the segment is written to the passive record
+instead of vanishing. See `passive_capture.spec.md`.
+
 ## Intent Judge
 
 ### Context Duration & Query Synthesis

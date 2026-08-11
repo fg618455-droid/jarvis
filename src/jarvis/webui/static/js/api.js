@@ -95,6 +95,17 @@ export const api = {
   turns: (limit = 50) => request(`/api/turns?limit=${limit}`),
   conversation: (limit = 30) => request(`/api/conversation?limit=${limit}`),
   chat: (text, speak) => request("/api/chat", { method: "POST", body: { text, speak } }),
+  passive: (date = "", limit = 500) =>
+    request(
+      `/api/passive?limit=${limit}${date ? `&date=${encodeURIComponent(date)}` : ""}`,
+    ),
+  setPassiveEnabled: (enabled) =>
+    request("/api/passive/enabled", { method: "POST", body: { enabled } }),
+  deletePassiveLine: (id) =>
+    request(`/api/passive/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  deletePassiveDay: (date) =>
+    request(`/api/passive?date=${encodeURIComponent(date)}`, { method: "DELETE" }),
+  deletePassiveAll: () => request("/api/passive?all=1", { method: "DELETE" }),
 
   tools: () => request("/api/tools"),
   refreshTools: () => request("/api/tools/refresh", { method: "POST" }),

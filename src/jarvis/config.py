@@ -241,6 +241,13 @@ class Settings:
     # None = auto (on for SMALL models, off for LARGE). Explicit true/false forces.
     evaluator_enabled: Optional[bool]
     # Upper bound on toolSearchTool invocations per reply turn. The cap
+    # Passive capture keeps text already produced by speech recognition.
+    passive_capture_enabled: bool
+    passive_capture_retention_days: int
+    passive_capture_min_words: int
+    passive_digest_interval_min: float
+    passive_digest_max_lines: int
+
     # prevents a small model from churning through the escape hatch forever
     # when no tool really fits.
     tool_search_max_calls: int
@@ -711,6 +718,13 @@ def get_default_config() -> Dict[str, Any]:
         "location_cache_minutes": 60,
         "location_ip_address": None,
         "location_auto_detect": True,
+        # Passive Capture
+        "passive_capture_enabled": False,
+        "passive_capture_retention_days": 30,
+        "passive_capture_min_words": 3,
+        "passive_digest_interval_min": 15.0,
+        "passive_digest_max_lines": 120,
+
         # When behind CGNAT (100.64.0.0/10), attempt a privacy-light external DNS query to discover true public IP.
         # Uses a single OpenDNS resolver lookup of myip.opendns.com over DNS (no HTTP services). Disable to avoid any external request.
         "location_cgnat_resolve_public_ip": True,
@@ -969,6 +983,19 @@ def load_settings() -> Settings:
     )
     # The settings window is the primary way to configure these, so a
     # configured value wins over an environment token that may belong to an
+    passive_capture_enabled = bool(merged.get("passive_capture_enabled", False))
+    passive_capture_retention_days = max(
+        0, int(merged.get("passive_capture_retention_days", 30))
+    )
+    passive_capture_min_words = max(
+        0, int(merged.get("passive_capture_min_words", 3))
+    )
+    passive_digest_interval_min = max(
+        0.01, float(merged.get("passive_digest_interval_min", 15.0))
+    )
+    passive_digest_max_lines = max(
+        1, int(merged.get("passive_digest_max_lines", 120))
+    )
     # unrelated project.
     telegram_bot_token = str(
         merged.get("telegram_bot_token", "")
@@ -1144,4 +1171,11 @@ def load_settings() -> Settings:
 
         # MCP Integration
         mcps=mcps,
+
+        # Passive Capture
+        passive_capture_enabled=passive_capture_enabled,
+        passive_capture_retention_days=passive_capture_retention_days,
+        passive_capture_min_words=passive_capture_min_words,
+        passive_digest_interval_min=passive_digest_interval_min,
+        passive_digest_max_lines=passive_digest_max_lines,
     )

@@ -1297,6 +1297,7 @@ def update_daily_conversation_summary(
     timeout_sec: float = 30.0,
     on_token: Optional[Callable[[str], None]] = None,
     thinking: bool = False,
+    date_utc: Optional[str] = None,
 ) -> Optional[int]:
     """
     Update the conversation summary for today with new chunks.
@@ -1309,7 +1310,7 @@ def update_daily_conversation_summary(
     if not new_chunks:
         return None
 
-    today = datetime.now(timezone.utc).date().isoformat()  # YYYY-MM-DD format
+    target_date = date_utc or datetime.now(timezone.utc).date().isoformat()
 
     try:
         # Redact sensitive information from chunks before processing
@@ -1323,7 +1324,7 @@ def update_daily_conversation_summary(
             debug_log(f"  chunk {i+1}: {chunk_preview}", "memory")
 
         # Get existing summary for today
-        existing = db.get_conversation_summary(today, source_app)
+        existing = db.get_conversation_summary(target_date, source_app)
         previous_summary = existing['summary'] if existing else None
 
         # Generate updated summary using redacted chunks
@@ -1350,7 +1351,7 @@ def update_daily_conversation_summary(
 
         # Store the summary
         summary_id = db.upsert_conversation_summary(
-            date_utc=today,
+            date_utc=target_date,
             summary=summary,
             topics=topics,
             source_app=source_app,
@@ -1640,6 +1641,87 @@ def get_relevant_conversation_context(
     )
 
 
+def update_graph_from_summary(
+    db: Database,
+    cfg,
+    *,
+    date_utc: str,
+    source_app: str = "jarvis",
+    timeout_sec: float = 30.0,
+    thinking: bool = False,
+    graph_picker_model: Optional[str] = None,
+) -> bool:
+    """Extract graph facts from one stored diary summary.
+
+    Diary and ambient-memory writes share this helper so graph placement,
+    deduplication, output, and failure behaviour stay identical.
+    """
+    graph_store = None
+    try:
+        from .graph import GraphMemoryStore
+        from .graph_ops import update_graph_from_dialogue
+
+        existing = db.get_conversation_summary(date_utc, source_app)
+        summary_text = existing["summary"] if existing else None
+        if not summary_text:
+            return False
+
+        graph_store = GraphMemoryStore(db.db_path)
+        graph_timeout = min(timeout_sec, 30.0)
+        result = update_graph_from_dialogue(
+            store=graph_store,
+            summary=summary_text,
+            cfg=cfg,
+            chat_model=cfg.llm_chat_model,
+            timeout_sec=graph_timeout,
+            thinking=thinking,
+            date_utc=date_utc,
+            picker_model=graph_picker_model,
+        )
+        stored = result.stored
+        skipped = result.skipped
+        if stored or skipped:
+            duplicate_suffix = (
+                f"{skipped} duplicate{'' if skipped == 1 else 's'} skipped"
+            )
+            if stored:
+                fact_count = (
+                    f"{len(stored)} new fact{'' if len(stored) == 1 else 's'}"
+                )
+                tail = f" ({duplicate_suffix})" if skipped else ""
+                print(
+                    f"  🧠 Knowledge graph: learned {fact_count}{tail}",
+                    flush=True,
+                )
+                for fact, node_name in stored[:6]:
+                    preview = fact.replace("\n", " ").strip()
+                    if len(preview) > 90:
+                        preview = preview[:90].rstrip() + "…"
+                    print(f"     · {preview} → {node_name}", flush=True)
+                if len(stored) > 6:
+                    print(f"     · …and {len(stored) - 6} more", flush=True)
+            else:
+                print(
+                    f"  🧠 Knowledge graph: nothing new ({duplicate_suffix})",
+                    flush=True,
+                )
+        debug_log(
+            f"graph memory: stored {len(stored)} facts, "
+            f"{skipped} duplicates skipped",
+            "memory",
+        )
+        return True
+    except Exception as exc:
+        debug_log(f"graph memory update failed (non-fatal): {exc}", "memory")
+        return False
+    finally:
+        if graph_store is not None:
+            try:
+                graph_store.close()
+            except Exception:
+                pass
+
+
 def update_diary_from_dialogue_memory(
     db: Database,
     dialogue_memory: DialogueMemory,
@@ -1712,79 +1794,15 @@ def update_diary_from_dialogue_memory(
         if summary_id is not None:
             dialogue_memory.mark_saved_up_to(snapshot_timestamp)
             debug_log(f"marked messages saved up to timestamp {snapshot_timestamp}", "memory")
-
-            # Graph memory (v2): extract facts and store in the node graph.
-            # Non-blocking — if this fails, the diary update still succeeded.
-            # Uses a dedicated timeout (30s) rather than the diary chat timeout,
-            # so graph updates don't inflate the diary flush wall time.
-            try:
-                from .graph import GraphMemoryStore
-                from .graph_ops import update_graph_from_dialogue
-
-                graph_store = GraphMemoryStore(db.db_path)
-                # Retrieve the summary we just stored to use for extraction
-                today = datetime.now(timezone.utc).date().isoformat()
-                existing = db.get_conversation_summary(today, source_app)
-                summary_text = existing['summary'] if existing else None
-
-                if summary_text:
-                    # Use a shorter timeout for graph operations — extraction (30s),
-                    # placement (15s/fact), and split (45s) each have their own budgets
-                    # inside update_graph_from_dialogue.
-                    graph_timeout = min(timeout_sec, 30.0)
-                    result = update_graph_from_dialogue(
-                        store=graph_store,
-                        summary=summary_text,
-                        cfg=cfg,
-                        chat_model=cfg.llm_chat_model,
-                        timeout_sec=graph_timeout,
-                        thinking=thinking,
-                        date_utc=today,
-                        picker_model=graph_picker_model,
-                    )
-                    stored = result.stored
-                    skipped = result.skipped
-                    # Print whenever extraction produced anything — including
-                    # all-duplicate flushes. Without the skipped count this
-                    # line went silent after #282's dedupe (cumulative diary
-                    # re-extracts the same facts on every flush), making it
-                    # look like the memory pipeline had stopped working.
-                    if stored or skipped:
-                        dup_suffix = (
-                            f"{skipped} duplicate{'' if skipped == 1 else 's'} skipped"
-                        )
-                        if stored:
-                            fact_count = (
-                                f"{len(stored)} new fact"
-                                f"{'' if len(stored) == 1 else 's'}"
-                            )
-                            tail = f" ({dup_suffix})" if skipped else ""
-                            print(
-                                f"  🧠 Knowledge graph: learned {fact_count}{tail}",
-                                flush=True,
-                            )
-                            # Show each new fact with the node it landed in so
-                            # the user can eyeball extraction/placement. Cap
-                            # preview length per fact.
-                            for fact, node_name in stored[:6]:
-                                preview = fact.replace("\n", " ").strip()
-                                if len(preview) > 90:
-                                    preview = preview[:90].rstrip() + "…"
-                                print(f"     · {preview} → {node_name}", flush=True)
-                            if len(stored) > 6:
-                                print(f"     · …and {len(stored) - 6} more", flush=True)
-                        else:
-                            print(
-                                f"  🧠 Knowledge graph: nothing new ({dup_suffix})",
-                                flush=True,
-                            )
-                    debug_log(
-                        f"graph memory: stored {len(stored)} facts, "
-                        f"{skipped} duplicates skipped",
-                        "memory",
-                    )
-            except Exception as e:
-                debug_log(f"graph memory update failed (non-fatal): {e}", "memory")
+            update_graph_from_summary(
+                db,
+                cfg,
+                date_utc=datetime.now(timezone.utc).date().isoformat(),
+                source_app=source_app,
+                timeout_sec=timeout_sec,
+                thinking=thinking,
+                graph_picker_model=graph_picker_model,
+            )
 
         return summary_id
 

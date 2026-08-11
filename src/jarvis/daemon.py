@@ -690,6 +690,44 @@ def main(smoke_test: bool = False) -> None:
     get_recorder().use_journal(Path(cfg.db_path).parent / "turns.jsonl")
 
     # Control centre: started early so the interface is already reachable
+    # Passive retention is enforced even while capture is switched off, so an
+    # old record is not stranded. Both jobs stay off the startup and audio
+    # threads. The digest worker exists only while the live switch is on.
+    from .listening.passive_capture import (
+        PassiveRetentionWorker,
+        initialise_passive_capture,
+        passive_capture_enabled,
+        register_passive_switch_listener,
+        unregister_passive_switch_listener,
+    )
+    from .memory.ambient import AmbientDigestWorker
+
+    initialise_passive_capture(
+        bool(getattr(cfg, "passive_capture_enabled", False))
+    )
+    passive_retention_worker = PassiveRetentionWorker(db, cfg)
+    passive_retention_worker.start()
+    ambient_worker_lock = threading.Lock()
+    ambient_worker = None
+
+    def _set_ambient_worker(enabled: bool, stop_timeout: float = 3.0) -> None:
+        nonlocal ambient_worker
+        worker_to_start = None
+        worker_to_stop = None
+        with ambient_worker_lock:
+            if enabled:
+                if ambient_worker is None:
+                    ambient_worker = AmbientDigestWorker(db, cfg)
+                worker_to_start = ambient_worker
+            elif ambient_worker is not None:
+                worker_to_stop = ambient_worker
+        if worker_to_start is not None:
+            worker_to_start.start()
+        if worker_to_stop is not None:
+            worker_to_stop.stop(timeout=stop_timeout)
+
+    register_passive_switch_listener(_set_ambient_worker)
+
     # while Whisper and the models are still loading.
     from .webui import start_from_settings as _start_webui
 
@@ -856,6 +894,7 @@ def main(smoke_test: bool = False) -> None:
     voice_thread: Optional[threading.Thread] = None
     voice_thread = VoiceListener(db, cfg, tts, _global_dialogue_memory)
     voice_thread.start()
+    _set_ambient_worker(passive_capture_enabled())
     from .security.voice_confirm import set_voice_confirmation_requester
     set_voice_confirmation_requester(
         voice_thread.request_security_confirmation if tts.enabled else None
@@ -943,6 +982,10 @@ def main(smoke_test: bool = False) -> None:
             except Exception:
                 pass
         set_voice_confirmation_requester(None)
+
+        unregister_passive_switch_listener(_set_ambient_worker)
+        _set_ambient_worker(False, stop_timeout=SHUTDOWN_DIARY_TIMEOUT_SEC)
+        passive_retention_worker.stop()
 
         if tts is not None:
             try:
@@ -1071,6 +1114,9 @@ def main(smoke_test: bool = False) -> None:
         debug_log("daemon finally block starting - performing cleanup", "jarvis")
         from .security.voice_confirm import set_voice_confirmation_requester
         set_voice_confirmation_requester(None)
+        unregister_passive_switch_listener(_set_ambient_worker)
+        _set_ambient_worker(False, stop_timeout=SHUTDOWN_DIARY_TIMEOUT_SEC)
+        passive_retention_worker.stop()
 
         # Clean shutdown - stop dictation first
         if dictation is not None:

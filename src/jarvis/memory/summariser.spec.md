@@ -41,6 +41,32 @@ Unrelated topics must never be welded into one grammatical clause. No shared "an
 
 All three rules apply in any language, not only English. The prompt states this explicitly because small models otherwise assume the rule is keyed to the English phrases it names.
 
+## Ambient Digest
+
+When passive capture is switched on (`../listening/passive_capture.spec.md`), overheard speech reaches memory through a second summariser: `ambient.py::generate_ambient_digest`. Its output is appended to the day's diary row as one chunk and then flows through the ordinary diary and graph consumers, so everything that poisons a diary summary poisons this one the same way. Rules 2 (attribution) and 3 (topic separation) apply unchanged. Rule 1 (deflection) is inert: there are no assistant turns in ambient speech. Three rules are specific to it.
+
+### 4. Overheard provenance
+Ambient speech was not addressed to the assistant and was not necessarily spoken by the user. The digest records who is not known, rather than guessing.
+
+- Write "someone in the room said X", "it was mentioned that X", never "the user said X" or a bare "X".
+- Where the speaker identifies themselves or is named by another speaker, the name may be recorded, still as reported speech.
+- Never promote overheard content into a user fact. A preference the assistant hears across the room is not a preference the user stated, and downstream enrichment reads unattributed lines as established fact.
+
+### 5. Nothing is the ordinary answer
+Most speech in a room carries nothing worth a permanent record. The prompt states plainly that returning an empty digest is correct and common, with worked examples of small talk that produces nothing. Without this, a small model treats an empty answer as a failure to comply and invents significance for "have you seen my keys".
+
+- Keep only what bears on the user's world: plans, decisions, appointments, people, places, preferences stated as such, events that happened.
+- Drop pleasantries, logistics of the moment, half-sentences, and anything whose meaning depends on being in the room.
+
+### 6. Recited speech is not the household's
+A television, a podcast, a speakerphone, or a film carries speech that belongs to nobody present. Recorded as fact it produces a diary claiming the user planned a bank robbery.
+
+- Content that reads as broadcast, performed, recited, or read aloud is dropped rather than attributed.
+- When it is genuinely ambiguous, drop it. A missing line costs nothing; an invented one is retrieved for months.
+
+### Untrusted-input fence
+Ambient lines are wrapped in the same `<<<BEGIN UNTRUSTED WEB EXTRACT>>>` / `<<<END UNTRUSTED WEB EXTRACT>>>` markers the web-search and diary-rewrite paths use, and redacted with `utils/redact.py` first. Anything said aloud near the microphone by anyone at all reaches this prompt, which makes it the assistant's broadest injection surface. Echoed fence markers are stripped from the response.
+
 ## LLM Rewrite Sweep
 
 `rewrite_all_diary_summaries(db, ollama_base_url, ollama_chat_model, ...)` is a user-triggered bulk operation that walks every row in `conversation_summaries` and asks the chat model to remove deflection narration from each. It exists for cleaning **historical** poisoning from rows written before the summariser prompt was tightened. There is no equivalent on the write path — new writes rely on the prompt alone.
@@ -123,6 +149,11 @@ Idempotent once the mapping has been applied: a second run finds no tags to chan
 | `TestRewriteSweepBehaviour` | `tests/test_diary_rewrite_sweep.py` | LLM-rewrite bulk sweep DB integration, fail-open, audit trail |
 | `TestDiaryScrubEndpoint` | `tests/webui/test_memory_diary_scrub_api.py` | Endpoint streaming + privacy contract |
 | `TestOptimiseContract` / `TestOptimiseMerge` / `TestOptimiseSplit` / `TestOptimiseDeduplicate` / `TestOptimiseAuditTrail` / `TestOptimiseFailOpen` / `TestOptimiseIdempotence` | `tests/test_diary_topic_optimise.py` | Tag optimisation — generator contract, merge/split semantics, dedup, audit trail, fail-open, idempotence |
+| `test_digest_attributes_content_as_overheard` | `evals/test_ambient_digest_hygiene.py` | Rule 4 |
+| `test_digest_returns_nothing_for_small_talk` | `evals/test_ambient_digest_hygiene.py` | Rule 5 |
+| `test_digest_ignores_recited_and_broadcast_speech` | `evals/test_ambient_digest_hygiene.py` | Rule 6 |
+| `test_digest_keeps_a_real_plan_stated_aloud` | `evals/test_ambient_digest_hygiene.py` | Cross-rule: ambient hygiene must not strip real content |
+| `TestAmbientDigestForbidsUserAttribution` | `tests/test_diary_poisoning_defence.py` | Prompt-content regression (rules 4–6) |
 
 Live evals target the smallest supported model (gemma4:e2b) and `xfail` softly on weaker models rather than hard-failing, documenting residual risk instead of masking it.
 

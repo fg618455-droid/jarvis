@@ -184,6 +184,16 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 - **Output**: `ServerCapabilities{reachable, chat, tools, embeddings, models}`. Consumed only by the wizard to render an honest capability summary and offer the Ollama-embeddings fallback. Never persisted.
 - **Limits**: `timeout_sec` default 8s per sub-request. Issues up to two `/chat/completions` calls (plain + tool), one `/embeddings`, one `/models`. Fail-soft: every error collapses to a `False` flag; a `ConnectionError` short-circuits to `reachable=False`.
 
+## 16. Ambient Digest
+
+- **File**: [src/jarvis/memory/ambient.py](src/jarvis/memory/ambient.py) — `generate_ambient_digest()` and `process_ambient_digest_once()`.
+- **Trigger**: background, every `passive_digest_interval_min` (default 15) while passive capture is enabled. The worker does not exist while the switch is off. Each pass takes the oldest UTC day with eligible lines and processes at most one bounded batch.
+- **Model / gating**: CHAT tier, `cfg.llm_chat_model` via `get_llm_backend(cfg).direct(...)`. Gated by the live `passive_capture_enabled` switch. Addressed and already-digested lines are excluded before the call.
+- **Inputs**: up to `passive_digest_max_lines` (default 120) raw passive transcript lines from one UTC day. Every line is passed through `utils.redact.py`, timestamped, and wrapped in `<<<BEGIN UNTRUSTED WEB EXTRACT>>>` / `<<<END UNTRUSTED WEB EXTRACT>>>` before reaching the model.
+- **System prompt**: `_AMBIENT_DIGEST_SYSTEM_PROMPT`. Enforces overheard provenance, permits an empty result as the ordinary answer, drops momentary small talk, separates topics, and rejects broadcast, performed, recited, or ambiguous speech.
+- **Output**: a short attributed digest or an empty string. A non-empty digest is appended through the ordinary daily-summary writer and then sent through the shared graph-extraction helper. An empty result writes no diary row. Eligible source lines are marked digested only after the pass succeeds; model or diary failure leaves them available for retry.
+- **Limits**: `llm_chat_timeout_sec`; `max_tokens: 300`; one UTC day and `passive_digest_max_lines` per pass. No ambient text enters the reply path.
+
 ---
 
 ## Frequency / Size Summary
@@ -215,14 +225,15 @@ Driven by `detect_model_size(model_name) → SMALL (≤7.5B) | LARGE (>7.5B)` �
 | Memory digest | ON | OFF |
 | Tool-result digest | ON | OFF |
 | Text-based tool calling | ON | OFF (native) |
+| 16 | Ambient digest | 0-1 per configured interval | passive capture only | CHAT tier |
 | Planner direct-exec | ON | OFF |
 
 ## Config keys
 
 - Models: `llm_chat_model` (CHAT tier), `fast_model` (FAST tier). Every context resolves via `resolve_model(cfg, tier)`. Legacy on-disk keys (`ollama_chat_model` as a v1 → v2 alias; `intent_judge_model` / `tool_router_model` / `evaluator_model` / `planner_model` folded into `fast_model` by the v2 → v3 migration) are readable but no longer part of `Settings`.
-- Flags: `memory_digest_enabled`, `tool_result_digest_enabled`, `llm_thinking_enabled`, `intent_judge_thinking_enabled`, `tool_selection_strategy`, `planner_enabled`, `low_power_mode`
-- Timeouts: `llm_chat_timeout_sec` (45s), `llm_digest_timeout_sec` (8s, shared across #4/#5/#6), `llm_tools_timeout_sec`, `intent_judge_timeout_sec` (6s), `planner_timeout_sec` (3s)
-- Caps: `agentic_max_turns` (8), `tool_search_max_calls` (3), `_LLM_MAX_SELECTED` (5), `_DIGEST_MAX_CHARS` (400), `_TOOL_DIGEST_MAX_CHARS` (600). Per-context `max_tokens` caps listed above (50–1500 depending on task — the intent judge's 1500 covers reasoning + answer on reasoning models; rewrite tasks scale with input length).
+- Flags: `memory_digest_enabled`, `tool_result_digest_enabled`, `llm_thinking_enabled`, `intent_judge_thinking_enabled`, `tool_selection_strategy`, `planner_enabled`, `low_power_mode`, `passive_capture_enabled`
+- Timeouts: `llm_chat_timeout_sec` (45s, also #16), `llm_digest_timeout_sec` (8s, shared across #4/#5/#6), `llm_tools_timeout_sec`, `intent_judge_timeout_sec` (6s), `planner_timeout_sec` (3s), `passive_digest_interval_min` (15-minute worker interval)
+- Caps: `agentic_max_turns` (8), `tool_search_max_calls` (3), `_LLM_MAX_SELECTED` (5), `_DIGEST_MAX_CHARS` (400), `_TOOL_DIGEST_MAX_CHARS` (600), `passive_digest_max_lines` (120). Per-context `max_tokens` caps listed above (50–1500 depending on task — the ambient digest uses 300 and the intent judge's 1500 covers reasoning + answer on reasoning models; rewrite tasks scale with input length).
 - Runtime residency: `low_power_mode` skips startup LLM warmups and shortens Ollama `keep_alive` for intent judge and warmup calls from `"30m"` to `"1m"`. It does not change prompts, model selection, timeouts, or context limits.
 
 ## KV-cache discipline (prompt construction rules)
@@ -270,6 +281,8 @@ user input
 5. Give each digest its own timeout budget rather than sharing `llm_digest_timeout_sec` (today a slow memory digest can starve the max-turn digest).
 6. Consider single-model deployments: the FAST tier prefers a small dedicated model while the planner tracks `llm_chat_model`; loading a second model hurts cold-start latency on small hardware. (On an OpenAI-compatible chat provider an unset `fast_model` already resolves to the chat model, so every context rides the one served model.)
 7. Narrow `llm_thinking_enabled` to router/planner only, not every context.
+ambient transcript (passive switch on)
+  └─▶ [16] Ambient digest → [9] daily summary update → [10] graph extract → [11] best-child
 8. Keep contextual intent judging off the deterministic edge-wake path.
 
 ## 21. Model and reply-prefix warm-up

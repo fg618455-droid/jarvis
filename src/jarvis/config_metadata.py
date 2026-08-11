@@ -44,6 +44,7 @@ CATEGORIES = [
     ("vad", "📊 Voice Activity Detection"),
     ("timing", "⏱️ Timing & Windows"),
     ("memory", "🧠 Memory & Dialogue"),
+    ("passive", "📝 Passive Capture"),
     ("security", "🔐 Security"),
     ("location", "📍 Location"),
     ("features", "✨ Features"),
@@ -324,6 +325,23 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("telegram_api_base_url", "Telegram API Host",
       "Bot API server to call; point it at a self-hosted instance to keep confirmations local",
       "security", "str")
+
+    # --- Passive Capture ---
+    f("passive_capture_enabled", "Enable Passive Capture",
+      "Keep a text-only record of speech already transcribed near the microphone. Off by default",
+      "passive", "bool")
+    f("passive_capture_retention_days", "Retention",
+      "Days to keep passive transcript lines. Zero keeps them until manual deletion",
+      "passive", "int", min_val=0, max_val=3650, suffix="days")
+    f("passive_capture_min_words", "Minimum Words",
+      "Utterances shorter than this are not written to the passive record",
+      "passive", "int", min_val=0, max_val=100)
+    f("passive_digest_interval_min", "Digest Interval",
+      "Minutes between passes that fold useful overheard speech into memory",
+      "passive", "float", min_val=0.01, max_val=1440, step=1, suffix="min")
+    f("passive_digest_max_lines", "Lines per Digest",
+      "Maximum passive transcript lines sent to one ambient digest pass",
+      "passive", "int", min_val=1, max_val=1000)
 
     # --- Location ---
     f("location_enabled", "Enable Location",

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from flask import Flask
 
-from . import conversation, memory, security, settings, status, system, tools
+from . import conversation, memory, passive, security, settings, status, system, tools
 
 
 BLUEPRINTS = (
     status.bp,
     memory.bp,
     conversation.bp,
+    passive.bp,
     tools.bp,
     security.bp,
     system.bp,
