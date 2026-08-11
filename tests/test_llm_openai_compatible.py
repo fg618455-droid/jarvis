@@ -8,7 +8,6 @@ same way it consumes Ollama responses.
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -105,13 +104,14 @@ class TestOpenAICompatibleDirect:
         ]
 
     @patch("jarvis.llm.requests.post")
-    def test_returns_none_on_failure(self, mock_post):
-        from jarvis.llm import OpenAICompatibleBackend
+    def test_raises_provider_error_on_failure(self, mock_post):
+        from jarvis.llm import OpenAICompatibleBackend, ProviderError
 
         mock_post.side_effect = RuntimeError("server down")
         backend = OpenAICompatibleBackend("http://localhost:1234/v1")
 
-        assert backend.direct("any", "sys", "user") is None
+        with pytest.raises(ProviderError):
+            backend.direct("any", "sys", "user")
 
     @patch("jarvis.llm.requests.post")
     def test_temperature_omitted_when_none(self, mock_post):
@@ -183,36 +183,39 @@ class TestOpenAICompatibleStreaming:
         assert backend.streaming("any", "sys", "user") == "ok"
 
     @patch("jarvis.llm.requests.post")
-    def test_returns_none_on_timeout(self, mock_post):
+    def test_raises_provider_error_on_timeout(self, mock_post):
         import requests
-        from jarvis.llm import OpenAICompatibleBackend
+        from jarvis.llm import OpenAICompatibleBackend, ProviderError
 
         mock_post.side_effect = requests.exceptions.Timeout("slow")
         backend = OpenAICompatibleBackend("http://localhost:1234/v1")
 
-        assert backend.streaming("any", "sys", "user") is None
+        with pytest.raises(ProviderError):
+            backend.streaming("any", "sys", "user")
 
     @patch("jarvis.llm.requests.post")
-    def test_returns_none_on_connection_error(self, mock_post):
+    def test_propagates_connection_error(self, mock_post):
         import requests
         from jarvis.llm import OpenAICompatibleBackend
 
         mock_post.side_effect = requests.exceptions.ConnectionError("server down")
         backend = OpenAICompatibleBackend("http://localhost:1234/v1")
 
-        assert backend.streaming("any", "sys", "user") is None
+        with pytest.raises(requests.exceptions.ConnectionError):
+            backend.streaming("any", "sys", "user")
 
     @patch("jarvis.llm.requests.post")
-    def test_returns_none_on_http_error(self, mock_post):
+    def test_raises_provider_error_on_http_error(self, mock_post):
         import requests
-        from jarvis.llm import OpenAICompatibleBackend
+        from jarvis.llm import OpenAICompatibleBackend, ProviderError
 
         http_resp = MagicMock(status_code=500)
         err = requests.exceptions.HTTPError(response=http_resp)
         mock_post.return_value = _make_response(raise_http=err)
         backend = OpenAICompatibleBackend("http://localhost:1234/v1")
 
-        assert backend.streaming("any", "sys", "user") is None
+        with pytest.raises(ProviderError):
+            backend.streaming("any", "sys", "user")
 
 
 # ---------------------------------------------------------------------------
@@ -307,16 +310,17 @@ class TestOpenAICompatibleChat:
             )
 
     @patch("jarvis.llm.requests.post")
-    def test_returns_none_on_400_without_tools(self, mock_post):
+    def test_raises_provider_error_on_400_without_tools(self, mock_post):
         import requests
-        from jarvis.llm import OpenAICompatibleBackend
+        from jarvis.llm import OpenAICompatibleBackend, ProviderError
 
         http_resp = MagicMock(status_code=400)
         err = requests.exceptions.HTTPError(response=http_resp)
         mock_post.return_value = _make_response(raise_http=err)
         backend = OpenAICompatibleBackend("http://localhost:1234/v1")
 
-        assert backend.chat("any", [{"role": "user", "content": "hi"}]) is None
+        with pytest.raises(ProviderError):
+            backend.chat("any", [{"role": "user", "content": "hi"}])
 
     @patch("jarvis.llm.requests.post")
     def test_propagates_connection_error(self, mock_post):
@@ -332,44 +336,110 @@ class TestOpenAICompatibleChat:
             backend.chat("any", [{"role": "user", "content": "hi"}])
 
     @patch("jarvis.llm.requests.post")
-    def test_returns_none_on_http_500_even_with_tools(self, mock_post):
+    def test_raises_provider_error_on_http_500_even_with_tools(self, mock_post):
         """Only HTTP 400 with tools means "model rejects native tools" —
         500 is a server-side failure that should degrade gracefully."""
         import requests
-        from jarvis.llm import OpenAICompatibleBackend
+        from jarvis.llm import OpenAICompatibleBackend, ProviderError
 
         http_resp = MagicMock(status_code=500)
         err = requests.exceptions.HTTPError(response=http_resp)
         mock_post.return_value = _make_response(raise_http=err)
         backend = OpenAICompatibleBackend("http://localhost:1234/v1")
 
-        assert (
+        with pytest.raises(ProviderError):
             backend.chat(
                 "any",
                 [{"role": "user", "content": "hi"}],
                 tools=[{"type": "function", "function": {"name": "x"}}],
             )
-            is None
-        )
 
     @patch("jarvis.llm.requests.post")
-    def test_returns_none_on_timeout(self, mock_post):
+    def test_raises_provider_error_on_timeout(self, mock_post):
         import requests
-        from jarvis.llm import OpenAICompatibleBackend
+        from jarvis.llm import OpenAICompatibleBackend, ProviderError
 
         mock_post.side_effect = requests.exceptions.Timeout("slow")
         backend = OpenAICompatibleBackend("http://localhost:1234/v1")
 
-        assert backend.chat("any", [{"role": "user", "content": "hi"}]) is None
+        with pytest.raises(ProviderError):
+            backend.chat("any", [{"role": "user", "content": "hi"}])
 
     @patch("jarvis.llm.requests.post")
-    def test_returns_none_on_generic_exception(self, mock_post):
-        from jarvis.llm import OpenAICompatibleBackend
+    def test_raises_provider_error_on_generic_exception(self, mock_post):
+        from jarvis.llm import OpenAICompatibleBackend, ProviderError
 
         mock_post.side_effect = RuntimeError("unexpected")
         backend = OpenAICompatibleBackend("http://localhost:1234/v1")
 
-        assert backend.chat("any", [{"role": "user", "content": "hi"}]) is None
+        with pytest.raises(ProviderError):
+            backend.chat("any", [{"role": "user", "content": "hi"}])
+
+    @pytest.mark.parametrize("status", [401, 403])
+    @patch("jarvis.llm.requests.post")
+    def test_auth_statuses_raise_auth_error(self, mock_post, status):
+        import requests
+        from jarvis.llm import AuthError, OpenAICompatibleBackend
+
+        http_resp = MagicMock(status_code=status, headers={})
+        err = requests.exceptions.HTTPError(response=http_resp)
+        mock_post.return_value = _make_response(raise_http=err)
+
+        with pytest.raises(AuthError):
+            OpenAICompatibleBackend("http://localhost:1234/v1").chat(
+                "any", [{"role": "user", "content": "hi"}]
+            )
+
+    @patch("jarvis.llm.requests.post")
+    def test_missing_model_raises_model_unavailable(self, mock_post):
+        import requests
+        from jarvis.llm import ModelUnavailableError, OpenAICompatibleBackend
+
+        http_resp = MagicMock(status_code=404, headers={})
+        err = requests.exceptions.HTTPError(response=http_resp)
+        mock_post.return_value = _make_response(raise_http=err)
+
+        with pytest.raises(ModelUnavailableError):
+            OpenAICompatibleBackend("http://localhost:1234/v1").chat(
+                "missing", [{"role": "user", "content": "hi"}]
+            )
+
+    @patch("jarvis.llm.requests.post")
+    def test_429_reads_retry_after(self, mock_post):
+        import requests
+        from jarvis.llm import OpenAICompatibleBackend, RateLimitedError
+
+        http_resp = MagicMock(status_code=429, headers={"Retry-After": "17"})
+        http_resp.json.return_value = {}
+        err = requests.exceptions.HTTPError(response=http_resp)
+        mock_post.return_value = _make_response(raise_http=err)
+
+        with pytest.raises(RateLimitedError) as caught:
+            OpenAICompatibleBackend("http://localhost:1234/v1").chat(
+                "any", [{"role": "user", "content": "hi"}]
+            )
+        assert caught.value.retry_after == 17
+
+    @patch("jarvis.llm.requests.post")
+    def test_daily_quota_uses_stated_reset(self, mock_post):
+        import requests
+        from jarvis.llm import OpenAICompatibleBackend, QuotaExhaustedError
+
+        http_resp = MagicMock(
+            status_code=429,
+            headers={"x-ratelimit-reset-requests": "4102444800"},
+        )
+        http_resp.json.return_value = {
+            "error": {"code": "quota_exceeded", "message": "daily quota exhausted"}
+        }
+        err = requests.exceptions.HTTPError(response=http_resp)
+        mock_post.return_value = _make_response(raise_http=err)
+
+        with pytest.raises(QuotaExhaustedError) as caught:
+            OpenAICompatibleBackend("http://localhost:1234/v1").chat(
+                "any", [{"role": "user", "content": "hi"}]
+            )
+        assert caught.value.reset_at == 4102444800
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +462,7 @@ class TestOpenAICompatibleErrorMessagesDoNotLeakUrls:
     @patch("jarvis.llm.requests.post")
     def test_http_error_message_does_not_leak_endpoint_url(self, mock_post, capsys):
         import requests
-        from jarvis.llm import OpenAICompatibleBackend
+        from jarvis.llm import AuthError, OpenAICompatibleBackend
 
         # Construct an HTTPError whose str() embeds the URL — exactly what
         # ``requests`` does in real failures.
@@ -405,14 +475,15 @@ class TestOpenAICompatibleErrorMessagesDoNotLeakUrls:
         mock_post.return_value = _make_response(raise_http=err)
         backend = OpenAICompatibleBackend(self._SECRET_URL, api_key="sk-secret")
 
-        backend.chat("any", [{"role": "user", "content": "hi"}])
+        with pytest.raises(AuthError) as caught:
+            backend.chat("any", [{"role": "user", "content": "hi"}])
 
         captured = capsys.readouterr()
         assert self._SECRET_URL not in captured.out, (
             "HTTPError message must not echo the configured endpoint URL"
         )
-        # Status code must still be visible so users can diagnose 401 vs 5xx.
-        assert "401" in captured.out
+        assert self._SECRET_URL not in str(caught.value)
+        assert "sk-secret" not in str(caught.value)
 
     @patch("jarvis.llm.requests.post")
     def test_connection_error_message_does_not_leak_endpoint_url(self, mock_post, capsys):
@@ -440,18 +511,21 @@ class TestOpenAICompatibleErrorMessagesDoNotLeakUrls:
 
     @patch("jarvis.llm.requests.post")
     def test_generic_exception_message_does_not_leak_url_or_key(self, mock_post, capsys):
-        from jarvis.llm import OpenAICompatibleBackend
+        from jarvis.llm import OpenAICompatibleBackend, ProviderError
 
         mock_post.side_effect = RuntimeError(
             f"unexpected: {self._SECRET_URL}?api_key=sk-secret"
         )
         backend = OpenAICompatibleBackend(self._SECRET_URL, api_key="sk-secret")
 
-        backend.chat("any", [{"role": "user", "content": "hi"}])
+        with pytest.raises(ProviderError) as caught:
+            backend.chat("any", [{"role": "user", "content": "hi"}])
 
         captured = capsys.readouterr()
         assert self._SECRET_URL not in captured.out
         assert "sk-secret" not in captured.out
+        assert self._SECRET_URL not in str(caught.value)
+        assert "sk-secret" not in str(caught.value)
 
     @patch("jarvis.llm.requests.post")
     def test_extra_options_merge_at_payload_root(self, mock_post):
@@ -547,13 +621,14 @@ class TestOpenAICompatibleListModels:
         assert names == ["gpt-4o-mini", "lmstudio-community/gemma-3-4b-it-GGUF"]
 
     @patch("jarvis.llm.requests.get")
-    def test_returns_empty_list_on_failure(self, mock_get):
-        from jarvis.llm import OpenAICompatibleBackend
+    def test_raises_provider_error_on_failure(self, mock_get):
+        from jarvis.llm import OpenAICompatibleBackend, ProviderError
 
         mock_get.side_effect = RuntimeError("boom")
         backend = OpenAICompatibleBackend("http://localhost:1234/v1")
 
-        assert backend.list_models() == []
+        with pytest.raises(ProviderError):
+            backend.list_models()
 
     @patch("jarvis.llm.requests.get")
     def test_returns_empty_list_when_data_field_missing(self, mock_get):

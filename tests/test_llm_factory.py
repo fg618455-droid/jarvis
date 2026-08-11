@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import pytest
-
 
 @dataclass
 class _Cfg:
@@ -31,15 +29,16 @@ class _Cfg:
 
 class TestGetLLMBackend:
     def test_returns_ollama_for_default_provider(self):
-        from jarvis.llm import OllamaBackend, get_llm_backend
+        from jarvis.llm import RoutedBackend, Tier, get_llm_backend
 
         backend = get_llm_backend(_Cfg())
 
-        assert isinstance(backend, OllamaBackend)
-        assert backend.base_url == "http://127.0.0.1:11434"
+        assert isinstance(backend, RoutedBackend)
+        assert backend.routes_for(Tier.CHAT)[0].provider == "ollama"
+        assert backend.routes_for(Tier.CHAT)[0].base_url == "http://127.0.0.1:11434"
 
     def test_returns_openai_compatible_when_provider_set(self):
-        from jarvis.llm import OpenAICompatibleBackend, get_llm_backend
+        from jarvis.llm import RoutedBackend, Tier, get_llm_backend
 
         cfg = _Cfg(
             llm_provider="openai_compatible",
@@ -49,26 +48,27 @@ class TestGetLLMBackend:
 
         backend = get_llm_backend(cfg)
 
-        assert isinstance(backend, OpenAICompatibleBackend)
-        assert backend.base_url == "http://localhost:1234/v1"
+        assert isinstance(backend, RoutedBackend)
+        assert backend.routes_for(Tier.CHAT)[0].provider == "openai_compatible"
+        assert backend.routes_for(Tier.CHAT)[0].base_url == "http://localhost:1234/v1"
 
     def test_falls_back_to_ollama_for_unknown_provider(self):
-        from jarvis.llm import OllamaBackend, get_llm_backend
+        from jarvis.llm import Tier, get_llm_backend
 
         cfg = _Cfg(llm_provider="lm-studio")  # unknown alias
 
         backend = get_llm_backend(cfg)
 
-        assert isinstance(backend, OllamaBackend)
+        assert backend.routes_for(Tier.CHAT)[0].provider == "ollama"
 
     def test_uses_ollama_base_url_when_llm_base_url_empty(self):
-        from jarvis.llm import get_llm_backend
+        from jarvis.llm import Tier, get_llm_backend
 
         cfg = _Cfg(ollama_base_url="http://1.2.3.4:11434")
 
         backend = get_llm_backend(cfg)
 
-        assert backend.base_url == "http://1.2.3.4:11434"
+        assert backend.routes_for(Tier.CHAT)[0].base_url == "http://1.2.3.4:11434"
 
     def test_ollama_provider_ignores_stale_llm_base_url(self):
         """``llm_base_url`` is the OpenAI-compatible server's URL. When the
@@ -77,7 +77,7 @@ class TestGetLLMBackend:
         OpenAI-compatible configuration — otherwise toggling the provider
         back to Ollama would silently point OllamaBackend at the old
         LM Studio URL."""
-        from jarvis.llm import OllamaBackend, get_llm_backend
+        from jarvis.llm import Tier, get_llm_backend
 
         cfg = _Cfg(
             llm_provider="ollama",
@@ -87,8 +87,8 @@ class TestGetLLMBackend:
 
         backend = get_llm_backend(cfg)
 
-        assert isinstance(backend, OllamaBackend)
-        assert backend.base_url == "http://127.0.0.1:11434"
+        assert backend.routes_for(Tier.CHAT)[0].provider == "ollama"
+        assert backend.routes_for(Tier.CHAT)[0].base_url == "http://127.0.0.1:11434"
 
 
 class TestGetEmbeddingBackend:
@@ -165,8 +165,6 @@ class TestGetEmbeddingBackend:
         backend = get_embedding_backend(cfg)
 
         assert isinstance(backend, OpenAICompatibleBackend)
-        # The api_key isn't a public attribute; inspect the bearer
-        # header through a probe call instead.
         assert backend._api_key == "sk-shared"
 
     def test_falls_back_to_default_when_provider_openai_but_no_url(self):
@@ -283,7 +281,7 @@ class TestConfigMigration:
         assert settings.ollama_base_url == "http://1.2.3.4:11434"
         # Migration is persisted to disk.
         on_disk = json.loads(cfg_path.read_text())
-        assert on_disk["_config_version"] == 3
+        assert on_disk["_config_version"] == 4
         assert on_disk["llm_provider"] == "ollama"
         assert on_disk["llm_base_url"] == "http://1.2.3.4:11434"
 
@@ -335,5 +333,5 @@ class TestConfigMigration:
         assert settings.llm_base_url == settings.ollama_base_url
         # Migration runs without touching keys that have no source.
         on_disk = json.loads(cfg_path.read_text())
-        assert on_disk["_config_version"] == 3
+        assert on_disk["_config_version"] == 4
         assert on_disk["llm_provider"] == "ollama"

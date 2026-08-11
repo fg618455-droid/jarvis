@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Iterator, NamedTuple, Optional
 
 from ..debug import debug_log
-from ..llm import get_llm_backend
+from ..llm import Tier, get_llm_backend, resolve_model
 from .graph import (
     BRANCH_DIRECTIVES,
     BRANCH_USER,
@@ -202,7 +202,7 @@ def extract_graph_memories(
     # extraction); temperature=0 lets the prompt do its job consistently.
     response = call_llm_direct(
         cfg=cfg,
-        chat_model=chat_model,
+        chat_model=resolve_model(cfg, Tier.PRIVATE),
         system_prompt=system_prompt,
         user_content=user_content,
         timeout_sec=timeout_sec,
@@ -295,8 +295,8 @@ def _llm_pick_best_child(
 
     # Picker is a one-digit classification — reuse the small picker_model
     # when the caller provides one (the fast tier: resolve_model(cfg, Tier.FAST)).
-    # Falls back to the chat model when no small model is configured.
-    effective_model = picker_model or chat_model
+    # Falls back to the supplied model for minimal callers without settings.
+    effective_model = picker_model or resolve_model(cfg, Tier.FAST) or chat_model
     response = call_llm_direct(
         cfg=cfg,
         chat_model=effective_model,
@@ -628,10 +628,9 @@ def merge_node_data(
             f"consolidate / dedupe / prune only):\n{existing}"
         )
 
-    effective_model = picker_model or chat_model
     response = call_llm_direct(
         cfg=cfg,
-        chat_model=effective_model,
+        chat_model=resolve_model(cfg, Tier.PRIVATE),
         system_prompt=_MERGE_SYSTEM_PROMPT,
         user_content=user_content,
         timeout_sec=timeout_sec,
@@ -759,7 +758,7 @@ def auto_split_node(
 
     response = call_llm_direct(
         cfg=cfg,
-        chat_model=chat_model,
+        chat_model=resolve_model(cfg, Tier.PRIVATE),
         system_prompt=system_prompt,
         user_content=user_content,
         timeout_sec=timeout_sec,

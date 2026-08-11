@@ -96,6 +96,7 @@ class Settings:
     llm_base_url: str
     llm_api_key: str
     llm_chat_model: str
+    llm_routes: list[Dict[str, Any]]
     embedding_provider: str  # "" (= same as llm_provider) | "ollama" | "openai_compatible"
     embedding_base_url: str
     embedding_api_key: str
@@ -421,6 +422,40 @@ def _migrate_config(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any]:
         cfg_json["_config_version"] = 3
         modified = True
 
+    # Migration v4: an explicitly configured OpenAI-compatible endpoint
+    # becomes the first candidate in both routed lanes. Purely local configs
+    # keep an empty route list and therefore retain their single local path.
+    if migration_version < 4:
+        if "llm_routes" not in cfg_json:
+            provider = str(cfg_json.get("llm_provider", "ollama") or "ollama").strip().lower()
+            base_url = str(cfg_json.get("llm_base_url", "") or "").strip()
+            api_key = str(cfg_json.get("llm_api_key", "") or "")
+            chat_model = str(cfg_json.get("llm_chat_model", "") or "").strip()
+            fast_model = str(cfg_json.get("fast_model", "") or "").strip() or chat_model
+            if provider == "openai_compatible" and base_url and chat_model:
+                cfg_json["llm_routes"] = [
+                    {
+                        "name": "configured-fast",
+                        "provider": provider,
+                        "base_url": base_url,
+                        "api_key": api_key,
+                        "model": fast_model,
+                        "tier": "fast",
+                        "timeout_sec": 4.0,
+                    },
+                    {
+                        "name": "configured-chat",
+                        "provider": provider,
+                        "base_url": base_url,
+                        "api_key": api_key,
+                        "model": chat_model,
+                        "tier": "chat",
+                        "timeout_sec": 4.0,
+                    },
+                ]
+        cfg_json["_config_version"] = 4
+        modified = True
+
     # Save migrated config
     if modified:
         if _save_json(cfg_path, cfg_json):
@@ -551,6 +586,7 @@ def get_default_config() -> Dict[str, Any]:
         "llm_base_url": "",  # falls back to ollama_base_url when empty
         "llm_api_key": "",
         "llm_chat_model": "",  # falls back to ollama_chat_model when empty
+        "llm_routes": [],
         "embedding_provider": "",  # "" = same as llm_provider
         "embedding_base_url": "",
         "embedding_api_key": "",
@@ -777,6 +813,34 @@ def load_settings() -> Settings:
     ollama_embed_model = str(merged.get("ollama_embed_model"))
     ollama_chat_model = str(merged.get("ollama_chat_model"))
 
+    llm_routes: list[Dict[str, Any]] = []
+    raw_routes = merged.get("llm_routes", [])
+    if isinstance(raw_routes, list):
+        for raw in raw_routes:
+            if not isinstance(raw, dict):
+                continue
+            provider = str(raw.get("provider", "") or "").strip().lower()
+            tier = str(raw.get("tier", "") or "").strip().lower()
+            base_url = str(raw.get("base_url", "") or "").strip().rstrip("/")
+            model = str(raw.get("model", "") or "").strip()
+            if provider not in ("ollama", "openai_compatible"):
+                continue
+            if tier not in ("fast", "chat") or not base_url or not model:
+                continue
+            try:
+                timeout_sec = max(0.1, float(raw.get("timeout_sec", 4.0)))
+            except (TypeError, ValueError):
+                timeout_sec = 4.0
+            llm_routes.append({
+                "name": str(raw.get("name", "") or f"route-{len(llm_routes) + 1}").strip(),
+                "provider": provider,
+                "base_url": base_url,
+                "api_key": str(raw.get("api_key", "") or ""),
+                "model": model,
+                "tier": tier,
+                "timeout_sec": timeout_sec,
+            })
+
     # Provider-aware fields. The two field sets are per-provider: the
     # ``ollama_*`` fields are authoritative when the provider is Ollama,
     # the ``llm_*`` / ``embedding_*`` fields when it is OpenAI-compatible.
@@ -794,18 +858,32 @@ def load_settings() -> Settings:
         llm_chat_model = str(merged.get("llm_chat_model", "") or "").strip() or ollama_chat_model
     else:
         llm_chat_model = ollama_chat_model
+    first_chat_route = next((route for route in llm_routes if route["tier"] == "chat"), None)
+    if first_chat_route is not None:
+        llm_provider = first_chat_route["provider"]
+        llm_base_url = first_chat_route["base_url"]
+        llm_api_key = first_chat_route["api_key"]
+        llm_chat_model = first_chat_route["model"]
     embedding_provider_raw = str(merged.get("embedding_provider", "") or "").strip().lower()
     if embedding_provider_raw not in ("", "ollama", "openai_compatible"):
         embedding_provider_raw = ""
     embedding_provider = embedding_provider_raw
     embedding_base_url = str(merged.get("embedding_base_url", "") or "").strip()
     embedding_api_key = str(merged.get("embedding_api_key", "") or "").strip()
-    # Effective embedding provider inherits the chat provider when unset.
-    _effective_embed_provider = embedding_provider or llm_provider
-    if _effective_embed_provider == "openai_compatible":
-        embedding_model = str(merged.get("embedding_model", "") or "").strip() or ollama_embed_model
-    else:
+    if llm_routes:
+        embedding_provider = "ollama"
+        embedding_base_url = ollama_base_url
+        embedding_api_key = ""
         embedding_model = ollama_embed_model
+    else:
+        effective_embedding_provider = embedding_provider or llm_provider
+        if effective_embedding_provider == "openai_compatible":
+            embedding_model = (
+                str(merged.get("embedding_model", "") or "").strip()
+                or ollama_embed_model
+            )
+        else:
+            embedding_model = ollama_embed_model
     use_stdin = bool(merged.get("use_stdin", False))
     active_profiles = _ensure_list(merged.get("active_profiles"))
     tts_enabled = bool(merged.get("tts_enabled", True))
@@ -878,6 +956,9 @@ def load_settings() -> Settings:
         fast_model = (
             llm_chat_model if llm_provider == "openai_compatible" else DEFAULT_FAST_MODEL
         )
+    first_fast_route = next((route for route in llm_routes if route["tier"] == "fast"), None)
+    if first_fast_route is not None:
+        fast_model = first_fast_route["model"]
     intent_judge_timeout_sec = float(merged.get("intent_judge_timeout_sec", 6.0))
 
     # Transcript Buffer - ambient speech context for intent judge (separate from dialogue)
@@ -1010,6 +1091,7 @@ def load_settings() -> Settings:
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
         llm_chat_model=llm_chat_model,
+        llm_routes=llm_routes,
         embedding_provider=embedding_provider,
         embedding_base_url=embedding_base_url,
         embedding_api_key=embedding_api_key,

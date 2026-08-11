@@ -735,12 +735,16 @@ class TestOllamaBackendWarmUp:
 
 
 class TestFactory:
-    def test_get_llm_backend_returns_ollama_backend_for_default_settings(self, mock_config):
-        from jarvis.llm import OllamaBackend, get_llm_backend
+    def test_get_llm_backend_returns_single_local_route_for_default_settings(self, mock_config):
+        from jarvis.llm import RoutedBackend, Tier, get_llm_backend
 
         backend = get_llm_backend(mock_config)
 
-        assert isinstance(backend, OllamaBackend)
+        assert isinstance(backend, RoutedBackend)
+        chat_routes = backend.routes_for(Tier.CHAT)
+        assert len(chat_routes) == 1
+        assert chat_routes[0].provider == "ollama"
+        assert chat_routes[0].base_url == mock_config.ollama_base_url
 
 
 # ---------------------------------------------------------------------------

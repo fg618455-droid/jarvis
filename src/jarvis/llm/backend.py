@@ -74,6 +74,34 @@ class ToolsNotSupportedError(Exception):
     pass
 
 
+class ProviderError(Exception):
+    """A provider request failed without exposing response credentials."""
+
+
+class RateLimitedError(ProviderError):
+    """The route is temporarily rate limited."""
+
+    def __init__(self, retry_after: Optional[float] = None) -> None:
+        super().__init__("provider rate limited the request")
+        self.retry_after = retry_after
+
+
+class QuotaExhaustedError(ProviderError):
+    """The route's quota is spent until its next reset."""
+
+    def __init__(self, reset_at: Optional[float] = None) -> None:
+        super().__init__("provider quota is exhausted")
+        self.reset_at = reset_at
+
+
+class AuthError(ProviderError):
+    """The route rejected its configured credential."""
+
+
+class ModelUnavailableError(ProviderError):
+    """The configured model is unavailable on this route."""
+
+
 class LLMBackend(ABC):
     """Common interface for local LLM runtimes.
 

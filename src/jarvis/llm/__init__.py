@@ -28,17 +28,33 @@ from typing import Any, Callable, Dict, List, Optional
 
 import requests  # noqa: F401  — re-exported for test patching, see module docstring
 
-from .backend import LLMBackend, ToolsNotSupportedError
+from .backend import (
+    AuthError,
+    LLMBackend,
+    ModelUnavailableError,
+    ProviderError,
+    QuotaExhaustedError,
+    RateLimitedError,
+    ToolsNotSupportedError,
+)
 from .ollama import OllamaBackend, check_version, extract_text_from_response
 from .openai_compatible import OpenAICompatibleBackend, ServerCapabilities
 from .factory import get_embedding_backend, get_llm_backend
+from .route import Route, RoutedBackend
 from .tiers import Tier, resolve_model
 
 __all__ = [
     "LLMBackend",
+    "ProviderError",
+    "RateLimitedError",
+    "QuotaExhaustedError",
+    "AuthError",
+    "ModelUnavailableError",
     "OllamaBackend",
     "OpenAICompatibleBackend",
     "ServerCapabilities",
+    "Route",
+    "RoutedBackend",
     "Tier",
     "ToolsNotSupportedError",
     "check_version",

@@ -31,6 +31,21 @@ class FieldMeta:
     nullable: bool = False  # Whether None/"" is a valid value (shows "Default" option)
 
 
+LLM_ROUTE_FIELD_METADATA = (
+    FieldMeta("name", "Name", "Display name for this route", "llm_routes", "str"),
+    FieldMeta("provider", "Protocol", "Wire protocol used by the endpoint", "llm_routes", "choice",
+              choices=[("openai_compatible", "OpenAI-compatible"), ("ollama", "Ollama")]),
+    FieldMeta("base_url", "Base URL", "Endpoint base URL", "llm_routes", "str"),
+    FieldMeta("api_key", "API Key", "Bearer credential for this endpoint", "llm_routes", "password",
+              nullable=True),
+    FieldMeta("model", "Model", "Model name exposed by the endpoint", "llm_routes", "str"),
+    FieldMeta("tier", "Tier", "Route chain that uses this endpoint", "llm_routes", "choice",
+              choices=[("fast", "Fast"), ("chat", "Chat")]),
+    FieldMeta("timeout_sec", "Timeout", "Seconds before trying the next route", "llm_routes", "float",
+              min_val=0.1, max_val=600, step=0.5, suffix="s"),
+)
+
+
 # Categories and their display order
 CATEGORIES = [
     ("llm", "🤖 LLM & AI Models"),

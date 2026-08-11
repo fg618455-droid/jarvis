@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -38,6 +38,7 @@ class _Cfg:
     ollama_embed_model: str = "test-embed"
     llm_chat_timeout_sec: float = 30.0
     llm_thinking_enabled: bool = False
+    llm_routes: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _ollama_cfg() -> _Cfg:
@@ -165,3 +166,50 @@ def test_weather_place_extractor_dispatches_via_factory(cfg_factory, expected_ba
     else:
         assert openai_direct.called
         assert not ollama_direct.called
+
+
+def test_factory_always_returns_one_routing_code_path():
+    from src.jarvis.llm import RoutedBackend, get_llm_backend
+
+    assert isinstance(get_llm_backend(_ollama_cfg()), RoutedBackend)
+    assert isinstance(get_llm_backend(_openai_cfg()), RoutedBackend)
+
+
+def test_configured_routes_are_split_by_tier_and_end_locally():
+    from src.jarvis.llm import Tier, get_llm_backend
+
+    cfg = _ollama_cfg()
+    cfg.llm_routes = [
+        {
+            "name": "chat-cloud",
+            "provider": "openai_compatible",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "synthetic-credential",
+            "model": "chat-cloud-model",
+            "tier": "chat",
+            "timeout_sec": 4,
+        },
+        {
+            "name": "fast-cloud",
+            "provider": "openai_compatible",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "synthetic-credential",
+            "model": "fast-cloud-model",
+            "tier": "fast",
+            "timeout_sec": 2,
+        },
+    ]
+
+    backend = get_llm_backend(cfg)
+
+    assert [route.name for route in backend.routes_for(Tier.CHAT)] == ["chat-cloud", "local-chat"]
+    assert [route.name for route in backend.routes_for(Tier.FAST)] == ["fast-cloud", "local-fast"]
+    assert [route.provider for route in backend.routes_for(Tier.PRIVATE)] == ["ollama"]
+
+
+def test_factory_reuses_router_health_for_the_settings_lifetime():
+    from src.jarvis.llm import get_llm_backend
+
+    cfg = _ollama_cfg()
+
+    assert get_llm_backend(cfg) is get_llm_backend(cfg)
