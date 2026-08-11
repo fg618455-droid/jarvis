@@ -31,9 +31,10 @@ _renderings: dict[tuple[str, str], str] = {}
 _lock = threading.Lock()
 
 # The guard already fired once by the time this runs, so the wait is on top
-# of a turn that has gone wrong. Short enough that a slow model costs a
-# pause rather than a hang.
-RENDER_TIMEOUT_SEC = 12.0
+# of a turn that has gone wrong. Long enough to survive a cold model, since
+# the alternative is the English original rather than a better sentence, and
+# short enough that the pause stays a pause rather than a hang.
+RENDER_TIMEOUT_SEC = 20.0
 
 
 def in_the_voices_language(
@@ -99,13 +100,19 @@ def _ask_the_fast_model(cfg, language: str, message: str) -> Optional[str]:
             {
                 "role": "system",
                 "content": (
-                    f"Translate the user's message into {language}. Reply with "
-                    "the translation only: no quotes, no commentary, no notes."
+                    f"Translate the user's message into {language}. Every word "
+                    f"of your reply must be {language}: leave nothing in the "
+                    "original language. Reply with the translation only, and "
+                    "with no quotes, no commentary, and no notes."
                 ),
             },
             {"role": "user", "content": message},
         ],
         timeout_sec=RENDER_TIMEOUT_SEC,
+        # A fixed set of sentences deserves a fixed rendering. Sampling
+        # makes the wording a lottery whose winner is then cached for the
+        # rest of the run.
+        extra_options={"temperature": 0.0},
     )
     if not response:
         return None

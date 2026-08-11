@@ -204,7 +204,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 - **Inputs**: the canned English sentence and the voice's language name. No user text, no memory, no tool output.
 - **System prompt**: translate into the named language, translation only, no quotes or commentary. Anything beyond the sentence would be spoken aloud with it.
 - **Output**: the sentence in the voice's language, cached per language and message for the process lifetime, so the call happens at most once per message. An empty result, a timeout, or any exception leaves the English original standing.
-- **Limits**: `RENDER_TIMEOUT_SEC` (12 s). The guard has already fired by this point, so the wait sits on top of a turn that has gone wrong.
+- **Limits**: `RENDER_TIMEOUT_SEC` (20 s). The guard has already fired by this point, so the wait sits on top of a turn that has gone wrong.
 
 ---
 
