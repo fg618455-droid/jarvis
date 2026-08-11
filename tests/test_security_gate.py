@@ -552,3 +552,36 @@ def test_telegram_timeout_is_testable_without_network_or_token() -> None:
     )
 
     assert channel.ask("mail__send", {}) is False
+
+
+def test_a_tool_still_runs_when_the_config_is_the_shared_test_double(mock_config) -> None:
+    """The gate reads settings before it reads policy.
+
+    Every field the gate touches has to exist on the config object it is
+    handed, or building the gate raises and `run_tool_with_retries` fails
+    closed on a machine where nothing is actually protected. That failure
+    mode is silent: the tool simply never runs, and the reason is a missing
+    attribute rather than a denied request. Adding a field to the gate
+    without adding it to the shared test config must fail here, loudly and
+    in one place, instead of denying every tool across the suite.
+    """
+    tool = RecordingTool()
+    mock_config.security_level = "off"
+
+    BUILTIN_TOOLS[tool.name] = tool
+    try:
+        result = run_tool_with_retries(
+            db=SimpleNamespace(),
+            cfg=mock_config,
+            tool_name=tool.name,
+            tool_args={},
+            system_prompt="",
+            original_prompt="",
+            redacted_text="",
+            max_retries=0,
+        )
+    finally:
+        BUILTIN_TOOLS.pop(tool.name, None)
+
+    assert tool.executed is True
+    assert result.success is True

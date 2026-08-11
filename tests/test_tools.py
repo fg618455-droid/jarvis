@@ -1,26 +1,21 @@
 import types
 import pytest
 
+from tests.conftest import MockConfig
 from jarvis.tools.registry import run_tool_with_retries, ToolExecutionResult
 
 
-class DummyCfg:
-    def __init__(self):
-        self.voice_debug = False
-        self.ollama_base_url = "http://localhost"
-        self.ollama_chat_model = "test"
-        self.llm_chat_timeout_sec = 5.0
-        self.location_enabled = False
-        self.location_ip_address = None
-        self.location_auto_detect = False
-        self.use_stdin = True
-        self.web_search_enabled = False
-        self.mcps = {}
-        self.security_level = "off"
-        self.security_confirm_channels = []
-        self.security_confirmation_timeout_sec = 60
-        self.telegram_bot_token = ""
-        self.telegram_chat_id = ""
+def DummyCfg() -> MockConfig:
+    """The shared test config, tuned for the tool registry's needs."""
+    return MockConfig(
+        voice_debug=False,
+        ollama_base_url="http://localhost",
+        ollama_chat_model="test",
+        llm_chat_timeout_sec=5.0,
+        location_enabled=False,
+        web_search_enabled=False,
+        security_confirm_channels=[],
+    )
 
 
 class DummyDB:
