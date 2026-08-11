@@ -91,18 +91,30 @@ def build_reply_prompt_prefix(cfg) -> str:
     parts.extend(get_system_prompts(detect_model_size(cfg.llm_chat_model)).to_list())
 
     tts_engine = getattr(cfg, "tts_engine", "piper")
+    voice_language = None
     if tts_engine == "piper":
         voice_language = resolve_voice_language(
             getattr(cfg, "tts_piper_model_path", None)
         )
-        if voice_language:
-            parts.append(
-                f"Always respond in {voice_language} regardless of the "
-                "language the user speaks in."
-            )
+
+    if voice_language:
+        parts.append(
+            f"Always respond in {voice_language} regardless of the "
+            "language the user speaks in."
+        )
     elif tts_engine == "chatterbox":
         parts.append(
             "Always respond in English regardless of the language the user speaks in."
+        )
+    else:
+        # Nothing names a language: speech is off, the engine is not Piper, or
+        # the voice's metadata could not be read. Silence here is not neutral —
+        # the prompt is English, so the model drifts to English and answers a
+        # German user in the wrong language. Mirroring the user is the only
+        # rule that stays correct for every language the assistant supports.
+        parts.append(
+            "Always respond in the same language the user wrote or spoke in, "
+            "matching their language for every reply."
         )
     return "\n".join(parts)
 
