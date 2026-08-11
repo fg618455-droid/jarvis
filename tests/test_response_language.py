@@ -145,3 +145,87 @@ class TestReplyPromptLanguageConstraint:
         prefix = build_reply_prompt_prefix(_Cfg(tts_piper_model_path=path))
 
         assert not _mirrors_the_user(prefix)
+
+
+class TestTheCannedFallbackSpeaksTheVoicesLanguage:
+    """A German voice reading an English apology is not a German assistant.
+
+    The engine's malformed-output guard is the one reply the model never
+    writes, so the language rule in the prompt cannot reach it. When the
+    configured voice names a language, the message is rendered into it
+    before it is spoken; nothing is guessed, and a failure leaves the
+    English original standing rather than a half-translated sentence.
+    """
+
+    def test_a_named_voice_language_gets_the_message_rendered(self, tmp_path, mock_config):
+        from jarvis.reply.fallbacks import in_the_voices_language, forget_renderings
+
+        forget_renderings()
+        mock_config.tts_engine = "piper"
+        mock_config.tts_piper_model_path = _write_voice(
+            tmp_path, "de_DE-thorsten-medium",
+            {"code": "de_DE", "family": "de", "name_english": "German"},
+        )
+        asked = []
+
+        def fake_render(cfg, language, message):
+            asked.append(language)
+            return "Ich habe die Anfrage nicht verstanden."
+
+        assert in_the_voices_language(
+            mock_config, "I had trouble understanding that request.",
+            render=fake_render,
+        ) == "Ich habe die Anfrage nicht verstanden."
+        assert asked == ["German"]
+
+    def test_a_rendering_is_reused_rather_than_asked_for_again(self, tmp_path, mock_config):
+        from jarvis.reply.fallbacks import in_the_voices_language, forget_renderings
+
+        forget_renderings()
+        mock_config.tts_engine = "piper"
+        mock_config.tts_piper_model_path = _write_voice(
+            tmp_path, "de_DE-thorsten-medium",
+            {"code": "de_DE", "family": "de", "name_english": "German"},
+        )
+        calls = []
+
+        def fake_render(cfg, language, message):
+            calls.append(message)
+            return "Ich habe die Anfrage nicht verstanden."
+
+        for _ in range(3):
+            in_the_voices_language(mock_config, "I had trouble understanding that request.",
+                                   render=fake_render)
+
+        assert len(calls) == 1
+
+    def test_no_named_language_leaves_the_message_alone(self, mock_config):
+        """Text chat and an unreadable voice have nothing to render into."""
+        from jarvis.reply.fallbacks import in_the_voices_language, forget_renderings
+
+        forget_renderings()
+        mock_config.tts_piper_model_path = None
+
+        def fail(cfg, language, message):
+            raise AssertionError("nothing should be asked without a named language")
+
+        assert in_the_voices_language(mock_config, "I had trouble understanding that request.",
+                                      render=fail) == \
+            "I had trouble understanding that request."
+
+    def test_a_failed_rendering_leaves_the_english_standing(self, tmp_path, mock_config):
+        from jarvis.reply.fallbacks import in_the_voices_language, forget_renderings
+
+        forget_renderings()
+        mock_config.tts_engine = "piper"
+        mock_config.tts_piper_model_path = _write_voice(
+            tmp_path, "de_DE-thorsten-medium",
+            {"code": "de_DE", "family": "de", "name_english": "German"},
+        )
+
+        def broken(cfg, language, message):
+            raise RuntimeError("model unreachable")
+
+        assert in_the_voices_language(mock_config, "I had trouble understanding that request.",
+                                      render=broken) == \
+            "I had trouble understanding that request."

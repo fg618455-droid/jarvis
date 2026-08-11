@@ -50,6 +50,7 @@ from .enrichment import (
     digest_tool_result_for_query,
     digest_loop_for_max_turns,
 )
+from .fallbacks import in_the_voices_language
 from .prompt_dump import dump_reply_turn, is_enabled as _prompt_dump_enabled, new_session_id
 from .prompts import ModelSize, detect_model_size, get_system_prompts
 from .compound_query import split_compound_query
@@ -2538,13 +2539,13 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         elif _is_malformed_json_response(content):
             debug_log(f"  ⚠️ Malformed content — delivering error reply: '{content[:80]}...'", "planning")
             is_small = detect_model_size(cfg.llm_chat_model) == ModelSize.SMALL
-            candidate_reply = (
+            candidate_reply = in_the_voices_language(cfg, (
                 "I had trouble understanding that request. "
                 "This can happen with smaller AI models. "
                 "You can switch to a more capable model through the Setup Wizard in the menu bar."
                 if is_small else
                 "I had trouble understanding that request. Could you try rephrasing it?"
-            )
+            ))
             malformed_fallback = True
         else:
             candidate_reply = content
@@ -2586,7 +2587,9 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             )
             reply = last_candidate_reply
     if not reply or not reply.strip():
-        reply = "Sorry, I had trouble processing that. Could you try again?"
+        reply = in_the_voices_language(
+            cfg, "Sorry, I had trouble processing that. Could you try again?"
+        )
         debug_log("no reply generated, returning error message", "planning")
 
         # Print error message
@@ -2611,7 +2614,9 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # Step 10: Output and memory update
     safe_reply = reply.strip()
     if not safe_reply:
-        safe_reply = "Sorry, I had trouble processing that. Could you try again?"
+        safe_reply = in_the_voices_language(
+            cfg, "Sorry, I had trouble processing that. Could you try again?"
+        )
         reply = safe_reply
     if safe_reply:
         # Print reply with appropriate header. Quiet mode (text chat) skips

@@ -196,6 +196,18 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 
 ---
 
+## 17. Canned Fallback Rendering
+
+- **File**: [src/jarvis/reply/fallbacks.py](src/jarvis/reply/fallbacks.py) — `in_the_voices_language()`.
+- **Trigger**: the reply engine is about to deliver one of its own canned messages (the malformed-output guard, or the empty-reply backstop) and the configured voice names a language. Every other reply is written by the model itself under the prompt's language rule, so no rendering is needed.
+- **Model / gating**: FAST tier, `resolve_model(cfg, Tier.FAST)` via `get_llm_backend(cfg).chat(...)`. Gated on `resolve_voice_language(cfg.tts_piper_model_path)` returning a name, so text chat, a non-Piper engine, and unreadable voice metadata never reach the model.
+- **Inputs**: the canned English sentence and the voice's language name. No user text, no memory, no tool output.
+- **System prompt**: translate into the named language, translation only, no quotes or commentary. Anything beyond the sentence would be spoken aloud with it.
+- **Output**: the sentence in the voice's language, cached per language and message for the process lifetime, so the call happens at most once per message. An empty result, a timeout, or any exception leaves the English original standing.
+- **Limits**: `RENDER_TIMEOUT_SEC` (12 s). The guard has already fired by this point, so the wait sits on top of a turn that has gone wrong.
+
+---
+
 ## Frequency / Size Summary
 
 | # | Context | Per reply | Optional? | Model tier |
@@ -215,6 +227,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 | 12 | Planner (plan_query) | 1 | yes (planner_enabled) | LARGE/SMALL (tracks chat model) |
 | 13 | Plan step resolver | 0-N (SMALL only) | auto by size + plan | tracks chat model (CHAT tier; runs only when that model is SMALL) |
 | 14 | Tool-specific | per-tool | n/a | LARGE |
+| 17 | Canned fallback rendering | 0-1, once per message per language | only with a named voice language | SMALL (FAST tier) |
 
 ## Size-aware auto switches
 
