@@ -117,6 +117,8 @@ class Settings:
     llm_digest_timeout_sec: float
     llm_embedding_timeout_sec: float
     llm_profile_select_timeout_sec: float
+    simple_reply_first_audio_sec: float
+    memory_reply_first_audio_sec: float
 
     # Profiles & Behavior
     active_profiles: list[str]
@@ -197,6 +199,7 @@ class Settings:
     wake_command_timeout_seconds: float
     wake_acknowledgement: str
     conversation_mode_acknowledgement: str
+    memory_lookup_acknowledgement: str
     low_power_mode: bool
 
     # Echo Detection
@@ -695,6 +698,8 @@ def get_default_config() -> Dict[str, Any]:
         "llm_digest_timeout_sec": 8.0,
         "llm_embedding_timeout_sec": 60.0,
         "llm_profile_select_timeout_sec": 30.0,
+        "simple_reply_first_audio_sec": 3.0,
+        "memory_reply_first_audio_sec": 10.0,
 
         # Profiles & Behavior
         "active_profiles": ["developer", "business", "life"],
@@ -787,6 +792,8 @@ def get_default_config() -> Dict[str, Any]:
         "wake_command_timeout_seconds": 12.0,
         "wake_acknowledgement": "Ja, ich bin bereit. Was kann ich für Sie tun?",
         "conversation_mode_acknowledgement": "Der Gesprächsmodus ist aktiv.",
+        # Empty is deliberately language-neutral. Users may configure a phrase.
+        "memory_lookup_acknowledgement": "",
         "low_power_mode": False,
         "echo_tolerance": 0.3,  # Time tolerance for echo detection timing
 
@@ -1058,6 +1065,9 @@ def load_settings() -> Settings:
     conversation_mode_acknowledgement = str(
         merged.get("conversation_mode_acknowledgement", "") or ""
     ).strip()
+    memory_lookup_acknowledgement = str(
+        merged.get("memory_lookup_acknowledgement", "") or ""
+    ).strip()
     low_power_mode = bool(merged.get("low_power_mode", False))
     echo_tolerance = float(merged.get("echo_tolerance", 0.3))
 
@@ -1157,6 +1167,18 @@ def load_settings() -> Settings:
     llm_digest_timeout_sec = float(merged.get("llm_digest_timeout_sec", 8.0))
     llm_embedding_timeout_sec = float(merged.get("llm_embedding_timeout_sec", 60.0))
     llm_profile_select_timeout_sec = float(merged.get("llm_profile_select_timeout_sec", 30.0))
+    try:
+        simple_reply_first_audio_sec = max(
+            0.5, float(merged.get("simple_reply_first_audio_sec", 3.0))
+        )
+    except (TypeError, ValueError):
+        simple_reply_first_audio_sec = 3.0
+    try:
+        memory_reply_first_audio_sec = max(
+            1.0, float(merged.get("memory_reply_first_audio_sec", 10.0))
+        )
+    except (TypeError, ValueError):
+        memory_reply_first_audio_sec = 10.0
     security_level = str(merged.get("security_level", "critical")).strip().lower()
     if security_level not in ("off", "critical", "paranoid"):
         security_level = "critical"
@@ -1224,6 +1246,8 @@ def load_settings() -> Settings:
         llm_digest_timeout_sec=llm_digest_timeout_sec,
         llm_embedding_timeout_sec=llm_embedding_timeout_sec,
         llm_profile_select_timeout_sec=llm_profile_select_timeout_sec,
+        simple_reply_first_audio_sec=simple_reply_first_audio_sec,
+        memory_reply_first_audio_sec=memory_reply_first_audio_sec,
 
         # Profiles & Behavior
         active_profiles=active_profiles,
@@ -1304,6 +1328,7 @@ def load_settings() -> Settings:
         wake_command_timeout_seconds=wake_command_timeout_seconds,
         wake_acknowledgement=wake_acknowledgement,
         conversation_mode_acknowledgement=conversation_mode_acknowledgement,
+        memory_lookup_acknowledgement=memory_lookup_acknowledgement,
         low_power_mode=low_power_mode,
         echo_tolerance=echo_tolerance,
         # Fast tier (voice intent, tool routing, quick classifications)

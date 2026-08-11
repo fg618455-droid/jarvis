@@ -308,6 +308,15 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("transcript_buffer_duration_sec", "Transcript Buffer",
       "Duration of rolling transcript history for intent judging",
       "timing", "float", min_val=10, max_val=600, step=10, suffix="s")
+    f("simple_reply_first_audio_sec", "Reply First Audio Budget",
+      "Shared deadline for a reply that does not require long-term memory",
+      "timing", "float", min_val=0.5, max_val=60, step=0.5, suffix="s")
+    f("memory_reply_first_audio_sec", "Memory Reply First Audio Budget",
+      "Shared deadline after the planner requests long-term memory",
+      "timing", "float", min_val=1, max_val=120, step=0.5, suffix="s")
+    f("memory_lookup_acknowledgement", "Memory Lookup Acknowledgement",
+      "Optional phrase spoken before long-term memory retrieval; empty stays silent",
+      "timing", "str")
 
     # --- Memory & Dialogue ---
     f("dialogue_memory_timeout", "Memory & Diary Window",

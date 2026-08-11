@@ -18,6 +18,12 @@ Design principles enforced by the engine:
 - Response Language: a Piper voice speaks exactly one language, so the initial system message constrains the reply to that language. The name is read from the voice's own `<model>.onnx.json` metadata via `resolve_voice_language` in `src/jarvis/output/tts.py`, so swapping in a voice of any language needs no code change. When the metadata is missing or unreadable the constraint is omitted entirely rather than defaulting to a guess, because a wrong constraint silently mutes the assistant's ability to answer the user in their own language. Chatterbox is English-only and always carries the English constraint.
 - Data Privacy: Inputs are redacted and logging is concise and purposeful via `debug_log`.
 
+### Reply deadlines and memory acknowledgement
+
+Every turn creates a monotonic `RequestDeadline` from `simple_reply_first_audio_sec`. Once the existing language-independent planner and recall gate establish that long-term memory is needed, a caller-unspecified budget is rebased to `memory_reply_first_audio_sec`. Deadline-aware sources share the remaining budget rather than each receiving a fresh full timeout.
+
+There is no word-list early router and no path that bypasses tool selection based on hard-coded language patterns. Memory intent comes from the normal planner. When retrieval will run, the engine invokes `on_memory_lookup_started` once. The voice listener may speak the configured `memory_lookup_acknowledgement`; its empty default keeps the behaviour silent and language-neutral.
+
 ### Entry and Inputs
 - Entry point: the reply engine receives a user query from the ingestion layer.
 - Inputs:
@@ -25,6 +31,7 @@ Design principles enforced by the engine:
   - persistent store: a database-like service, optionally with vector search.
   - configuration: model endpoints, timeouts, feature flags, and tool settings.
   - speech synthesizer (optional): for spoken output and hot-window activation.
+  - optional request deadline and memory-lookup callback: shared latency budget and a language-neutral notification boundary.
 
 ### Steps and Branches (Agentic Messages Loop)
 1. Redact
