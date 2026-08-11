@@ -112,15 +112,16 @@ Here's a quick snapshot of today's headlines...
 How about the Fermi Paradox? Given the vast number of stars...
 ```
 
-**Echo detection** (Jarvis ignores its own speech):
+**Wake acknowledgement** (a standalone wake word collects one request):
 ```
+  📝 Heard: "Jarvis"
+👂 Ja, ich bin bereit. Was kann ich für Sie tun?
+
+  📝 Heard: "Open YouTube"
+✨ Working on it: open YouTube
+
 🤖 Jarvis
 I have opened YouTube for you.
-
-👂 Listening for follow-up (3s)...
-  📝 Heard: "I have opened YouTube for you."
-  🔇 Heard (echo): "i have opened youtube for you."
-💤 Returning to wake word mode
 ```
 
 </details>

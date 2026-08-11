@@ -74,6 +74,7 @@ allowed; reading one back is not.
 |---|---|
 | `GET /api/health` | Liveness, port, bind address |
 | `GET /api/status` | Phase, uptime, tallies, last turn, models, audio |
+| `GET /api/logs` | Recent local diagnostic entries, with credentials redacted |
 | `GET /api/events` | Server-sent events. Opens with the current state so a page that connects mid session is correct at once |
 | `GET /api/turns` | Recent turns with their stages and tool calls |
 | `GET /api/turns/export.csv` | The same history flattened, one column per stage |
@@ -120,6 +121,19 @@ entries are editable using only the route schema described by the LLM spec.
 Loading and refreshing the view reads local config and cooldown state only.
 The only control that contacts a configured endpoint is **Probe models**.
 Resetting cooldowns and saving routes are local file writes.
+
+## Logs view
+
+The Logs view is the browser-based diagnostic surface. It polls the recent
+in-process diagnostic ring every two seconds and renders every entry as text,
+never HTML. The ring holds at most 500 entries and returns at most 500 entries
+per request. Credential-like values are redacted before they enter the ring
+and are redacted again by the normal response safety layer.
+
+The view is intentionally diagnostic rather than a full terminal mirror. It
+contains events emitted through `jarvis.debug.debug_log`, including listening,
+model, and route diagnostics, while the desktop face remains the everyday
+voice interaction surface.
 
 ## Memory view
 

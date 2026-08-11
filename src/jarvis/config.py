@@ -194,6 +194,9 @@ class Settings:
     tune_enabled: bool
     hot_window_enabled: bool
     hot_window_seconds: float
+    wake_command_timeout_seconds: float
+    wake_acknowledgement: str
+    conversation_mode_acknowledgement: str
     low_power_mode: bool
 
     # Echo Detection
@@ -688,8 +691,11 @@ def get_default_config() -> Dict[str, Any]:
 
         # UI/UX Features
         "tune_enabled": True,
-        "hot_window_enabled": True,
+        "hot_window_enabled": False,
         "hot_window_seconds": 3.0,
+        "wake_command_timeout_seconds": 12.0,
+        "wake_acknowledgement": "Ja, ich bin bereit. Was kann ich für Sie tun?",
+        "conversation_mode_acknowledgement": "Der Gesprächsmodus ist aktiv.",
         "low_power_mode": False,
         "echo_tolerance": 0.3,  # Time tolerance for echo detection timing
 
@@ -939,8 +945,15 @@ def load_settings() -> Settings:
     max_utterance_ms = int(merged.get("max_utterance_ms", 12000))
     sample_rate = int(merged.get("sample_rate", 16000))
     tune_enabled = bool(merged.get("tune_enabled", True))
-    hot_window_enabled = bool(merged.get("hot_window_enabled", True))
+    hot_window_enabled = bool(merged.get("hot_window_enabled", False))
     hot_window_seconds = float(merged.get("hot_window_seconds", 3.0))
+    wake_command_timeout_seconds = max(
+        1.0, float(merged.get("wake_command_timeout_seconds", 12.0))
+    )
+    wake_acknowledgement = str(merged.get("wake_acknowledgement", "") or "").strip()
+    conversation_mode_acknowledgement = str(
+        merged.get("conversation_mode_acknowledgement", "") or ""
+    ).strip()
     low_power_mode = bool(merged.get("low_power_mode", False))
     echo_tolerance = float(merged.get("echo_tolerance", 0.3))
 
@@ -1181,6 +1194,9 @@ def load_settings() -> Settings:
         tune_enabled=tune_enabled,
         hot_window_enabled=hot_window_enabled,
         hot_window_seconds=hot_window_seconds,
+        wake_command_timeout_seconds=wake_command_timeout_seconds,
+        wake_acknowledgement=wake_acknowledgement,
+        conversation_mode_acknowledgement=conversation_mode_acknowledgement,
         low_power_mode=low_power_mode,
         echo_tolerance=echo_tolerance,
         # Fast tier (voice intent, tool routing, quick classifications)

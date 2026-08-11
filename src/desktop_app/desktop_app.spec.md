@@ -87,7 +87,7 @@ The central controller that manages:
 
 - **System tray icon** with context menu
 - **Daemon lifecycle** (start/stop the Jarvis voice assistant)
-- **Window management** (log viewer, control centre, face window)
+- **Window management** (face window and control centre)
 - **Update checking** on startup and on-demand
 - **Runtime diagnostics** (`🩺 Runtime Status`): shows whether the assistant is listening, the daemon mode/PID, whether Low Power Mode is active, whether Ollama is needed/running, whether Jarvis owns the current Ollama runtime, active chat/embedding models, and configured MCP server count. The dialog is informational and never starts or stops services.
 - **Fast stop** (`⚡ Stop Now (Skip Diary)`): available only while the daemon is running. It stops the voice daemon without the final shutdown diary LLM pass so local model resources are released quickly. Normal `⏸️ Stop Listening` still performs the shutdown diary save.
@@ -96,7 +96,7 @@ The central controller that manages:
 
 | Window | Purpose |
 |--------|---------|
-| **LogViewerWindow** | Real-time log output from the daemon, with "Report Issue" button |
+| **LogViewerWindow** | Optional local terminal-style daemon output, with "Report Issue" button. The Control Centre Logs view is the cross-platform diagnostic surface. |
 | **ControlCentreWindow** | Embeds the control centre served by `jarvis.webui` |
 | **FaceWindow** | Animated face that reacts to speaking state |
 | **SettingsWindow** | Auto-generated config editor with tabbed categories |
@@ -283,6 +283,10 @@ sequenceDiagram
 
 `ControlCentreWindow` is a frame around the control centre the core serves
 (`src/jarvis/webui/webui.spec.md`), not an interface of its own.
+
+It includes the local Logs view for recent redacted diagnostics. The animated
+`FaceWindow` remains the reduced desktop interface for listening, thinking,
+and speaking state.
 
 - **Never serves over a running daemon**: the window probes `webui_port`
   first. Something answering there is the daemon's own instance, which holds

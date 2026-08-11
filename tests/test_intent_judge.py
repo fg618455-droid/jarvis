@@ -214,6 +214,19 @@ class TestIntentJudge:
         assert result.stop is False
         assert result.confidence == "high"
 
+    def test_parse_response_preserves_continuous_conversation_signal(self):
+        judge = IntentJudge()
+        response = (
+            '{"directed": true, "query": "", "stop": false, '
+            '"conversation_mode": true, "confidence": "high", '
+            '"reasoning": "continuous listening requested"}'
+        )
+
+        result = judge._parse_response(response)
+
+        assert result is not None
+        assert result.conversation_mode is True
+
     def test_parse_response_with_extra_text(self):
         """Parses response with extra text around JSON."""
         judge = IntentJudge()

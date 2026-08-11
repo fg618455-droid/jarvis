@@ -12,13 +12,19 @@ from ..debug import debug_log
 class ListeningState(Enum):
     """Possible listening states."""
     WAKE_WORD = "wake_word"      # Waiting for wake word
+    COMMAND_CAPTURE = "command_capture"  # Waiting for one request after acknowledgement
     HOT_WINDOW = "hot_window"    # Listening without wake word after TTS
 
 
 class StateManager:
     """Manages listening state transitions and timing."""
 
-    def __init__(self, hot_window_seconds: float = 3.0, echo_tolerance: float = 0.3):
+    def __init__(
+        self,
+        hot_window_seconds: float = 3.0,
+        echo_tolerance: float = 0.3,
+        command_capture_seconds: float = 12.0,
+    ):
         """
         Initialize state manager.
 
@@ -28,6 +34,7 @@ class StateManager:
         """
         self.hot_window_seconds = hot_window_seconds
         self.echo_tolerance = echo_tolerance
+        self.command_capture_seconds = command_capture_seconds
 
         # Current state
         self._state = ListeningState.WAKE_WORD
@@ -41,6 +48,7 @@ class StateManager:
         # Timer-based hot window management
         self._hot_window_activation_timer: Optional[threading.Timer] = None
         self._hot_window_expiry_timer: Optional[threading.Timer] = None
+        self._command_capture_expiry_timer: Optional[threading.Timer] = None
         self._timer_lock = threading.Lock()
         self._voice_debug: bool = False  # Cache for use in timer callbacks
 
@@ -60,6 +68,46 @@ class StateManager:
         return self.get_state() == ListeningState.HOT_WINDOW
 
     @property
+    def is_command_capture_active(self) -> bool:
+        """Whether one wake-word request is waiting for its spoken content."""
+        return self.get_state() == ListeningState.COMMAND_CAPTURE
+
+    def start_command_capture(self) -> None:
+        """Wait for exactly one request after a standalone wake word."""
+        self.cancel_hot_window_activation()
+        self._cancel_hot_window_expiry_timer()
+        self._cancel_command_capture_expiry_timer()
+        with self._state_lock:
+            self._conversation_active = False
+            self._state = ListeningState.COMMAND_CAPTURE
+        self._set_face_state("LISTENING", "wake acknowledgement")
+        debug_log("wake acknowledgement opened one-request capture", "state")
+
+        def _expire() -> None:
+            with self._state_lock:
+                if self._state != ListeningState.COMMAND_CAPTURE:
+                    return
+                self._state = ListeningState.WAKE_WORD
+            self._set_face_state("IDLE", "wake acknowledgement expired")
+            debug_log("wake acknowledgement expired", "state")
+
+        with self._timer_lock:
+            self._command_capture_expiry_timer = threading.Timer(
+                self.command_capture_seconds, _expire
+            )
+            self._command_capture_expiry_timer.daemon = True
+            self._command_capture_expiry_timer.start()
+
+    def end_command_capture(self) -> None:
+        """Close the one-request capture and return to wake-word listening."""
+        self._cancel_command_capture_expiry_timer()
+        with self._state_lock:
+            if self._state != ListeningState.COMMAND_CAPTURE:
+                return
+            self._state = ListeningState.WAKE_WORD
+        debug_log("wake acknowledgement consumed one request", "state")
+
+    @property
     def is_conversation_active(self) -> bool:
         """Whether a wake-word-free conversation is running."""
         with self._state_lock:
@@ -74,6 +122,7 @@ class StateManager:
         """
         self._cancel_hot_window_expiry_timer()
         self.cancel_hot_window_activation()
+        self._cancel_command_capture_expiry_timer()
 
         with self._state_lock:
             already_running = self._conversation_active
@@ -103,6 +152,7 @@ class StateManager:
             self._hot_window_span_end = time.time()
 
         self._cancel_hot_window_expiry_timer()
+        self._cancel_command_capture_expiry_timer()
         self._set_face_state("IDLE", "conversation ended")
         debug_log("conversation mode ended", "state")
         try:
@@ -147,6 +197,8 @@ class StateManager:
             # A running conversation accepts every utterance; there is no
             # window to fall outside of.
             if self._conversation_active:
+                return True
+            if self._state == ListeningState.COMMAND_CAPTURE:
                 return True
             is_active = self._state == ListeningState.HOT_WINDOW
             span_start = self._hot_window_span_start
@@ -201,6 +253,12 @@ class StateManager:
             if self._hot_window_expiry_timer is not None:
                 self._hot_window_expiry_timer.cancel()
                 self._hot_window_expiry_timer = None
+
+    def _cancel_command_capture_expiry_timer(self) -> None:
+        with self._timer_lock:
+            if self._command_capture_expiry_timer is not None:
+                self._command_capture_expiry_timer.cancel()
+                self._command_capture_expiry_timer = None
 
     def reset_hot_window_expiry(self) -> None:
         """Reset the hot window expiry timer to give the user the full window.
@@ -447,6 +505,7 @@ class StateManager:
         # Cancel all timers
         self.cancel_hot_window_activation()
         self._cancel_hot_window_expiry_timer()
+        self._cancel_command_capture_expiry_timer()
 
         with self._state_lock:
             self._state = ListeningState.WAKE_WORD

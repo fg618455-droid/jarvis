@@ -153,18 +153,35 @@ System is waiting for wake word activation.
 1. Start thinking beep immediately and set face state to LISTENING
 2. Wait for utterance to complete (user finishes speaking)
 3. Whisper transcribes after `endpoint_silence_ms` of silence
-4. If a configured wake name is the first or last token, remove it and dispatch immediately
-5. For an interior wake name, send transcript context to the intent judge and dispatch only an accepted query
+4. A configured wake name with request content at the first or last token dispatches immediately
+5. A standalone configured wake name speaks the configured acknowledgement and opens one request capture
+6. An interior wake name goes to the intent judge and dispatches only an accepted query
 
 The VAD endpoint is the only post-speech waiting window. A completed transcript is never held for an additional collection timer.
 
-### 2. Hot Window Mode
+### 2. One-request Capture
+
+A standalone wake word opens a bounded capture for one wake-word-free request.
+
+**Activation:** The transcript contains only the configured wake word or one of
+its aliases. Jarvis speaks `wake_acknowledgement`, then waits up to
+`wake_command_timeout_seconds` for one completed utterance.
+
+**Behaviour:** The capture accepts one non-echo utterance through the same
+intent path as a follow-up. Dispatching that utterance closes the capture and
+returns to wake-word listening before Jarvis speaks its response.
+
+**Continuous conversation:** The intent judge can identify a request to keep
+listening in any language. It opens conversation mode and Jarvis speaks
+`conversation_mode_acknowledgement`.
+
+### 3. Hot Window Mode
 
 After TTS finishes, allow wake-word-free follow-up.
 
 **Activation:** `echo_tolerance` seconds after TTS ends (allows echo to settle)
 
-**Duration:** Configurable (default: 3 seconds)
+**Duration:** Configurable (default: disabled)
 
 **Behaviour:** Speech first passes through an early fuzzy echo check (rapidfuzz `partial_ratio`, threshold 70, with word-count guard to avoid catching mixed echo+speech). Pure echo is silently rejected **without calling the intent judge** — this keeps echo rejection instant and prevents it from blocking the audio loop. The hot window timer is **not** reset on echo rejection. Non-echo speech is sent to the intent judge, but if the judge rejects it, the rejection is overridden — all non-echo speech in the hot window is accepted as a follow-up query.
 
@@ -178,7 +195,7 @@ After TTS finishes, allow wake-word-free follow-up.
 
 **Expiry:** Timer-based, guaranteed to fire even if no audio
 
-### 3. Conversation Mode
+### 4. Conversation Mode
 
 The follow-up window held open with no expiry: every utterance is treated as
 addressed to Jarvis until the conversation ends, so no question needs the wake
@@ -206,9 +223,9 @@ does not support spoken interruption, and a stop while it is answering is not
 an escape hatch to the same behaviour by another route. Stopping the listener
 also ends any conversation.
 
-### 4. During TTS
+### 5. During TTS
 
-Playback is a closed listening interval. The listener clears its audio queues when TTS starts, the sounddevice callback discards microphone frames while TTS is speaking, and a transcript that crosses the playback boundary is rejected defensively. Jarvis does not support barge-in or spoken interruption. After playback and the `echo_tolerance` delay, the hot window accepts a follow-up without another wake name.
+Playback is a closed listening interval. The listener clears its audio queues when TTS starts, the sounddevice callback discards microphone frames while TTS is speaking, and a transcript that crosses the playback boundary is rejected defensively. Jarvis does not support barge-in or spoken interruption. The optional hot window opens after playback and the `echo_tolerance` delay.
 
 ## Rolling Transcript Buffer
 
@@ -334,7 +351,10 @@ If the intent judge later rejects the query (and no hot window override applies)
   "fast_model": "gemma4:e2b",
   "intent_judge_timeout_sec": 6.0,
 
-  "hot_window_seconds": 3.0,
+  "hot_window_enabled": false,
+  "wake_command_timeout_seconds": 12.0,
+  "wake_acknowledgement": "Ja, ich bin bereit. Was kann ich für Sie tun?",
+  "conversation_mode_acknowledgement": "Der Gesprächsmodus ist aktiv.",
   "echo_tolerance": 0.3
 }
 ```
@@ -347,6 +367,10 @@ If the intent judge later rejects the query (and no hot window override applies)
 | `whisper_language` | `""` | ISO-639-1 code of the language spoken to Jarvis, e.g. `de` or `ja`. Empty means Whisper identifies the language on every utterance. Naming it skips the identification pass and stops Whisper from drifting into another language on noisy input; loanwords from other languages still transcribe correctly, because Whisper handles code-switching inside a given language. Read through `resolve_transcription_language`, which normalises casing and whitespace and treats anything unusable as unset, so a malformed value degrades to identification rather than to silence. The same setting governs dictation. |
 | `whisper_vad` | `true` | Runs Whisper's own VAD over the utterance and drops the non-speech parts before decoding. This is the only filter that catches the stock phrase Whisper invents from room noise, because that transcript arrives with a `no_speech_prob` of 0.000, a healthy `avg_logprob` and a confident language identification, so every later filter waves it through. Independent of `vad_enabled`, which gates which audio is collected in the first place. The warmup transcription ignores this setting: filtering its synthetic noise would leave the decoder cold, which is the one thing the warmup exists to prevent. |
 | `whisper_no_speech_threshold` | 0.5 | Hard cutoff on Whisper's `no_speech_prob` field. Any segment at or above this value is discarded **regardless of `avg_logprob`** — Whisper can be confident about a hallucinated phrase even when no real speech is present (e.g. the "MBC 뉴스" hallucination on background noise). This filter runs before the `avg_logprob` check so it catches high-confidence hallucinations that would otherwise survive. Applies to both the faster-whisper and MLX backends. |
+| `hot_window_enabled` | `false` | Enables optional wake-word-free follow-up after a spoken reply. |
+| `wake_command_timeout_seconds` | 12 | Duration of the one-request capture after a standalone wake word. |
+| `wake_acknowledgement` | configured phrase | Spoken acknowledgement for a standalone wake word. |
+| `conversation_mode_acknowledgement` | configured phrase | Spoken acknowledgement when continuous conversation begins. |
 
 Note: The intent judge has no enable flag. It is used for contextual wake-name occurrences and hot-window input, while edge-position wake addresses take the deterministic fast path. It falls back to simple wake-word detection when Ollama is unavailable.
 
@@ -358,11 +382,15 @@ stateDiagram-v2
     [*] --> WakeWord: System Starts
 
     WakeWord: Listening for Wake Word
-    HotWindow: Listening for Follow-up
+    CommandCapture: Listening for One Request
+    HotWindow: Listening for Optional Follow-up
     Conversation: Listening without Wake Word
     DuringTTS: TTS Playing
 
-    WakeWord --> DuringTTS: Edge wake address dispatched
+    WakeWord --> CommandCapture: Standalone wake word
+    CommandCapture --> DuringTTS: One request received
+    CommandCapture --> WakeWord: Timeout
+    WakeWord --> DuringTTS: Edge wake address with request
     WakeWord --> IntentJudge: Contextual wake detected
     IntentJudge --> DuringTTS: Query accepted, TTS starts
     IntentJudge --> WakeWord: Not directed / no query
@@ -393,7 +421,8 @@ Wake Detection Check:
     └→ Text contains wake word? → Start thinking beep + LISTENING face
     ↓
 If wake name is at the first or last token:
-    → Remove wake name and dispatch immediately
+    → If no request follows: acknowledge and open one-request capture
+    → Otherwise remove wake name and dispatch immediately
 Else if contextual wake detected OR in hot window:
     → Fuzzy echo check (partial_ratio ≥ 70 = echo → reject)
     → Send buffer + context to Intent Judge
@@ -411,7 +440,7 @@ When components are unavailable, the system degrades gracefully:
 
 | Component | Unavailable Behaviour |
 |-----------|---------------------|
-| Intent Judge | Simple text-based wake word + query extraction; hot window override still applies |
+| Intent Judge | Simple text-based wake word + query extraction; one-request capture still accepts its request |
 | 16 kHz sample rate | Stream at device native rate, resample to 16 kHz for Whisper |
 | Transcript Buffer | Process each utterance independently |
 

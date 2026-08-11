@@ -77,11 +77,19 @@ def _create_listener(**kwargs):
     return listener, mock_tts
 
 
-def _make_judgment(directed=True, query="", stop=False, confidence="high", reasoning="test"):
+def _make_judgment(
+    directed=True,
+    query="",
+    stop=False,
+    confidence="high",
+    reasoning="test",
+    conversation_mode=False,
+):
     """Build an IntentJudgment."""
     return IntentJudgment(
         directed=directed, query=query, stop=stop,
         confidence=confidence, reasoning=reasoning,
+        conversation_mode=conversation_mode,
     )
 
 

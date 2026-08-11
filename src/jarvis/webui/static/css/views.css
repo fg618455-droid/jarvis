@@ -434,3 +434,10 @@
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   resize: vertical;
 }
+
+.log-lines {
+  margin: 0;
+  max-height: min(65vh, 54rem);
+  overflow: auto;
+  white-space: pre-wrap;
+}

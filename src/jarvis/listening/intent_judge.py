@@ -127,6 +127,7 @@ class IntentJudgment:
     stop: bool               # Is this a stop command?
     confidence: str          # "high", "medium", or "low"
     reasoning: str           # Brief explanation for debugging
+    conversation_mode: bool = False  # Does the user request continuous listening?
     raw_response: str = ""   # Raw LLM response for debugging
 
 
@@ -199,13 +200,20 @@ TRANSCRIPT NOISE:
 STOP DETECTION:
 - "stop", "quiet" (standalone or short command) -> directed=true, stop=true, query=""
 
+LISTENING MODE:
+- A user can request continuous conversation in any language. When the current
+  segment asks the assistant to keep listening or to enter a spoken conversation
+  mode, set directed=true, conversation_mode=true, stop=false, and query="".
+- This signal changes listening behaviour only. Do not infer it from an ordinary
+  question or statement.
+
 NOT DIRECTED:
 - No wake word AND not hot window -> directed=false
 - Wake word used only as a narrative mention ("I told my friend about {name}") -> directed=false
 - (INVALID) "statement about [topic], not a command or question" — with the wake word present to ADDRESS {name}, EVERY statement is directed. "Not a command or question" is never a valid reason for directed=false. Only the two rules above are valid reasons.
 
 Output JSON only:
-{{"directed": true/false, "query": "...", "stop": true/false, "confidence": "high/medium/low", "reasoning": "brief"}}
+{{"directed": true/false, "query": "...", "stop": true/false, "conversation_mode": true/false, "confidence": "high/medium/low", "reasoning": "brief"}}
 
 Examples:
 - "Jarvis what time is it" -> {{"directed": true, "query": "what time is it", "stop": false, "confidence": "high", "reasoning": "wake word + question"}}
@@ -221,6 +229,7 @@ Examples:
 - Hot window, user says "I think absurdism is better" -> {{"directed": true, "query": "I think absurdism is better", "stop": false, "confidence": "high", "reasoning": "user statement in hot window"}}
 - "(during TTS)" segments only -> {{"directed": false, "query": "", "stop": false, "confidence": "high", "reasoning": "only echo"}}
 - "stop" -> {{"directed": true, "query": "", "stop": true, "confidence": "high", "reasoning": "stop command"}}
+- A request to keep the spoken conversation open -> {{"directed": true, "query": "", "stop": false, "conversation_mode": true, "confidence": "high", "reasoning": "continuous listening requested"}}
 - "Yeah, the light is very bright but the heat isn't too bad this week honestly Jarvis" -> {{"directed": true, "query": "Yeah, the light is very bright but the heat isn't too bad this week honestly", "stop": false, "confidence": "high", "reasoning": "wake word + statement about weather — directed"}}
 - No wake word, not hot window -> {{"directed": false, "query": "", "stop": false, "confidence": "high", "reasoning": "no wake word"}}'''
 
@@ -378,6 +387,7 @@ Examples:
                 stop=bool(data.get("stop", False)),
                 confidence=str(data.get("confidence", "low")).lower(),
                 reasoning=str(data.get("reasoning", "")),
+                conversation_mode=bool(data.get("conversation_mode", False)),
                 raw_response=response_text,
             )
         except (json.JSONDecodeError, KeyError) as e:

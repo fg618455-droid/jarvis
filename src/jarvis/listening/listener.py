@@ -472,6 +472,9 @@ class VoiceListener(threading.Thread):
         self.state_manager = StateManager(
             hot_window_seconds=float(getattr(self.cfg, "hot_window_seconds", 3.0)),
             echo_tolerance=float(getattr(self.cfg, "echo_tolerance", 0.3)),
+            command_capture_seconds=float(
+                getattr(self.cfg, "wake_command_timeout_seconds", 12.0)
+            ),
         )
 
         # Audio-level wake word detection timestamp
@@ -698,6 +701,12 @@ class VoiceListener(threading.Thread):
                 self._clear_audio_buffers()
                 self._begin_reply(direct_query)
                 return
+            if direct_query == "":
+                debug_log("standalone wake word accepted for one-request capture", "voice")
+                self._transcript_buffer.mark_segment_processed(text_lower)
+                self._clear_audio_buffers()
+                self._begin_command_capture()
+                return
 
         # Salvage user speech from post-playback echo+speech chunks. Speaker
         # tails can remain in the acoustic path during the short tolerance
@@ -807,6 +816,18 @@ class VoiceListener(threading.Thread):
                 self._transcript_buffer.mark_segment_processed(text_lower)
                 self._clear_audio_buffers()
                 self.state_manager.end_conversation()
+                return
+
+            if (
+                intent_judgment is not None
+                and intent_judgment.conversation_mode
+                and self.state_manager.is_command_capture_active
+            ):
+                self._stop_thinking_tune()
+                self._transcript_buffer.mark_segment_processed(text_lower)
+                self._clear_audio_buffers()
+                self.state_manager.start_conversation()
+                self._announce_conversation_mode()
                 return
 
             if intent_judgment is not None:
@@ -1163,12 +1184,46 @@ class VoiceListener(threading.Thread):
         query = query.strip()
         if not query:
             return
+        self.state_manager.end_command_capture()
         self._start_thinking_tune()
         try:
             print(f"\n✨ Working on it: {query}", flush=True)
         except Exception:
             pass
         self._dispatch_query(query)
+
+    def _begin_command_capture(self) -> None:
+        """Acknowledge a standalone wake word and wait for one request."""
+        self._stop_thinking_tune()
+        self.state_manager.start_command_capture()
+        acknowledgement = str(getattr(self.cfg, "wake_acknowledgement", "") or "").strip()
+        if not acknowledgement:
+            debug_log("wake acknowledgement has no configured speech", "voice")
+            return
+        if self.tts and self.tts.enabled:
+            self.track_tts_start(acknowledgement)
+            self.tts.speak(
+                acknowledgement,
+                completion_callback=self.echo_detector.track_tts_finish,
+            )
+        else:
+            print(f"👂 {acknowledgement}", flush=True)
+
+    def _announce_conversation_mode(self) -> None:
+        """Confirm that wake-word-free conversation is active."""
+        acknowledgement = str(
+            getattr(self.cfg, "conversation_mode_acknowledgement", "") or ""
+        ).strip()
+        if not acknowledgement:
+            return
+        if self.tts and self.tts.enabled:
+            self.track_tts_start(acknowledgement)
+            self.tts.speak(
+                acknowledgement,
+                completion_callback=self.echo_detector.track_tts_finish,
+            )
+        else:
+            print(f"💬 {acknowledgement}", flush=True)
 
     def _dispatch_query(self, query: str) -> None:
         """

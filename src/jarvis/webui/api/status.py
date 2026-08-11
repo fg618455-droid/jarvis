@@ -9,6 +9,7 @@ from typing import Iterator
 
 from flask import Blueprint, Response, jsonify, request
 
+from jarvis.debug import recent_logs
 from jarvis.runtime import get_event_bus, get_recorder, get_runtime_state
 
 
@@ -23,6 +24,16 @@ KEEP_ALIVE_SECONDS = 15.0
 def status() -> Response:
     """What the assistant is doing, and this session's tallies."""
     return jsonify(get_runtime_state().snapshot())
+
+
+@bp.route("/logs")
+def logs() -> Response:
+    """The recent local diagnostic entries, already redacted at capture."""
+    try:
+        limit = int(request.args.get("limit", 200))
+    except (TypeError, ValueError):
+        limit = 200
+    return jsonify({"entries": recent_logs(limit)})
 
 
 @bp.route("/turns")

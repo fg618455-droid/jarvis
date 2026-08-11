@@ -15,6 +15,7 @@ const STRINGS = {
     "nav.tools": "Tools",
     "nav.security": "Security",
     "nav.system": "System",
+    "nav.logs": "Logs",
     "nav.llm": "LLM routes",
     "nav.settings": "Settings",
 
@@ -195,6 +196,9 @@ const STRINGS = {
     "system.free": "free",
     "system.temperature": "Temperature",
     "system.utilisation": "Load",
+    "logs.title": "Diagnostic log",
+    "logs.lead": "Recent local diagnostic events. Credentials are redacted before display.",
+    "logs.empty": "No diagnostic events yet.",
 
     "settings.title": "Settings",
     "settings.lead": "Everything in config.json, with the defaults left out of the file.",
@@ -240,6 +244,7 @@ const STRINGS = {
     "nav.tools": "Werkzeuge",
     "nav.security": "Sicherheit",
     "nav.system": "System",
+    "nav.logs": "Protokoll",
     "nav.llm": "LLM-Routen",
     "nav.settings": "Einstellungen",
 
@@ -420,6 +425,9 @@ const STRINGS = {
     "system.free": "frei",
     "system.temperature": "Temperatur",
     "system.utilisation": "Auslastung",
+    "logs.title": "Diagnoseprotokoll",
+    "logs.lead": "Die jüngsten lokalen Diagnoseereignisse. Zugangsdaten werden vor der Anzeige geschwärzt.",
+    "logs.empty": "Noch keine Diagnoseereignisse.",
 
     "settings.title": "Einstellungen",
     "settings.lead": "Alles aus der config.json, wobei Standardwerte gar nicht erst in der Datei landen.",

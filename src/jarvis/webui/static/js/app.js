@@ -14,6 +14,7 @@ const VIEWS = [
   { name: "tools", icon: ICONS.tools },
   { name: "security", icon: ICONS.security },
   { name: "system", icon: ICONS.system },
+  { name: "logs", icon: ICONS.logs },
   { name: "llm", icon: ICONS.llm },
   { name: "settings", icon: ICONS.settings },
 ];
@@ -25,6 +26,7 @@ const ROUTES = {
   tools: () => import("./views/tools.js"),
   security: () => import("./views/security.js"),
   system: () => import("./views/system.js"),
+  logs: () => import("./views/logs.js"),
   llm: () => import("./views/llm.js"),
   settings: () => import("./views/settings.js"),
 };
