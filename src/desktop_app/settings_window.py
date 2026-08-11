@@ -26,7 +26,7 @@ from jarvis.config import (
     default_config_path, _save_json, _load_json,
 )
 from jarvis.config_metadata import (
-    CATEGORIES, FIELD_METADATA, FieldMeta, _is_default_value,
+    CATEGORIES, FIELD_METADATA, FieldMeta, _is_default_value, choices_for,
 )
 from jarvis.debug import debug_log
 from desktop_app.themes import apply_theme
@@ -227,7 +227,7 @@ class SettingsWindow(QDialog):
 
         if fm.field_type == "choice":
             w = QComboBox()
-            for val, display in (fm.choices or []):
+            for val, display in choices_for(fm, current):
                 w.addItem(display, val)
             # Set current value
             cur_str = str(current) if current is not None else ""

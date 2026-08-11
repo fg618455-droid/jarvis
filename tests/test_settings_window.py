@@ -250,3 +250,45 @@ class TestMCPConfigSaveLogic:
             assert "mcps" not in saved
         finally:
             cfg_path.unlink(missing_ok=True)
+
+
+class TestChoiceFieldsShowWhatIsConfigured:
+    """A select must be able to display the value the file actually holds.
+
+    The supported-model list is a curated shortlist, not the set of models a
+    local runtime can serve: a tag built from a custom Modelfile will never
+    appear in it. A combo box that cannot show the configured model silently
+    displays a different one, and this window reads every widget back on
+    save, so the wrong model then gets written to the file.
+    """
+
+    def _window(self, tmp_path, monkeypatch, qapp, stored):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps(stored), encoding="utf-8")
+        monkeypatch.setattr(
+            "desktop_app.settings_window.default_config_path", lambda: config_path
+        )
+        from desktop_app.settings_window import SettingsWindow
+
+        return SettingsWindow()
+
+    def test_a_model_the_registry_never_heard_of_survives_a_save(
+        self, tmp_path, monkeypatch, qapp
+    ):
+        window = self._window(
+            tmp_path, monkeypatch, qapp, {"ollama_chat_model": "qwen2.5:7b-ctx8k"}
+        )
+        meta = next(m for m in FIELD_METADATA if m.key == "ollama_chat_model")
+
+        assert window._get_value(meta) == "qwen2.5:7b-ctx8k"
+
+    def test_a_known_model_is_offered_once(self, tmp_path, monkeypatch, qapp):
+        from jarvis.config_metadata import SUPPORTED_CHAT_MODELS
+
+        known = next(iter(SUPPORTED_CHAT_MODELS))
+        window = self._window(tmp_path, monkeypatch, qapp, {"ollama_chat_model": known})
+        combo = window._widgets["ollama_chat_model"]
+
+        offered = [combo.itemData(i) for i in range(combo.count())]
+
+        assert offered.count(known) == 1

@@ -39,9 +39,20 @@ FieldMeta (dataclass, src/jarvis/config_metadata.py)
 | `float` | QDoubleSpinBox | With bounds, step, suffix |
 | `str` | QLineEdit | Placeholder if nullable |
 | `password` | QLineEdit (EchoMode.Password) | Masked input for API keys; same value extraction as `str` |
-| `choice` | QComboBox | Pre-defined options |
+| `choice` | QComboBox | Pre-defined options, plus the configured value |
 | `device` | QComboBox | Dynamically populated from sounddevice |
 | `list` | QListWidget + Add/Edit/Remove buttons | Stores as JSON array in config |
+
+`choices_for(meta, value)` in `jarvis.config_metadata` decides what a
+`choice` field offers, and both this window and the control centre build
+their selects from it. A configured value that is not on the curated list is
+offered under its own name, at the top. Lists such as the supported chat
+models are a shortlist rather than the set of values a local runtime can
+serve, and a select that cannot show what is configured reports a different
+value than the one in the file. This window reads every widget back on save,
+so that misreport would also overwrite the real one. Fields with no choices
+at all are left alone: their value is not a choice, and echoing it would put
+a credential into a form that is otherwise careful never to show one.
 
 ## Layout
 
