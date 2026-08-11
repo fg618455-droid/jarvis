@@ -328,6 +328,9 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("memory_enrichment_source", "Enrichment Source",
       "Which memory system enriches replies: all (diary + graph), diary only, or graph only",
       "memory", "choice", choices=[("diary", "Diary only"), ("graph", "Graph only"), ("all", "All (diary + graph)")])
+    f("remio_memory_enabled", "Remio Memory",
+      "Search the local Remio knowledge base during planner-directed memory retrieval",
+      "memory", "bool")
     f("tool_carryover_max_turns", "Tool Carryover Turns",
       "How many prior replies' tool results to keep visible for follow-up questions",
       "memory", "int", min_val=0, max_val=10)

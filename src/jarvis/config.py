@@ -223,6 +223,7 @@ class Settings:
     dialogue_memory_timeout: float
     memory_enrichment_max_results: int
     memory_enrichment_source: str  # "all", "diary", or "graph"
+    remio_memory_enabled: bool
     # Tool-call + tool-result messages from prior replies in the hot window
     # are re-injected into the next turn so follow-ups can reuse them instead
     # of re-fetching. These knobs cap how many prior tool turns survive and
@@ -820,6 +821,7 @@ def get_default_config() -> Dict[str, Any]:
         "dialogue_memory_timeout": 300.0,
         "memory_enrichment_max_results": 3,
         "memory_enrichment_source": "all",  # "all", "diary", or "graph"
+        "remio_memory_enabled": True,
         # Tool carryover: cap re-injected prior tool turns + chars per entry.
         "tool_carryover_max_turns": 2,
         "tool_carryover_per_entry_chars": 1200,
@@ -1100,6 +1102,7 @@ def load_settings() -> Settings:
     memory_enrichment_source = str(merged.get("memory_enrichment_source", "all")).lower()
     if memory_enrichment_source not in ("all", "diary", "graph"):
         memory_enrichment_source = "all"
+    remio_memory_enabled = bool(merged.get("remio_memory_enabled", True))
     tool_carryover_max_turns = max(0, int(merged.get("tool_carryover_max_turns", 2)))
     tool_carryover_per_entry_chars = max(200, int(merged.get("tool_carryover_per_entry_chars", 1200)))
     _digest_raw = merged.get("memory_digest_enabled", None)
@@ -1342,6 +1345,7 @@ def load_settings() -> Settings:
         dialogue_memory_timeout=dialogue_memory_timeout,
         memory_enrichment_max_results=memory_enrichment_max_results,
         memory_enrichment_source=memory_enrichment_source,
+        remio_memory_enabled=remio_memory_enabled,
         tool_carryover_max_turns=tool_carryover_max_turns,
         tool_carryover_per_entry_chars=tool_carryover_per_entry_chars,
         memory_digest_enabled=memory_digest_enabled,

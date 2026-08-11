@@ -163,7 +163,7 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 
 - **Conversational Awareness** - Understands ongoing discussions. Ask "Jarvis, what do you think?" and it knows what you're talking about. Works naturally in multi-person conversations.
 - **Text Chat** - Type to Jarvis alongside voice. Voice and text share one conversation, so a follow-up typed in the chat window continues a voice discussion. Text never speaks. Open it from the tray menu (`💬 Chat`) while Jarvis is listening. The window is styled like an SMS thread with a single contact: speech bubbles, timestamps, and an online/typing presence line. It shows a local status banner while Jarvis starts, stops, or needs to be restarted, and every message you send carries a rewind button that rolls the conversation back to that point and regenerates the reply.
-- **Unlimited Memory** - Never forgets. Searches across all your conversation history. Browse and edit it in the Control Centre.
+- **Unlimited Memory** - Never forgets. Searches across all your conversation history and can add bounded, attributable excerpts from a local Remio knowledge base. Browse and edit Jarvis memory in the Control Centre.
 - **Control Centre** - A local web interface the daemon serves at `http://127.0.0.1:5055`: live state, memory, conversation, tools, security, technical readings, and every setting. Offline, no build step, nothing leaves the machine.
 - **Adaptive Tone** - Automatically surgical for code, pragmatic for business, encouraging for wellbeing — no manual mode switching
 - **Smart Tool Selection** - Embedding-based relevance filtering picks only the tools needed per query — add unlimited MCP tools without performance degradation
