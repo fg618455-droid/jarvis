@@ -92,8 +92,6 @@ class TestTopicSwitching:
         """
         from jarvis.reply.engine import run_reply_engine
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         capture = ToolCallCapture()
         mock_tool_run = create_mock_tool_run(capture, {
@@ -163,8 +161,6 @@ class TestTopicSwitching:
         """
         from jarvis.reply.engine import run_reply_engine
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         capture = ToolCallCapture()
         mock_tool_run = create_mock_tool_run(capture, {
@@ -238,8 +234,6 @@ class TestFollowUpContext:
         """
         from jarvis.reply.engine import run_reply_engine
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         capture = ToolCallCapture()
         mock_tool_run = create_mock_tool_run(capture, {"getWeather": MOCK_WEATHER_RESPONSE})
@@ -341,8 +335,6 @@ class TestSelfContainedToolArguments:
         """
         from jarvis.reply.engine import run_reply_engine
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         capture = ToolCallCapture()
 
@@ -431,8 +423,6 @@ class TestMultiTurnExtended:
         """
         from jarvis.reply.engine import run_reply_engine
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         capture = ToolCallCapture()
         all_turns = []

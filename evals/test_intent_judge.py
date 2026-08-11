@@ -10,7 +10,7 @@ from unittest.mock import patch, MagicMock
 from dataclasses import dataclass
 from typing import Optional, List, Union
 
-from helpers import JUDGE_MODEL, JUDGE_BASE_URL, is_judge_llm_available
+from helpers import JUDGE_MODEL
 
 
 # =============================================================================
@@ -849,8 +849,13 @@ class TestIntentJudgeFallback:
     def test_returns_none_when_ollama_unavailable(self):
         from jarvis.listening.intent_judge import IntentJudge, IntentJudgeConfig
 
+        from helpers import MockConfig
+
+        unreachable = MockConfig()
+        unreachable.ollama_base_url = "http://127.0.0.1:99999"
         judge = IntentJudge(IntentJudgeConfig(
-            ollama_base_url="http://127.0.0.1:99999",
+            cfg=unreachable,
+            model=unreachable.fast_model,
             timeout_sec=1.0,
         ))
 

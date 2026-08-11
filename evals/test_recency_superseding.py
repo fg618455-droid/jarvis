@@ -29,7 +29,7 @@ from helpers import (
     JUDGE_MODEL,
     JUDGE_BASE_URL,
     call_judge_llm,
-    JudgeVerdict,
+    is_model_available,
 )
 
 from jarvis.memory.db import Database
@@ -147,6 +147,7 @@ class TestDiaryRecencyOrder:
         results = search_conversation_memory_by_keywords(
             db=db,
             keywords=case.search_keywords,
+            cfg=MockConfig(),
             max_results=10,
         )
 
@@ -250,8 +251,8 @@ class TestMergeSupersession:
             store=graph_store,
             node_id=node.id,
             new_facts=[new_line],
-            ollama_base_url=JUDGE_BASE_URL,
-            ollama_chat_model=JUDGE_MODEL,
+            cfg=MockConfig(),
+            chat_model=JUDGE_MODEL,
             timeout_sec=30.0,
         )
 
@@ -374,6 +375,12 @@ class TestReplyUsesNewerDiaryEntry:
         # judge phase so each (case, chat-model) pair runs exactly once.
         if "gemma4" in JUDGE_MODEL:
             pytest.skip("Chat model is parametrised here; only runs once per eval session (large judge phase)")
+        if not is_model_available(model):
+            pytest.skip(
+                f"Chat model {model} is not served by {JUDGE_BASE_URL} — "
+                f"skipping rather than reporting a content failure for a "
+                f"model that was never asked."
+            )
         case = case.values[0] if hasattr(case, 'values') else case
 
         from jarvis.reply.engine import run_reply_engine
@@ -392,6 +399,12 @@ class TestReplyUsesNewerDiaryEntry:
             source_app="test",
         )
 
+        # ``resolve_model`` reads ``llm_chat_model`` / ``fast_model``, so the
+        # parametrised model must land on those — setting only the legacy
+        # ``ollama_chat_model`` would silently run every parameter on the
+        # default model and make the comparison meaningless.
+        mock_config.llm_chat_model = model
+        mock_config.fast_model = model
         mock_config.ollama_chat_model = model
         mock_config.memory_enrichment_source = "diary"
 

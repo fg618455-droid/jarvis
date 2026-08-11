@@ -41,6 +41,7 @@ from helpers import (
     assert_not_fallback_reply,
     create_mock_tool_run,
     seed_diary_summaries,
+    JUDGE_MODEL,
 )
 
 
@@ -84,11 +85,8 @@ _WARM_WEATHER_DIARY = [
 
 
 def _run_weather_query(mock_config, eval_db, eval_dialogue_memory, query: str):
-    from helpers import JUDGE_MODEL
     from jarvis.reply.engine import run_reply_engine
 
-    mock_config.ollama_base_url = "http://localhost:11434"
-    mock_config.ollama_chat_model = JUDGE_MODEL
     mock_config.location_enabled = True
 
     capture = ToolCallCapture()
@@ -133,7 +131,6 @@ class TestWeatherAutoDerivesLocation:
     def test_weather_query_calls_tool_and_grounds_reply(
         self, mock_config, eval_db, eval_dialogue_memory, variant, query,
     ):
-        from helpers import JUDGE_MODEL
 
         if variant.startswith("warm-memory"):
             seed_diary_summaries(eval_db, _WARM_WEATHER_DIARY)

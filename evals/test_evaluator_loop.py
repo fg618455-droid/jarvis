@@ -106,8 +106,6 @@ MOCK_MADRID_LIVE = (
 
 def _configure(mock_config):
     """Pin the eval to the live small model with the evaluator enabled."""
-    mock_config.ollama_base_url = "http://localhost:11434"
-    mock_config.ollama_chat_model = JUDGE_MODEL
     # Evaluator on (default None for SMALL already enables it, but be explicit
     # so failures are unambiguous if the model-size detection changes).
     mock_config.evaluator_enabled = True

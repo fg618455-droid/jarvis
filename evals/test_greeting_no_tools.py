@@ -11,7 +11,7 @@ import pytest
 from unittest.mock import patch
 
 from conftest import requires_judge_llm
-from helpers import MockConfig, ToolCallCapture, create_mock_tool_run
+from helpers import ToolCallCapture, create_mock_tool_run
 
 
 def _assert_no_tools(capture, query, is_small, model_name):
@@ -69,8 +69,6 @@ class TestGreetingNoToolsLive:
         from helpers import JUDGE_MODEL
 
         # Use the judge model (which may be small or large)
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         # Small models may fail this test due to limited reasoning capacity
         # This documents the limitation rather than masking it
@@ -113,8 +111,6 @@ class TestGreetingNoToolsLive:
         from jarvis.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         is_small = _is_small_model(JUDGE_MODEL)
 
@@ -162,8 +158,6 @@ class TestGreetingNoToolsLive:
         from jarvis.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
         is_small = _is_small_model(JUDGE_MODEL)
 
         capture = ToolCallCapture()
@@ -219,8 +213,6 @@ class TestGreetingNoToolsLive:
         from jarvis.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
         is_small = _is_small_model(JUDGE_MODEL)
 
         # Seed a poisoned diary entry — matches the shape of the real 2026-04-19
@@ -295,8 +287,6 @@ class TestGreetingNoToolsLive:
         from helpers import JUDGE_MODEL
 
         query = "what's the weather today"
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         capture = ToolCallCapture()
 
