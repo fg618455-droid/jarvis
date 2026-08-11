@@ -167,9 +167,10 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 - **Passive Capture (opt-in)** - Keep a local, text-only record of speech the recogniser already transcribed, including ambient conversation not addressed to Jarvis. It is off by default, visibly indicated while active, and deletable by line, day, or in full. No audio is written to disk.
 - **Adaptive Tone** - Automatically surgical for code, pragmatic for business, encouraging for wellbeing — no manual mode switching
 - **Smart Tool Selection** - Embedding-based relevance filtering picks only the tools needed per query — add unlimited MCP tools without performance degradation
-- **Built-in Tools** - Screenshot OCR, web search (DuckDuckGo → Brave → Wikipedia fallback chain with auto-fetch), weather, file access, nutrition tracking, location awareness, plus a tool-discovery escape hatch the agent uses to widen its own toolset mid-reply
+- **Built-in Tools** - Screenshot OCR, web search (DuckDuckGo → Brave → Wikipedia fallback chain with auto-fetch), weather, file access, `vaultSearch` for configured Obsidian notes, nutrition tracking, location awareness, plus a tool-discovery escape hatch the agent uses to widen its own toolset mid-reply
 - **Knowledge Graph Memory** - Self-organising memory that learns from conversations, auto-splits by topic, and surfaces relevant knowledge automatically
 - **Natural Voice** - Address Jarvis at either end of your sentence, then follow up without repeating the wake word after the reply finishes
+- **Conversation Mode** - Turn it on in the Control Centre's Conversation view and the follow-up window stays open: no question needs the wake word until you ask Jarvis to stop. The header says so on every view while it runs.
 - **Fast Stop** - Use the tray action `⚡ Stop Now (Skip Diary)` to release local model resources quickly when you need your machine back immediately.
 - **Dictation Mode** - Free, offline alternative to WisprFlow — hold a hotkey, speak, release to paste text into any app
 - **MCP Integration** - Connect to thousands of external tools (Home Assistant, GitHub, Slack, etc.)
@@ -195,6 +196,49 @@ Most users won't need to change anything. Open **⚙️ Settings** from the tray
   <img src="docs/img/settings-window.png" alt="Settings Window" width="500">
   <img src="docs/img/settings-mcp.png" alt="Settings - MCP Servers" width="500">
 </p>
+
+<details>
+<summary><strong>Passive Capture</strong></summary>
+
+Passive Capture is off by default. When enabled under **📝 Passive Capture**, it preserves text that speech recognition already produced as a readable room transcript. It does not add another microphone stream and never stores audio. The header shows **recording everything** on every Control Centre view while the switch is on.
+
+Transcript text is stored as heard in the local SQLite database. Before ambient lines reach the configured LLM backend, credentials are redacted and the text is fenced as untrusted data. Useful plans, decisions, appointments, and events can be folded into the diary as explicitly overheard information. Addressed speech is not digested again. If `llm_provider` points at a remote server, that server sees the redacted ambient text, so the interface names the configured backend before enabling capture.
+
+The Conversation view can delete one line, one UTC day, or the whole passive record. Whole-record deletion also clears the live rolling buffer. Deleting transcript lines does not remove content already folded into the diary or knowledge graph; those stores have separate delete controls in Memory.
+
+```json
+{
+  "passive_capture_enabled": false,
+  "passive_capture_retention_days": 30,
+  "passive_capture_min_words": 3,
+  "passive_digest_interval_min": 15,
+  "passive_digest_max_lines": 120
+}
+```
+
+Set retention to `0` to keep transcript lines until manual deletion.
+
+</details>
+
+<details>
+<summary><strong>Obsidian Vault Memory</strong></summary>
+
+Your Obsidian vault contains private notes. Jarvis reads them only from the local filesystem, never uploads an index, and treats retrieved text as untrusted data. Reading covers markdown throughout the vault. Writing is separately fenced into one folder and defaults to a read-only preview.
+
+```json
+{
+  "obsidian_vault_path": null,
+  "obsidian_memory_folder": "Jarvis",
+  "obsidian_write_mode": "dry_run",
+  "obsidian_read_enabled": true,
+  "obsidian_read_max_results": 3,
+  "obsidian_index_max_file_kb": 512
+}
+```
+
+Set `obsidian_vault_path` to an existing absolute vault path to enable local note search and the read-only `vaultSearch` tool. Use `python -m jarvis.memory.vault.preview` to inspect the mirror plan. Change `obsidian_write_mode` to `on` only when you want Jarvis to maintain graph notes inside `obsidian_memory_folder`; `off` and `dry_run` never write.
+
+</details>
 
 <details>
 <summary><strong>Security confirmations</strong></summary>
@@ -699,6 +743,7 @@ provider can't run out the voice-assistant latency budget.
 - **100% offline** - No cloud services required
 - **Auto-redaction** - Emails, tokens, passwords automatically removed
 - **Local storage** - Everything in `~/.local/share/jarvis`
+- **Passive transcript privacy** - Off by default; text is stored as heard, audio is never stored, and ambient model input is redacted and fenced
 
 ## License
 
@@ -708,4 +753,3 @@ provider can't run out the voice-assistant latency budget.
 ## Support
 
 [Report issues](https://github.com/isair/jarvis/issues) · [Discussions](https://github.com/isair/jarvis/discussions) · [Sponsor](https://github.com/sponsors/isair)
-- **Passive transcript privacy** - Off by default; text is stored as heard, audio is never stored, and ambient model input is redacted and fenced

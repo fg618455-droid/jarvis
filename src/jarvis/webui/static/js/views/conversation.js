@@ -12,6 +12,7 @@ export async function mount(root) {
     el("p", { text: t("conversation.lead") }),
   ]);
 
+  const modeCard = el("section", { class: "card" });
   const discardedCard = el("section", { class: "card" });
   const passiveCard = el("section", { class: "card" });
   const list = el("div", { class: "rows" });
@@ -31,13 +32,14 @@ export async function mount(root) {
     ]),
   ]);
 
-  root.append(head, discardedCard, passiveCard, list, composer);
+  root.append(head, modeCard, discardedCard, passiveCard, list, composer);
 
   async function refresh() {
     const [conversation, passive] = await Promise.all([
       api.conversation(50),
       api.passive("", 500),
     ]);
+    paintMode(modeCard, Boolean(conversation.conversation_mode), refresh);
     paintDiscarded(discardedCard, conversation.discarded || {});
     paintTurns(list, conversation.turns || []);
     paintPassive(passiveCard, passive, refresh);
@@ -77,13 +79,49 @@ export async function mount(root) {
   const off = live.on("turn", () => refresh().catch(() => {}));
   const offDiscard = live.on("discarded", () => refresh().catch(() => {}));
   const offPassive = live.on("passive", () => refresh().catch(() => {}));
+  // The conversation also ends on its own, when the judge hears the user
+  // ask Jarvis to stop, so the card follows the runtime rather than the
+  // last thing this page clicked.
+  const offMode = live.on("conversation", () => refresh().catch(() => {}));
 
   return () => {
     off();
     offDiscard();
     offPassive();
+    offMode();
   };
 }
+
+function paintMode(container, active, refresh) {
+  clear(container);
+  const toggle = el("button", {
+    class: active ? "btn" : "btn primary",
+    type: "button",
+    text: active ? t("conversation.modeTurnOff") : t("conversation.modeTurnOn"),
+    onclick: async () => {
+      toggle.disabled = true;
+      try {
+        await api.setConversationMode(!active);
+        await refresh();
+      } catch (error) {
+        toast(t("conversation.modeNoListener"), "bad");
+      } finally {
+        toggle.disabled = false;
+      }
+    },
+  });
+  container.append(
+    el("header", {}, [
+      el("h2", { text: t("conversation.modeTitle") }),
+      chip(active ? t("conversation.modeOn") : t("conversation.modeOff"),
+           active ? "accent" : null),
+      el("span", { class: "spacer" }),
+      toggle,
+    ]),
+    el("p", { class: "passive-notice", text: t("conversation.modeLead") }),
+  );
+}
+
 
 function paintPassive(container, payload, refresh) {
   clear(container);

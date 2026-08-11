@@ -134,3 +134,40 @@ class TestTheControlCentreSwitch:
 
         assert set_conversation_mode(True) is False
         assert conversation_mode_active() is False
+
+
+@pytest.mark.unit
+class TestTheInterfaceCanSeeTheConversation:
+    """A switch nobody can watch is a switch nobody can trust.
+
+    The conversation also ends on its own, when the judge decides the user
+    asked Jarvis to stop, so an interface that only knew what it had itself
+    turned on would go stale the moment the user spoke.
+    """
+
+    def test_starting_a_conversation_is_published(self, state_manager) -> None:
+        from jarvis.runtime import get_runtime_state
+
+        state_manager.start_conversation()
+
+        assert get_runtime_state().snapshot()["conversation"]["active"] is True
+
+    def test_ending_a_conversation_is_published(self, state_manager) -> None:
+        from jarvis.runtime import get_runtime_state
+
+        state_manager.start_conversation()
+        state_manager.end_conversation()
+
+        assert get_runtime_state().snapshot()["conversation"]["active"] is False
+
+    def test_a_watcher_hears_the_change(self, state_manager) -> None:
+        from jarvis.runtime import get_event_bus
+
+        with get_event_bus().subscribe() as subscription:
+            state_manager.start_conversation()
+            events = subscription.listen(timeout=1.0)
+            event = next(events)
+
+        assert event is not None
+        assert event["kind"] == "conversation"
+        assert event["data"]["active"] is True

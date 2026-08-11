@@ -60,6 +60,7 @@ class RuntimeState:
     passive_lines_written: int = 0
     passive_digests_produced: int = 0
     passive_last_line_at: Optional[float] = None
+    conversation_active: bool = False
 
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
@@ -145,6 +146,22 @@ class RuntimeState:
             snapshot = self._passive_snapshot()
         get_event_bus().publish("passive", snapshot)
 
+    def set_conversation_active(self, active: bool) -> None:
+        """Publish a change to the wake-word-free conversation.
+
+        The listener owns the conversation; this is the copy an interface
+        can watch. A conversation also ends on its own, when the intent
+        judge decides the user asked Jarvis to stop, so a page that only
+        knew what it had itself switched on would go stale.
+        """
+        active = bool(active)
+        with self._lock:
+            if self.conversation_active == active:
+                return
+            self.conversation_active = active
+            snapshot = self._conversation_snapshot()
+        get_event_bus().publish("conversation", snapshot)
+
     def record_passive_digest(self) -> None:
         """Count a non-empty ambient digest successfully written to memory."""
         with self._lock:
@@ -172,6 +189,7 @@ class RuntimeState:
             self.passive_lines_written = 0
             self.passive_digests_produced = 0
             self.passive_last_line_at = None
+            self.conversation_active = False
 
     # ── reads ───────────────────────────────────────────────────────────
 
@@ -189,6 +207,9 @@ class RuntimeState:
             "digests_produced": self.passive_digests_produced,
             "last_line_at": self.passive_last_line_at,
         }
+
+    def _conversation_snapshot(self) -> dict:
+        return {"active": self.conversation_active}
 
     def snapshot(self) -> dict:
         """A JSON-ready view of everything the interface shows."""
@@ -211,6 +232,7 @@ class RuntimeState:
                 "models": dict(self.models),
                 "audio": dict(self.audio),
                 "passive": self._passive_snapshot(),
+                "conversation": self._conversation_snapshot(),
             }
 
 

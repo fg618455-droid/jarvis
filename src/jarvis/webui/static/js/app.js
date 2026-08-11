@@ -34,6 +34,8 @@ const dom = {
   phase: document.getElementById("phase-text"),
   passive: document.getElementById("passive-indicator"),
   passiveText: document.getElementById("passive-text"),
+  conversation: document.getElementById("conversation-indicator"),
+  conversationText: document.getElementById("conversation-indicator-text"),
   uptimeLabel: document.getElementById("uptime-label"),
   uptime: document.getElementById("uptime-value"),
   lastTurnLabel: document.getElementById("last-turn-label"),
@@ -96,6 +98,13 @@ function paintHeader() {
   const passive = state.status?.passive;
   dom.passive.hidden = !passive?.enabled;
   dom.passiveText.textContent = passive?.enabled ? t("passive.recording") : "";
+  // A conversation means the wake word is not being asked for, which is
+  // worth saying on every view rather than only on the one that set it.
+  const conversation = state.status?.conversation;
+  dom.conversation.hidden = !conversation?.active;
+  dom.conversationText.textContent = conversation?.active
+    ? t("conversation.modeTitle")
+    : "";
 
   if (!state.connected && !state.status) {
     dom.dot.dataset.phase = "offline";
@@ -169,6 +178,12 @@ function wireLive(router) {
   live.on("passive", (passive) => {
     if (!state.status) state.status = {};
     state.status.passive = passive;
+    paintHeader();
+  });
+
+  live.on("conversation", (conversation) => {
+    if (!state.status) state.status = {};
+    state.status.conversation = conversation;
     paintHeader();
   });
 

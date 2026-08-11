@@ -94,6 +94,8 @@ export const api = {
   status: () => request("/api/status"),
   turns: (limit = 50) => request(`/api/turns?limit=${limit}`),
   conversation: (limit = 30) => request(`/api/conversation?limit=${limit}`),
+  setConversationMode: (enabled) =>
+    request("/api/conversation/mode", { method: "POST", body: { enabled } }),
   chat: (text, speak) => request("/api/chat", { method: "POST", body: { text, speak } }),
   passive: (date = "", limit = 500) =>
     request(

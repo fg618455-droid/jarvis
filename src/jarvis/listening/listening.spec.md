@@ -190,7 +190,14 @@ there when its loop starts and withdraws it on stop, so an interface outside
 the voice loop (the control centre, the tray) flips the switch without holding
 a reference to the listener. The switch reports whether it reached a listener
 at all, which is how a caller distinguishes "turned on" from "nothing is
-listening".
+listening". The control centre's Conversation view carries the button, and
+`POST /api/conversation/mode` answers 409 when the switch reached nothing.
+
+**Visibility:** both transitions publish to `RuntimeState`, which is what an
+interface watches. The state manager owns the conversation; the runtime holds
+the copy watchers read. Pushing it is not optional, because a conversation
+also ends without anyone clicking: the judge's `stop` decision closes it, and
+a page that only knew what it had itself switched on would then be wrong.
 
 **Behaviour:** `was_speech_during_hot_window` answers True for every utterance,
 which is what routes speech through the same acceptance path as a follow-up:

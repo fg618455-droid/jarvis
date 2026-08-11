@@ -110,6 +110,25 @@ a:hover {
   background: var(--bad);
 }
 
+.conversation-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.conversation-indicator[hidden] {
+  display: none;
+}
+
+.conversation-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
 /* ── Phase dot ───────────────────────────────────────────────────────── */
 
 .dot {

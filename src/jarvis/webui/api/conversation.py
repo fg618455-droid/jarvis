@@ -14,6 +14,10 @@ from flask import Blueprint, Response, jsonify, request
 
 from jarvis.config import load_settings
 from jarvis.debug import debug_log
+from jarvis.listening.conversation_mode import (
+    conversation_mode_active,
+    set_conversation_mode,
+)
 from jarvis.runtime import Phase, get_recorder, get_runtime_state, set_phase, set_phase_if
 
 
@@ -32,7 +36,38 @@ def conversation() -> Response:
     return jsonify({
         "turns": get_recorder().history(limit=max(1, min(limit, 200))),
         "discarded": get_runtime_state().snapshot()["discarded"],
+        "conversation_mode": conversation_mode_active(),
     })
+
+
+@bp.route("/conversation/mode", methods=["POST"])
+def conversation_mode() -> Response:
+    """Hold the follow-up window open, or let it close again.
+
+    While it is open every utterance counts as addressed to Jarvis, so a
+    question needs no wake word. Saying so out loud ends it too: the intent
+    judge decides what counts as asking Jarvis to stop, which is why no
+    list of stop words appears anywhere near this.
+
+    A request that reaches no listener answers 409 rather than reporting a
+    mode it did not set. Standalone there is no voice loop to hold open.
+    """
+    payload = request.get_json(silent=True) or {}
+    enabled = bool(payload.get("enabled", False))
+
+    reached = set_conversation_mode(enabled)
+    active = conversation_mode_active()
+    debug_log(
+        f"conversation mode {'on' if enabled else 'off'} from the control centre, "
+        f"{'reached the listener' if reached else 'nothing was listening'}",
+        "webui",
+    )
+    if not reached:
+        return jsonify(
+            active=active,
+            error="nothing is listening, so there is no conversation to hold open",
+        ), 409
+    return jsonify(active=active)
 
 
 @bp.route("/chat", methods=["POST"])

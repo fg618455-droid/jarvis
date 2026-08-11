@@ -77,7 +77,8 @@ allowed; reading one back is not.
 | `GET /api/events` | Server-sent events. Opens with the current state so a page that connects mid session is correct at once |
 | `GET /api/turns` | Recent turns with their stages and tool calls |
 | `GET /api/turns/export.csv` | The same history flattened, one column per stage |
-| `GET /api/conversation` | Recent turns plus the discarded-utterance counts |
+| `GET /api/conversation` | Recent turns, the discarded-utterance counts, and whether conversation mode is on |
+| `POST /api/conversation/mode` | Hold the follow-up window open, or let it close. 409 when nothing is listening |
 | `GET /api/passive` | The passive record, filtered by day, plus the switch state |
 | `POST /api/passive/enabled` | Flip the running recorder and persist the choice |
 | `DELETE /api/passive/<id>`, `?date=`, `?all=1` | Delete one line, one day, or the whole record |
@@ -107,6 +108,18 @@ because both write the same file: only non-default values are stored, and
 keys the registry does not describe survive untouched. A credential is sent
 back masked, and a masked value returned unchanged leaves the stored one
 alone, so saving a form never overwrites a secret with its own mask.
+
+## Conversation mode
+
+The Conversation view carries the switch that holds the follow-up window
+open, so no question needs the wake word, and the header carries an
+indicator beside the phase on every view: an open microphone is a state
+worth seeing from wherever the page happens to be. Both follow the
+`conversation` event rather than the last thing the page clicked, because
+the mode also ends on its own when the user asks Jarvis to stop.
+
+Standalone there is no voice loop, so the switch reaches nothing and the
+card says so instead of showing a mode that is not running anywhere.
 
 ## Passive record
 
