@@ -253,16 +253,20 @@ The control centre's **LLM routes** view shows active routes, cooldowns, failure
       "provider": "openai_compatible",
       "base_url": "http://localhost:1234/v1",
       "api_key": "",
+      "api_key_env": "PROVIDER_API_KEY",
       "model": "your-served-model-name",
       "tier": "chat",
-      "timeout_sec": 4.0
+      "timeout_sec": 4.0,
+      "enabled": true,
+      "capabilities": ["chat", "stream", "tools"]
     }
   ]
 }
 ```
 
 - `tier` is `fast` for short classification work or `chat` for replies and planning.
-- `timeout_sec` is a per-route deadline. A timeout moves the call to the next candidate.
+- `api_key_env` keeps the credential outside the config; its value is resolved only when the route is used. `api_key` remains available for migrated configurations.
+- `timeout_sec` is a per-route limit. Streaming also shares one request deadline across attempts. A local route gets 1.2 seconds to start; if it stays silent, the remaining tier chain continues. The first route to emit text owns the answer, so late local output cannot duplicate a cloud reply.
 - HTTP rate limits and quota resets are persisted in `~/.jarvis/llm_routes_state.json`, so restarting does not immediately retry a blocked key.
 - HTTP 401 and 403 responses remove the key for the process lifetime.
 

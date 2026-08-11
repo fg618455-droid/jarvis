@@ -18,6 +18,7 @@ from jarvis.llm import (
     OllamaBackend,
     OpenAICompatibleBackend,
     RoutedBackend,
+    RequestDeadline,
     Route,
     Tier,
     ProviderError,
@@ -53,7 +54,9 @@ Function-style Ollama helpers remain available to performance tests and eval scr
 
 ### Streaming
 
-Routes may switch only before a token reaches the caller. Once the wrapped `on_token` callback has emitted content, a failure ends that stream and no later route is contacted.
+`RequestDeadline` carries one monotonic budget across route attempts. When no explicit deadline is supplied, `RoutedBackend.streaming()` derives it from the caller timeout. Streaming promotes an available loopback route for a 1.2-second progress window before continuing through the remaining route chain. This affects timing only; `routes_for(tier)` retains the configured tier order.
+
+The first route to emit meaningful text owns the answer. Its wrapped callback becomes the only output path, and later output from an abandoned worker is discarded. Once a route owns the answer, a failure ends that stream and no later route is contacted. This output gate prevents a slow local worker from duplicating a cloud response.
 
 ## Typed provider failures
 
@@ -71,9 +74,9 @@ Exception text is generic and contains no endpoint URL, key, response body, or m
 
 ## Routing
 
-`Route` is a frozen dataclass with `name`, `provider`, `base_url`, `api_key`, `model`, `tier`, and `timeout_sec`. Its credential field is excluded from `repr`.
+`Route` is a frozen dataclass with `name`, `provider`, `base_url`, `api_key`, `api_key_env`, `model`, `tier`, `timeout_sec`, `enabled`, and `capabilities`. Its direct credential field is excluded from `repr`; an environment credential is resolved only while constructing its backend.
 
-`RoutedBackend` groups routes by tier and tries each unblocked route in configuration order. A route's timeout is the smaller of its own limit and the caller's limit. A provider failure, connection failure, timeout, model failure, auth failure, or empty response moves to the next candidate. An exhausted chain returns `None`.
+`RoutedBackend` groups routes by tier and tries each enabled, capable, unblocked route in configuration order. Deadline-aware streaming applies the local progress rule above. A route's timeout is the smaller of its own limit and the remaining caller budget. A provider failure, connection failure, timeout, model failure, auth failure, or empty response moves to the next candidate. An exhausted chain returns `None`.
 
 Configured FAST and CHAT chains always end with loopback Ollama. A configuration with no routes has one effective local candidate per lane. `resolve_model()` returns a string-compatible value carrying its `Tier`, so existing backend method signatures remain ordinary model-string APIs while the router can select a chain.
 

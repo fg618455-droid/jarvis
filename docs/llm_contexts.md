@@ -238,7 +238,7 @@ Driven by `detect_model_size(model_name) → SMALL (≤7.5B) | LARGE (>7.5B)` �
 
 ## Config keys
 
-- Routes and models: `llm_routes` contains ordered FAST and CHAT entries. `llm_chat_model` and `fast_model` carry the first effective route models for prompt sizing. `ollama_chat_model` is the PRIVATE and local-fallback model. Every explicit context model is obtained through `resolve_model(cfg, tier)`.
+- Routes and models: `llm_routes` contains ordered FAST and CHAT entries. `llm_chat_model` and `fast_model` carry the first effective route models for prompt sizing. `ollama_chat_model` is the PRIVATE and local-fallback model. Every explicit context model is obtained through `resolve_model(cfg, tier)`. Streaming uses one monotonic request deadline; an available loopback route receives a 1.2-second progress window before the remaining tier chain is tried, and the first route to emit text exclusively owns the answer.
 - Embeddings: `ollama_embed_model` through loopback `get_embedding_backend(cfg)`. Embeddings never use `llm_routes`.
 - Flags: `memory_digest_enabled`, `tool_result_digest_enabled`, `llm_thinking_enabled`, `intent_judge_thinking_enabled`, `tool_selection_strategy`, `planner_enabled`, `low_power_mode`
 - Timeouts: `llm_chat_timeout_sec` (45s), `llm_digest_timeout_sec` (8s, shared across #4/#5/#6), `llm_tools_timeout_sec`, `intent_judge_timeout_sec` (6s), `planner_timeout_sec` (3s)

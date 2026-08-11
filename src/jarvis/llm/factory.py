@@ -80,6 +80,20 @@ def get_llm_backend(settings: Any) -> LLMBackend:
                 timeout_sec = max(0.1, float(raw.get("timeout_sec", 4.0)))
             except (TypeError, ValueError):
                 timeout_sec = 4.0
+            raw_capabilities = raw.get(
+                "capabilities", ["chat", "stream", "tools"]
+            )
+            capabilities = (
+                frozenset(
+                    capability
+                    for capability in (
+                        str(item).strip().lower() for item in raw_capabilities
+                    )
+                    if capability in {"chat", "stream", "tools"}
+                )
+                if isinstance(raw_capabilities, (list, tuple, set, frozenset))
+                else frozenset({"chat", "stream", "tools"})
+            )
             routes.append(Route(
                 name=str(raw.get("name", "") or f"route-{index + 1}").strip(),
                 provider=provider,
@@ -88,6 +102,9 @@ def get_llm_backend(settings: Any) -> LLMBackend:
                 model=model,
                 tier=tier,
                 timeout_sec=timeout_sec,
+                api_key_env=str(raw.get("api_key_env", "") or "").strip(),
+                enabled=bool(raw.get("enabled", True)),
+                capabilities=capabilities,
             ))
 
     configured_ollama_url = _str_attr(
@@ -102,10 +119,20 @@ def get_llm_backend(settings: Any) -> LLMBackend:
     )
 
     if routes:
-        routes.extend((
-            Route("local-fast", _OLLAMA, private_ollama_url, "", fast_model, Tier.FAST, 4.0),
-            Route("local-chat", _OLLAMA, private_ollama_url, "", ollama_chat, Tier.CHAT, 4.0),
-        ))
+        local_defaults = {
+            Tier.FAST: Route(
+                "local-fast", _OLLAMA, private_ollama_url, "", fast_model,
+                Tier.FAST, 4.0,
+            ),
+            Tier.CHAT: Route(
+                "local-chat", _OLLAMA, private_ollama_url, "", ollama_chat,
+                Tier.CHAT, 4.0,
+            ),
+        }
+        for tier in (Tier.FAST, Tier.CHAT):
+            tier_routes = [route for route in routes if route.tier is tier]
+            if not any(RoutedBackend._is_local(route) for route in tier_routes):
+                routes.append(local_defaults[tier])
     else:
         provider = _resolve_provider(getattr(settings, "llm_provider", None))
         if provider == _OPENAI_COMPATIBLE:

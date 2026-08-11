@@ -40,7 +40,7 @@ from .backend import (
 from .ollama import OllamaBackend, check_version, extract_text_from_response
 from .openai_compatible import OpenAICompatibleBackend, ServerCapabilities
 from .factory import get_embedding_backend, get_llm_backend
-from .route import Route, RoutedBackend
+from .route import RequestDeadline, Route, RoutedBackend
 from .tiers import Tier, resolve_model
 
 __all__ = [
@@ -54,6 +54,7 @@ __all__ = [
     "OpenAICompatibleBackend",
     "ServerCapabilities",
     "Route",
+    "RequestDeadline",
     "RoutedBackend",
     "Tier",
     "ToolsNotSupportedError",
