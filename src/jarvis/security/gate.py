@@ -58,6 +58,8 @@ class SecurityGate:
     ) -> SecurityGate:
         """Build a gate and its configured channels from live settings."""
         if channels is None:
+            from jarvis.telegram.router import get_router
+
             from .desktop_confirm import DesktopConfirm
             from .telegram_confirm import TelegramConfirm
             from .voice_confirm import VoiceConsoleConfirm
@@ -71,7 +73,7 @@ class SecurityGate:
                     cfg.telegram_bot_token,
                     cfg.telegram_chat_id,
                     timeout_seconds=timeout,
-                    api_base_url=cfg.telegram_api_base_url,
+                    router=get_router(cfg),
                 ),
                 "voice": VoiceConsoleConfirm(timeout_seconds=timeout),
             }

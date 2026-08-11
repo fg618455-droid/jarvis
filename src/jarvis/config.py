@@ -129,6 +129,7 @@ class Settings:
     telegram_bot_token: str
     telegram_chat_id: str
     telegram_api_base_url: str
+    telegram_chat_enabled: bool
 
     # Control centre (local web interface served by the daemon)
     webui_enabled: bool
@@ -577,6 +578,9 @@ def get_default_config() -> Dict[str, Any]:
         "telegram_bot_token": "",
         "telegram_chat_id": "",
         "telegram_api_base_url": DEFAULT_TELEGRAM_API_BASE_URL,
+        # Off by default: a message here executes tools on this machine, which
+        # is a bigger grant than approving an action someone else started.
+        "telegram_chat_enabled": False,
 
         # Control centre
         "webui_enabled": True,
@@ -984,6 +988,7 @@ def load_settings() -> Settings:
         merged.get("telegram_api_base_url", "")
         or DEFAULT_TELEGRAM_API_BASE_URL
     ).strip().rstrip("/")
+    telegram_chat_enabled = bool(merged.get("telegram_chat_enabled", False))
 
     webui_enabled = bool(merged.get("webui_enabled", True))
     # A port below 1024 needs rights the daemon does not run with, and a
@@ -1035,6 +1040,7 @@ def load_settings() -> Settings:
         telegram_bot_token=telegram_bot_token,
         telegram_chat_id=telegram_chat_id,
         telegram_api_base_url=telegram_api_base_url,
+        telegram_chat_enabled=telegram_chat_enabled,
 
         # Control centre
         webui_enabled=webui_enabled,

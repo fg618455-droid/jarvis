@@ -13,10 +13,13 @@ from jarvis.config import load_settings
 from jarvis.security.desktop_confirm import DesktopConfirm
 from jarvis.security.gate import SecurityGate
 from jarvis.security.telegram_confirm import TelegramConfirm
+from jarvis.telegram.router import TelegramRouter
 from jarvis.security.voice_confirm import VoiceConsoleConfirm
 from jarvis.tools.base import Tool
 from jarvis.tools.registry import BUILTIN_TOOLS, run_tool_with_retries
 from jarvis.tools.types import ToolExecutionResult
+
+from test_telegram_router import FakeBotApi
 
 
 class RecordingTool(Tool):
@@ -403,21 +406,38 @@ def test_qt_security_dialog_approves_only_from_the_approve_button(qapp) -> None:
     assert dialog.exec() == QDialog.DialogCode.Accepted
 
 
-class FakeTelegramTransport:
-    def __init__(self, updates: list[dict]) -> None:
-        self.updates = updates
-        self.sent: list[tuple[str, dict]] = []
+def _telegram_callback(update_id: int, data: str, chat_id: int) -> dict:
+    return {
+        "update_id": update_id,
+        "callback_query": {
+            "id": str(update_id),
+            "data": data,
+            "message": {"chat": {"id": chat_id}, "message_id": 1},
+        },
+    }
 
-    def post(self, method: str, payload: dict, timeout: float) -> dict:
-        self.sent.append((method, payload))
-        if method == "sendMessage":
-            return {"ok": True, "result": {"message_id": 1}}
-        if method == "getUpdates":
-            updates, self.updates = self.updates, []
-            return {"ok": True, "result": updates}
-        if method == "editMessageText":
-            return {"ok": True, "result": {}}
-        raise AssertionError(method)
+
+def _telegram_channel(api, timeout_seconds: int = 10):
+    """A confirm channel on a live router, as the daemon assembles it."""
+    router = TelegramRouter("token", "123456", transport=api, poll_timeout_sec=1)
+    channel = TelegramConfirm(
+        "token",
+        "123456",
+        timeout_seconds=timeout_seconds,
+        router=router,
+        request_id_factory=lambda: "req-fixed",
+    )
+    return router, channel
+
+
+def _decide_shortly(api, updates: list[dict]) -> None:
+    """Tap a button once the channel is actually waiting for it."""
+    def later() -> None:
+        time.sleep(0.1)
+        for update in updates:
+            api.add(update)
+
+    threading.Thread(target=later, daemon=True).start()
 
 
 def test_telegram_is_unavailable_without_credentials() -> None:
@@ -425,59 +445,35 @@ def test_telegram_is_unavailable_without_credentials() -> None:
 
 
 def test_telegram_approves_only_an_authorised_matching_callback() -> None:
-    transport = FakeTelegramTransport([
-        {
-            "update_id": 10,
-            "callback_query": {
-                "id": "wrong-chat",
-                "data": "approve:req-fixed",
-                "message": {"chat": {"id": 999}, "message_id": 1},
-            },
-        },
-        {
-            "update_id": 11,
-            "callback_query": {
-                "id": "authorised",
-                "data": "approve:req-fixed",
-                "message": {"chat": {"id": 123456}, "message_id": 1},
-            },
-        },
+    api = FakeBotApi(idle_delay=0.1)
+    router, channel = _telegram_channel(api)
+    _decide_shortly(api, [
+        _telegram_callback(10, "approve:req-fixed", chat_id=999),
+        _telegram_callback(11, "approve:req-fixed", chat_id=123456),
     ])
-    channel = TelegramConfirm(
-        "token",
-        "123456",
-        timeout_seconds=10,
-        transport=transport,
-        request_id_factory=lambda: "req-fixed",
-    )
 
-    assert channel.ask("mail__send", {"to": "person@example.test"}) is True
-    assert transport.sent[0][0] == "sendMessage"
+    try:
+        assert channel.ask("mail__send", {"to": "person@example.test"}) is True
+    finally:
+        router.stop()
+
+    assert api.payloads("sendMessage"), "no prompt was ever sent to the chat"
 
 
 def test_telegram_denial_is_a_final_false_decision() -> None:
-    transport = FakeTelegramTransport([{
-        "update_id": 12,
-        "callback_query": {
-            "id": "authorised",
-            "data": "deny:req-fixed",
-            "message": {"chat": {"id": 123456}, "message_id": 1},
-        },
-    }])
-    channel = TelegramConfirm(
-        "token",
-        "123456",
-        timeout_seconds=10,
-        transport=transport,
-        request_id_factory=lambda: "req-fixed",
-    )
+    api = FakeBotApi(idle_delay=0.1)
+    router, channel = _telegram_channel(api)
+    _decide_shortly(api, [_telegram_callback(12, "deny:req-fixed", chat_id=123456)])
 
-    assert channel.ask("mail__send", {}) is False
+    try:
+        assert channel.ask("mail__send", {}) is False
+    finally:
+        router.stop()
 
 
 def test_telegram_transport_talks_to_the_configured_bot_api_host() -> None:
     """A self-hosted Bot API server keeps the channel on the user's own machine."""
-    from jarvis.security.telegram_confirm import RequestsTelegramTransport
+    from jarvis.telegram.transport import RequestsTelegramTransport
 
     transport = RequestsTelegramTransport(
         "secret-token",
@@ -490,10 +486,8 @@ def test_telegram_transport_talks_to_the_configured_bot_api_host() -> None:
 
 
 def test_telegram_transport_defaults_to_the_public_bot_api() -> None:
-    from jarvis.security.telegram_confirm import (
-        DEFAULT_TELEGRAM_API_BASE_URL,
-        RequestsTelegramTransport,
-    )
+    from jarvis.config import DEFAULT_TELEGRAM_API_BASE_URL
+    from jarvis.telegram.transport import RequestsTelegramTransport
 
     transport = RequestsTelegramTransport("secret-token")
 
@@ -532,23 +526,12 @@ def test_changing_the_bot_api_host_rebuilds_the_live_gate(mock_config) -> None:
     assert SecurityGate.get_or_create(mock_config) is not first
 
 
-def test_telegram_timeout_is_testable_without_network_or_token() -> None:
-    class AdvancingClock:
-        def __init__(self) -> None:
-            self.value = 0.0
+def test_telegram_timeout_is_a_refusal() -> None:
+    """Nobody taps anything: the tool is denied, never allowed through."""
+    api = FakeBotApi(idle_delay=0.1)
+    router, channel = _telegram_channel(api, timeout_seconds=1)
 
-        def __call__(self) -> float:
-            self.value += 1.0
-            return self.value
-
-    transport = FakeTelegramTransport([])
-    channel = TelegramConfirm(
-        "token",
-        "123456",
-        timeout_seconds=2,
-        transport=transport,
-        request_id_factory=lambda: "req-fixed",
-        clock=AdvancingClock(),
-    )
-
-    assert channel.ask("mail__send", {}) is False
+    try:
+        assert channel.ask("mail__send", {}) is False
+    finally:
+        router.stop()

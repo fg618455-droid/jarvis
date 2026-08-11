@@ -213,11 +213,14 @@ Configure the order under **⚙️ Settings → 🔐 Security**. Jarvis skips ch
   "security_confirmation_timeout_sec": 60,
   "telegram_bot_token": "",
   "telegram_chat_id": "",
-  "telegram_api_base_url": "https://api.telegram.org"
+  "telegram_api_base_url": "https://api.telegram.org",
+  "telegram_chat_enabled": false
 }
 ```
 
 Telegram is optional and remains unavailable until both credentials are set. Jarvis continues to work locally with desktop and voice confirmation when Telegram is not configured.
+
+Setting `telegram_chat_enabled` lets that same chat talk to Jarvis rather than only approve actions: send a message, get a reply, in the same conversation as voice and the chat window. It is off by default because a message runs tools on your machine, which is a larger grant than approving something you already started. Only the configured chat is answered, and messages that arrived while Jarvis was not running are discarded rather than executed at startup.
 
 </details>
 
