@@ -89,6 +89,17 @@ class TestResolveModel:
         cfg = SimpleNamespace(fast_model="", llm_chat_model="big")
         assert resolve_model(cfg, Tier.FAST) == "big"
 
+    def test_private_tier_returns_ollama_chat_model(self):
+        from jarvis.llm import resolve_model, Tier
+        cfg = SimpleNamespace(
+            fast_model="cloud-fast",
+            llm_chat_model="cloud-chat",
+            ollama_chat_model="local-private",
+        )
+        model = resolve_model(cfg, Tier.PRIVATE)
+        assert model == "local-private"
+        assert model.tier is Tier.PRIVATE
+
 
 class TestV3Migration:
     """The retired per-context keys fold into fast_model and disappear."""
@@ -164,3 +175,33 @@ class TestV3Migration:
         on_disk = json.loads(cfg_path.read_text())
         assert "fast_model" not in on_disk
         assert settings.fast_model == default_judge  # still resolves via default
+
+
+class TestV4Migration:
+    def test_openai_compatible_config_becomes_both_routing_chains(
+        self, tmp_path, monkeypatch
+    ):
+        settings, cfg_path = _load_settings_from(tmp_path, monkeypatch, {
+            "llm_provider": "openai_compatible",
+            "llm_base_url": "https://example.invalid/v1",
+            "llm_api_key": "synthetic-credential",
+            "llm_chat_model": "served-chat",
+            "fast_model": "served-fast",
+            "ollama_chat_model": "local-model",
+        }, version=3)
+
+        assert [route["tier"] for route in settings.llm_routes] == ["fast", "chat"]
+        assert [route["model"] for route in settings.llm_routes] == [
+            "served-fast", "served-chat"
+        ]
+        on_disk = json.loads(cfg_path.read_text())
+        assert on_disk["_config_version"] == 4
+        assert on_disk["llm_routes"] == settings.llm_routes
+
+    def test_local_config_keeps_empty_route_list(self, tmp_path, monkeypatch):
+        settings, cfg_path = _load_settings_from(
+            tmp_path, monkeypatch, {"llm_provider": "ollama"}, version=3
+        )
+
+        assert settings.llm_routes == []
+        assert json.loads(cfg_path.read_text())["_config_version"] == 4

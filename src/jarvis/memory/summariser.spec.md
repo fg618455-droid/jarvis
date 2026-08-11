@@ -59,7 +59,7 @@ All three rules apply in any language, not only English. The prompt states this 
 
 **Empty-rewrite guard:** if the model returns an empty string (a row that was *entirely* deflection), the original is kept and a `would_empty: true` flag is surfaced. An empty diary entry is worse than a slightly-leaky one — downstream retrieval treats absence as "no record" and the user loses the topic entirely.
 
-**Privacy:** the sweep streams per-row events as `{date_utc, chars_before, chars_after, rewritten, would_empty, embedding_refreshed, error?}` — counts and booleans only, never raw summary text. The `error` value is the exception class name only (e.g. `"RuntimeError"`), never the stringified exception message, because Python exception messages can echo offending input back to the caller. The progress-event key set is locked behind a whitelist test so any future field addition forces deliberate review (`tests/test_memory_viewer_diary_scrub_api.py::test_progress_event_keys_are_a_known_whitelist`). The diary clean button must not become a data-exfiltration channel through the streaming progress UI.
+**Privacy:** the sweep streams per-row events as `{date_utc, chars_before, chars_after, rewritten, would_empty, embedding_refreshed, error?}` — counts and booleans only, never raw summary text. The `error` value is the exception class name only (e.g. `"RuntimeError"`), never the stringified exception message, because Python exception messages can echo offending input back to the caller. The progress-event key set is locked behind a whitelist test so any future field addition forces deliberate review (`tests/webui/test_memory_diary_scrub_api.py::test_progress_event_keys_are_a_known_whitelist`). The diary clean button must not become a data-exfiltration channel through the streaming progress UI.
 
 **Audit trail:** preserves each row's original `ts_utc` on rewrite. A maintenance pass that stomped `ts_utc` would make every cleaned row look as though it had been written today, destroying the only signal users have to verify when each diary entry was actually authored.
 
@@ -74,13 +74,28 @@ All three rules apply in any language, not only English. The prompt states this 
 
 **Read paths:** none. The rewrite only touches the bulk sweep. Read-time diary retrieval is untouched.
 
-## Bulk Sweep UI
+## Maintenance UI
 
-The memory viewer's diary tab carries a Maintenance section in the sidebar with two operations:
+The control centre's Memory view contains a Maintenance section with two diary
+operations. Both show incremental NDJSON progress and an action-specific final
+summary, and both require confirmation before stored rows are rewritten.
 
-**"🧹 Clean up deflection narration"** — asks the chat model to rewrite each old diary entry, removing only sentences that narrate assistant failures. The rest of each entry is preserved verbatim, no diary entries are deleted, and a summary that is *entirely* deflection narration is kept rather than emptied. Requires the chat model to be running. Backed by `POST /api/diary/scrub-deflections` (NDJSON-streaming) which calls `rewrite_all_diary_summaries`. The endpoint URL still says "scrub" for backwards compatibility; the implementation is now LLM-driven.
+**Clean deflection narration** asks the chat model to rewrite each diary entry,
+removing only sentences that narrate assistant failures. The rest of each entry
+is preserved verbatim, no diary entries are deleted, and a summary that is
+entirely deflection narration is kept rather than emptied. It requires the chat
+model to be running. `POST /api/diary/scrub-deflections` calls
+`rewrite_all_diary_summaries`.
 
-**"🏷️ Optimise tags"** — normalises topic tags across all diary entries using the configured chat model. Because each diary write generates topics independently, the same concept may accumulate multiple surface forms over time ("cook", "cooking", "meal prep"). The optimiser collects all unique tags, makes a single LLM call to propose a normalised taxonomy (merging synonyms, splitting compound tags), then applies the mapping to every row whose tags change. Backed by `POST /api/diary/optimise-topics` (NDJSON-streaming) which calls `optimise_diary_topics`. Requires the chat model to be running. Diary text is untouched; only the `topics` column is rewritten. Preserves `ts_utc` on every rewrite. Re-embeds updated rows best-effort. Fail-open: LLM failure or bad JSON leaves all rows unchanged.
+**Optimise topics** normalises topic tags across all diary entries using the
+configured chat model. Because each diary write generates topics independently,
+the same concept may accumulate multiple surface forms ("cook", "cooking",
+"meal prep"). The optimiser collects all unique tags, makes a single LLM call
+to propose a normalised taxonomy, then applies the mapping to every row whose
+tags change. `POST /api/diary/optimise-topics` calls `optimise_diary_topics`.
+Diary text is untouched; only the `topics` column is rewritten. Every rewrite
+preserves `ts_utc` and refreshes embeddings best-effort. LLM failure or bad JSON
+leaves all rows unchanged.
 
 ## Tag Optimisation
 
@@ -106,7 +121,7 @@ Idempotent once the mapping has been applied: a second run finds no tags to chan
 | `test_preserves_legitimate_user_preferences` | `evals/test_diary_summariser_hygiene.py` | Cross-rule: hygiene must not strip real content |
 | `TestSummariserForbidsDeflectionNarration` | `tests/test_diary_poisoning_defence.py` | Prompt-content regression (rules 1–3) |
 | `TestRewriteSweepBehaviour` | `tests/test_diary_rewrite_sweep.py` | LLM-rewrite bulk sweep DB integration, fail-open, audit trail |
-| `TestDiaryScrubEndpoint` | `tests/test_memory_viewer_diary_scrub_api.py` | Endpoint streaming + privacy contract |
+| `TestDiaryScrubEndpoint` | `tests/webui/test_memory_diary_scrub_api.py` | Endpoint streaming + privacy contract |
 | `TestOptimiseContract` / `TestOptimiseMerge` / `TestOptimiseSplit` / `TestOptimiseDeduplicate` / `TestOptimiseAuditTrail` / `TestOptimiseFailOpen` / `TestOptimiseIdempotence` | `tests/test_diary_topic_optimise.py` | Tag optimisation — generator contract, merge/split semantics, dedup, audit trail, fail-open, idempotence |
 
 Live evals target the smallest supported model (gemma4:e2b) and `xfail` softly on weaker models rather than hard-failing, documenting residual risk instead of masking it.

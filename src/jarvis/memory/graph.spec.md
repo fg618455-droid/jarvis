@@ -24,9 +24,9 @@ No Other branch: the extractor defaults unknown classifications to `user`. A fac
 
 `GraphMemoryStore.migrate_legacy_shape()` checks the on-disk graph against the expected shape at daemon start-up. The graph is considered non-conforming if root has any direct child that isn't one of the fixed branches, or if root's own `data` column is non-empty (cold-start writes that landed on root before the taxonomy existed). In either case the entire `memory_nodes` table is wiped and root + the three fixed branches are re-seeded.
 
-Why destructive: pre-taxonomy nodes sitting under root would remain invisible to the warm profile forever. Carrying them as dead weight is worse than a clean slate. The diary is untouched, so users can re-populate via "Import from Diary" in the memory viewer once the wipe completes. Knowledge nodes are in beta — the structure and classification are now stable but the extractor quality is still being tuned.
+Why destructive: nodes outside the fixed taxonomy would remain invisible to the warm profile forever. Carrying them as dead weight is worse than a clean slate. The diary is untouched, so users can repopulate the graph through Import diary in the control centre's Memory view. Knowledge nodes are in beta — the structure and classification are stable but the extractor quality is still being tuned.
 
-Called **only** from the daemon start-up path in `daemon.main()`. The memory viewer and reply engine instantiate `GraphMemoryStore` without triggering the migration, so a mid-session open never wipes anything.
+Called **only** from the daemon start-up path in `daemon.main()`. The control centre and reply engine instantiate `GraphMemoryStore` without triggering the migration, so opening the Memory view mid-session never wipes anything.
 
 ### Branch-Pinned Traversal
 
@@ -161,7 +161,7 @@ Piggybacks on the existing diary update flow in `conversation.py`:
    - **Recent nodes** — checked first; follows conversational momentum
    - **Top nodes** — checked second; matches frequently accessed knowledge domains
    - **Root traversal** — greedy top-down descent; LLM picks the best child at each level, or stops at the current node if none fit
-   - **Picker model**: `update_graph_from_dialogue` / `find_best_node` / `_llm_pick_best_child` accept an optional `picker_model` override. Callers (daemon, memory viewer's diary-import endpoint) resolve it via `resolve_model(cfg, Tier.FAST)` so the best-child classification runs on the small warm fast model instead of the big chat model. When `picker_model` is `None` the picker falls back to the chat model.
+   - **Picker model**: `update_graph_from_dialogue` / `find_best_node` / `_llm_pick_best_child` accept an optional `picker_model` override. Callers (daemon, control centre diary-import endpoint) resolve it via `resolve_model(cfg, Tier.FAST)` so the best-child classification runs on the small warm fast model instead of the big chat model. When `picker_model` is `None` the picker falls back to the chat model.
 4. **Dedupe (fast-path)**: Before any LLM call, `GraphMemoryStore.node_contains_fact` compares the fact against each line of the chosen node's data under Unicode-aware folding (`unicodedata.NFKC` + `str.casefold` + whitespace collapse), so ASCII casing, locale quirks (Turkish `İ`/`ı`, German `ß`/`ss`), and incidental whitespace don't cause false negatives. Exact matches are skipped, **not** reported as newly learned, and do **not** touch the node's access score (a re-extraction isn't fresh reinforcement). The merge step below would also collapse re-extractions, but cumulative daily summaries re-emit the same lines often enough that catching them with a cheap SQL read avoids a flood of small-model calls — semantically equivalent, just faster. Skips are still counted: `update_graph_from_dialogue` returns a `GraphUpdateResult(stored, skipped)` so the CLI can log "nothing new (N duplicates skipped)" on all-duplicate flushes; silencing that line would make the memory pipeline look broken. The check only covers the picker's chosen node, so a later flush that routes the same fact to a different node within the branch can still leak through — caught by the merge step on that node instead.
 5. **Merge** (batched per node): `merge_node_data(store, node_id, new_facts: list[str], ...)` sends the existing node data + **all** new facts routed to that node in this flush to the picker model and asks it to produce a clean, consolidated, contradiction-free fact list, which is written back as the node's full `data`. The orchestrator groups the flush by `node_id` first so a 5-fact flush against the User node fires **one** rewrite that incorporates all five facts, not five separate rewrites of the same `data`. The call returns a `MergeResult(success: bool, incorporated_indices: list[int])` so the orchestrator can report only the facts that actually survived as new lines (consolidated-out facts aren't claimed as "newly stored"). One LLM call subsumes four behaviours: (a) **supersession** — contradictions, negations, and same-attribute updates drop the old line ("user does not need a daily check-in" replaces both "user has a need for a daily check-in" and the same need framed as an interest); (b) **near-duplicate dedupe** — different wordings of the same fact collapse to one canonical phrasing; (c) **consolidation** — repeated daily activities fold into patterns ("ate sushi on Monday", "ate sushi on Thursday" → "regularly eats sushi"); (d) **meta-narrative pruning** — lines that narrate the assistant's own behaviour, capabilities, or denials ("The assistant is unable to navigate to a web page", "The assistant suggested grilled salmon") are extractor artefacts from earlier prompt versions and get dropped. Counterpart to the extractor's BANNED FACT FORMS list: the extractor blocks them at write-time, the merge prompt scrubs the historical leftovers that a `consolidate-all` sweep can then surface. Genuine user-issued imperatives ("Always reply in British English") are not meta-narrative and survive. Independent facts coexist (a "user ate a Big Mac" line does not silently drop "user is vegetarian"; the contradiction stays visible). Because the latest prompt always rewrites the whole node, updated conventions propagate to old data without a separate migration. **Hallucination guard**: the rewrite is rejected if it returns more lines than `len(existing) + len(new) + 2` — a runaway model can't quietly inflate the node. Fail-open: empty/cold node, LLM error, parse failure, oversized rewrite, or an empty rewrite all fall back to plain `append_to_node` for each new fact so they still land — a contradiction is recoverable, a silent wipe or hallucinated bloat is not.
 6. **Split**: If the merge or fallback append pushes the node past `SPLIT_THRESHOLD`, auto-split is triggered
@@ -203,17 +203,19 @@ Note: the always-on warm profile (User + Directives injected on every turn) is s
 | `SUMMARY_MAX_LENGTH` | 300 | Max chars for node description |
 | `memory_enrichment_source` | `"all"` | Which system enriches replies: `"all"`, `"diary"`, or `"graph"` |
 
-## UI: Memory Viewer Integration
+## UI: Control Centre Memory View
 
-The graph explorer appears as the **Knowledge** tab in the memory viewer, positioned between the Diary and Meals tabs.
+The graph explorer occupies the upper part of the control centre's Memory
+view. A two-column layout places the full tree on the left and the selected
+node editor on the right. Tree rows show each node's decayed access weight;
+selecting a row opens its name, description, contents, ancestry, access count,
+token count, and timestamps. The editor can save a node, add a child, or delete
+a non-preset subtree.
 
-### Three-Panel Layout
-
-1. **Left sidebar — Tree navigator**: Collapsible tree showing the full hierarchy. Clicking a node selects it in both the tree and the graph canvas. Shows child count badges.
-
-2. **Centre — Graph canvas**: Interactive HTML5 Canvas with radial tree layout. Supports pan (drag), zoom (scroll wheel), and click-to-select. Toolbar provides zoom in/out, fit-to-view, add-node, and import-from-diary actions. Node size reflects access count. Selected node is highlighted with accent glow.
-
-3. **Right sidebar — Node detail**: Shows breadcrumb path, name, description, metadata (accesses, tokens, last seen, children count), stored data, children list, and action buttons (edit, add child, delete).
+The Maintenance section below the explorer contains Import diary and
+Consolidate graph. Both consume streaming NDJSON and show processed counts,
+live progress, and an action-specific completion summary. Consolidate graph
+requires confirmation that populated node contents will be rewritten.
 
 ### API Endpoints
 
@@ -229,23 +231,32 @@ The graph explorer appears as the **Knowledge** tab in the memory viewer, positi
 | GET | `/api/graph/top` | Most frequently accessed nodes |
 | GET | `/api/graph/stats` | Node count and total data tokens (`total_tokens = 0` means the graph holds no knowledge) |
 | POST | `/api/graph/import-diary` | Import all diary summaries into graph (streaming NDJSON) |
-| POST | `/api/graph/consolidate-all` | Self-consolidate every populated node (streaming NDJSON) — runs the merge LLM with no new facts on each node so updated conventions and supersession rules apply to historical data |
+| POST | `/api/graph/consolidate-all` | Self-consolidate every populated node (streaming NDJSON) — runs the merge LLM with no new facts on each node so the current conventions and supersession rules apply to all stored data |
 
-### Import from Diary
+### Import diary
 
-The graph toolbar includes an "Import from Diary" button (📥) that bootstraps the graph with existing diary data. This is a one-time migration path so users don't lose their accumulated memories when switching from diary-only to graph enrichment.
+The Import diary action feeds every diary summary through the standard
+`update_graph_from_dialogue()` pipeline (extract → traverse → append → split).
+The endpoint streams `start`, `progress`, `complete`, and `error` NDJSON events
+so the action card stays responsive throughout the run. A failure on one
+summary is reported in its progress event and does not stop later summaries.
 
-The endpoint streams NDJSON progress events (`start`, `progress`, `complete`, `error`) so the UI shows real-time feedback. Each diary summary is processed through the standard `update_graph_from_dialogue()` pipeline (extract → traverse → append → split). Failures on individual summaries are non-fatal — the import continues with the remaining entries.
+### Consolidate graph
 
-### Consolidate All (🧹)
-
-The toolbar's 🧹 button walks every populated node and calls `merge_node_data` with an empty `new_facts` list, prompting the picker model to re-apply the latest supersession/dedupe/consolidation rules to data that landed before those rules existed (or before the prompt was tightened). Like Import from Diary, it streams NDJSON progress events. Per-node failures are non-fatal so a single bad node can't abort the sweep. The UI confirms before starting and reports the total line-count delta on completion.
+The Consolidate graph action walks every populated node and calls
+`merge_node_data` with an empty `new_facts` list, applying the current
+supersession, deduplication, consolidation, and pruning rules to the complete
+node contents. The endpoint streams NDJSON progress per node. The control
+centre confirms before starting and reports the total line-count delta on
+completion.
 
 ## Relationship to Existing Systems
 
 The graph memory system lives alongside the existing diary system (conversation_summaries + FTS + vector search). It shares the same SQLite database but uses its own table. The diary system remains the primary memory system for now; the graph is a v2 system being built in parallel.
 
-Users can import existing diary data into the graph via the "Import from Diary" button in the Memory Viewer. This processes all historical summaries through the extract-and-place pipeline, building the graph structure organically.
+Users can feed all diary summaries into the graph through Import diary in the
+control centre's Memory view. The extract-and-place pipeline builds and updates
+the graph structure organically.
 
 ### Diary Summariser Hygiene
 

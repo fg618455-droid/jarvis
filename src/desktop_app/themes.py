@@ -1,8 +1,8 @@
 """
 🎨 Jarvis UI Themes
 
-Shared stylesheets for Qt interfaces, matching the Memory Viewer's
-deep space theme with amber accents.
+Shared stylesheets for Qt interfaces: a deep space theme with amber
+accents.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ COLORS = {
 }
 
 
-# Comprehensive Qt stylesheet matching the Memory Viewer's design
+# Comprehensive Qt stylesheet for every Qt window in the desktop app
 JARVIS_THEME_STYLESHEET = """
     QMainWindow, QDialog, QWizard, QWizardPage {
         background-color: #0a0b0f;

@@ -3867,8 +3867,8 @@ class CompletePage(QWizardPage):
         tips.setStyleSheet("line-height: 1.8;")
         card_layout.addWidget(tips)
 
-        # Memory viewer tip with special styling
-        brain_tip = QLabel("🧠  Peek inside Jarvis's brain — open the Memory Viewer to see what he remembers")
+        # Control centre tip with special styling
+        brain_tip = QLabel("🧠  Peek inside Jarvis's brain — open the Control Centre to see what he remembers")
         brain_tip.setWordWrap(True)
         brain_tip.setStyleSheet("""
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,

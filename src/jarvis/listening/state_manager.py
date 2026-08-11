@@ -1,4 +1,4 @@
-"""State management for listening modes (wake word, collection, hot window)."""
+"""State management for wake-word and follow-up listening modes."""
 
 import time
 import threading
@@ -12,37 +12,33 @@ from ..debug import debug_log
 class ListeningState(Enum):
     """Possible listening states."""
     WAKE_WORD = "wake_word"      # Waiting for wake word
-    COLLECTING = "collecting"    # Accumulating query text
+    COMMAND_CAPTURE = "command_capture"  # Waiting for one request after acknowledgement
     HOT_WINDOW = "hot_window"    # Listening without wake word after TTS
 
 
 class StateManager:
     """Manages listening state transitions and timing."""
 
-    def __init__(self, hot_window_seconds: float = 3.0, echo_tolerance: float = 0.3,
-                 voice_collect_seconds: float = 2.0, max_collect_seconds: float = 60.0):
+    def __init__(
+        self,
+        hot_window_seconds: float = 3.0,
+        echo_tolerance: float = 0.3,
+        command_capture_seconds: float = 12.0,
+    ):
         """
         Initialize state manager.
 
         Args:
             hot_window_seconds: Duration of hot window listening
             echo_tolerance: Delay before activating hot window (for echo suppression)
-            voice_collect_seconds: Silence timeout for query collection
-            max_collect_seconds: Maximum time to collect a single query
         """
         self.hot_window_seconds = hot_window_seconds
         self.echo_tolerance = echo_tolerance
-        self.voice_collect_seconds = voice_collect_seconds
-        self.max_collect_seconds = max_collect_seconds
+        self.command_capture_seconds = command_capture_seconds
 
         # Current state
         self._state = ListeningState.WAKE_WORD
         self._state_lock = threading.Lock()
-
-        # Collection state
-        self._pending_query: str = ""
-        self._last_voice_time: float = 0.0
-        self._collect_start_time: float = 0.0
 
         # Hot window state
         self._hot_window_start_time: float = 0.0
@@ -52,8 +48,12 @@ class StateManager:
         # Timer-based hot window management
         self._hot_window_activation_timer: Optional[threading.Timer] = None
         self._hot_window_expiry_timer: Optional[threading.Timer] = None
+        self._command_capture_expiry_timer: Optional[threading.Timer] = None
         self._timer_lock = threading.Lock()
         self._voice_debug: bool = False  # Cache for use in timer callbacks
+
+        # Conversation mode: the follow-up window held open indefinitely
+        self._conversation_active = False
 
         # Stop flag for background threads
         self._should_stop = False
@@ -63,115 +63,113 @@ class StateManager:
         with self._state_lock:
             return self._state
 
-    def is_collecting(self) -> bool:
-        """Check if currently in collection mode."""
-        return self.get_state() == ListeningState.COLLECTING
-
     def is_hot_window_active(self) -> bool:
         """Check if hot window is currently active."""
         return self.get_state() == ListeningState.HOT_WINDOW
 
-    def start_collection(self, initial_text: str = "") -> None:
-        """
-        Start query collection mode.
+    @property
+    def is_command_capture_active(self) -> bool:
+        """Whether one wake-word request is waiting for its spoken content."""
+        return self.get_state() == ListeningState.COMMAND_CAPTURE
 
-        Args:
-            initial_text: Optional initial text to seed the collection
-        """
+    def start_command_capture(self) -> None:
+        """Wait for exactly one request after a standalone wake word."""
+        self.cancel_hot_window_activation()
+        self._cancel_hot_window_expiry_timer()
+        self._cancel_command_capture_expiry_timer()
         with self._state_lock:
-            self._state = ListeningState.COLLECTING
-            self._pending_query = initial_text.strip()
-            self._last_voice_time = time.time()
-            self._collect_start_time = self._last_voice_time
+            self._conversation_active = False
+            self._state = ListeningState.COMMAND_CAPTURE
+        self._set_face_state("LISTENING", "wake acknowledgement")
+        debug_log("wake acknowledgement opened one-request capture", "state")
 
-        start_time_str = datetime.fromtimestamp(self._collect_start_time).strftime('%H:%M:%S.%f')[:-3]
-        debug_log(f"collection started at {start_time_str}: '{initial_text}'", "state")
+        def _expire() -> None:
+            with self._state_lock:
+                if self._state != ListeningState.COMMAND_CAPTURE:
+                    return
+                self._state = ListeningState.WAKE_WORD
+            self._set_face_state("IDLE", "wake acknowledgement expired")
+            debug_log("wake acknowledgement expired", "state")
 
-        # Set face state to LISTENING
+        with self._timer_lock:
+            self._command_capture_expiry_timer = threading.Timer(
+                self.command_capture_seconds, _expire
+            )
+            self._command_capture_expiry_timer.daemon = True
+            self._command_capture_expiry_timer.start()
+
+    def end_command_capture(self) -> None:
+        """Close the one-request capture and return to wake-word listening."""
+        self._cancel_command_capture_expiry_timer()
+        with self._state_lock:
+            if self._state != ListeningState.COMMAND_CAPTURE:
+                return
+            self._state = ListeningState.WAKE_WORD
+        debug_log("wake acknowledgement consumed one request", "state")
+
+    @property
+    def is_conversation_active(self) -> bool:
+        """Whether a wake-word-free conversation is running."""
+        with self._state_lock:
+            return self._conversation_active
+
+    def start_conversation(self) -> None:
+        """Hold the follow-up window open until the conversation is ended.
+
+        The follow-up window already accepts speech without a wake word, so
+        a conversation is that window with no expiry: every utterance counts
+        as addressed to Jarvis until the user says otherwise.
+        """
+        self._cancel_hot_window_expiry_timer()
+        self.cancel_hot_window_activation()
+        self._cancel_command_capture_expiry_timer()
+
+        with self._state_lock:
+            already_running = self._conversation_active
+            self._conversation_active = True
+            self._state = ListeningState.HOT_WINDOW
+            self._hot_window_start_time = time.time()
+            self._hot_window_span_start = 0.0
+            self._hot_window_span_end = 0.0
+
+        if already_running:
+            return
+
+        self._set_face_state("LISTENING", "conversation started")
+        debug_log("conversation mode started", "state")
         try:
-            from desktop_app.face_widget import get_jarvis_state, JarvisState
-            face_state_manager = get_jarvis_state()
-            face_state_manager.set_state(JarvisState.LISTENING)
-            debug_log("face state set to LISTENING (collection started)", "state")
+            print("💬 Conversation mode on — no wake word needed", flush=True)
+        except Exception:
+            pass
+
+    def end_conversation(self) -> None:
+        """Return to wake-word listening."""
+        with self._state_lock:
+            if not self._conversation_active:
+                return
+            self._conversation_active = False
+            self._state = ListeningState.WAKE_WORD
+            self._hot_window_span_end = time.time()
+
+        self._cancel_hot_window_expiry_timer()
+        self._cancel_command_capture_expiry_timer()
+        self._set_face_state("IDLE", "conversation ended")
+        debug_log("conversation mode ended", "state")
+        try:
+            print("💤 Conversation mode off — wake word needed again\n", flush=True)
+        except Exception:
+            pass
+
+    def _set_face_state(self, state_name: str, reason: str) -> None:
+        """Move the desktop face to a state, if a desktop app is running."""
+        try:
+            from desktop_app.face_widget import JarvisState, get_jarvis_state
+            get_jarvis_state().set_state(getattr(JarvisState, state_name))
+            debug_log(f"face state set to {state_name} ({reason})", "state")
         except ImportError:
             pass
         except Exception as e:
-            debug_log(f"failed to set face state to LISTENING: {e}", "state")
-
-    def add_to_collection(self, text: str) -> None:
-        """
-        Add text to current collection.
-
-        Args:
-            text: Text to append to pending query
-        """
-        if not self.is_collecting():
-            return
-
-        with self._state_lock:
-            self._pending_query = (self._pending_query + " " + text).strip()
-            self._last_voice_time = time.time()
-
-        debug_log(f"added to collection: '{text}' -> '{self._pending_query}'", "state")
-
-    def get_pending_query(self) -> str:
-        """Get the current pending query text."""
-        with self._state_lock:
-            return self._pending_query
-
-    def clear_collection(self) -> str:
-        """
-        Clear and return the current pending query.
-
-        Returns:
-            The query that was being collected
-        """
-        with self._state_lock:
-            query = self._pending_query
-            collect_start_time = self._collect_start_time
-            self._pending_query = ""
-            if self._state == ListeningState.COLLECTING:
-                self._state = ListeningState.WAKE_WORD
-
-        if query and collect_start_time > 0:
-            end_time = time.time()
-            duration = end_time - collect_start_time
-            start_time_str = datetime.fromtimestamp(collect_start_time).strftime('%H:%M:%S.%f')[:-3]
-            end_time_str = datetime.fromtimestamp(end_time).strftime('%H:%M:%S.%f')[:-3]
-            debug_log(f"collection cleared: '{query}' (started: {start_time_str}, ended: {end_time_str}, duration: {duration:.2f}s)", "state")
-        else:
-            debug_log(f"collection cleared: '{query}'", "state")
-
-        # Note: Don't set face state here - it will be set to THINKING or ASLEEP by caller
-
-        return query
-
-    def check_collection_timeout(self) -> bool:
-        """
-        Check if collection should timeout due to silence or max duration.
-
-        Returns:
-            True if collection should be finalized
-        """
-        if not self.is_collecting():
-            return False
-
-        current_time = time.time()
-        silence_timeout = current_time - self._last_voice_time >= self.voice_collect_seconds
-        max_timeout = current_time - self._collect_start_time >= self.max_collect_seconds
-
-        if silence_timeout or max_timeout:
-            timeout_type = "silence" if silence_timeout else "max"
-
-            end_time = time.time()
-            duration = end_time - self._collect_start_time
-            start_time_str = datetime.fromtimestamp(self._collect_start_time).strftime('%H:%M:%S.%f')[:-3]
-            end_time_str = datetime.fromtimestamp(end_time).strftime('%H:%M:%S.%f')[:-3]
-
-            debug_log(f"collection timeout ({timeout_type}): '{self._pending_query}' (started: {start_time_str}, ended: {end_time_str}, duration: {duration:.2f}s)", "state")
-            return True
-
-        return False
+            debug_log(f"failed to set face state to {state_name}: {e}", "state")
 
     def was_speech_during_hot_window(self, utterance_start_time: float,
                                      utterance_end_time: float = 0.0) -> bool:
@@ -185,9 +183,8 @@ class StateManager:
             utterance_start_time: When VAD detected voice onset (time.time()).
                                   If 0, falls back to current state check.
             utterance_end_time: When the utterance ended (time.time()).
-                                Used to detect overlap when the utterance started
-                                before the span (e.g. mic picked up TTS echo)
-                                but extended into the hot window period.
+                                Used to detect overlap when transcription
+                                completes after the window expires.
 
         Returns:
             True if:
@@ -197,6 +194,12 @@ class StateManager:
             - Speech started before the span but ended during it (overlap)
         """
         with self._state_lock:
+            # A running conversation accepts every utterance; there is no
+            # window to fall outside of.
+            if self._conversation_active:
+                return True
+            if self._state == ListeningState.COMMAND_CAPTURE:
+                return True
             is_active = self._state == ListeningState.HOT_WINDOW
             span_start = self._hot_window_span_start
             span_end = self._hot_window_span_end
@@ -216,12 +219,7 @@ class StateManager:
         if is_pending:
             return span_start <= 0 or utterance_start_time >= span_start
 
-        # Window expired — accept if speech overlapped with the span
-        # This handles two cases:
-        # 1. Speech started within the span (normal hot window follow-up)
-        # 2. Speech started before the span but ended during it (mic picked up
-        #    TTS echo during playback, then user spoke during hot window —
-        #    Whisper merges both into one chunk)
+        # Window expired — accept if speech overlapped with the recorded span.
         if span_start > 0 and span_end > 0:
             if span_start <= utterance_start_time <= span_end:
                 return True
@@ -256,6 +254,12 @@ class StateManager:
                 self._hot_window_expiry_timer.cancel()
                 self._hot_window_expiry_timer = None
 
+    def _cancel_command_capture_expiry_timer(self) -> None:
+        with self._timer_lock:
+            if self._command_capture_expiry_timer is not None:
+                self._command_capture_expiry_timer.cancel()
+                self._command_capture_expiry_timer = None
+
     def reset_hot_window_expiry(self) -> None:
         """Reset the hot window expiry timer to give the user the full window.
 
@@ -280,7 +284,6 @@ class StateManager:
                 except Exception:
                     pass
             else:
-                # COLLECTING or another active state — don't interfere
                 return
 
         self._schedule_hot_window_expiry()
@@ -295,6 +298,8 @@ class StateManager:
 
         def _expire():
             with self._state_lock:
+                if self._conversation_active:
+                    return
                 if self._state != ListeningState.HOT_WINDOW:
                     return
                 self._state = ListeningState.WAKE_WORD
@@ -364,10 +369,6 @@ class StateManager:
                 return
 
             with self._state_lock:
-                # Don't overwrite COLLECTING state - user may have already started a new query
-                if self._state == ListeningState.COLLECTING:
-                    debug_log("hot window activation cancelled (already collecting)", "state")
-                    return
                 self._state = ListeningState.HOT_WINDOW
                 self._hot_window_start_time = time.time()
 
@@ -408,6 +409,8 @@ class StateManager:
         Note: With timer-based expiry, this is now mainly a fallback check.
         The timer should handle expiry automatically.
         """
+        if self.is_conversation_active:
+            return False
         if not self.is_hot_window_active():
             return False
         current_time = time.time()
@@ -464,6 +467,10 @@ class StateManager:
         Args:
             voice_debug: Whether to enable debug logging
         """
+        if self.is_conversation_active:
+            debug_log("hot window expiry ignored — conversation mode is on", "state")
+            return
+
         # Cancel expiry timer since we're manually expiring
         self._cancel_hot_window_expiry_timer()
 
@@ -498,6 +505,8 @@ class StateManager:
         # Cancel all timers
         self.cancel_hot_window_activation()
         self._cancel_hot_window_expiry_timer()
+        self._cancel_command_capture_expiry_timer()
 
         with self._state_lock:
             self._state = ListeningState.WAKE_WORD
+            self._conversation_active = False

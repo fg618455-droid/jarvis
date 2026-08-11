@@ -11,11 +11,13 @@ Strategies (ToolSelectionStrategy enum):
 from __future__ import annotations
 
 import re
+import threading
 from enum import Enum
 from typing import Dict, List, Optional, TYPE_CHECKING
 
 from ..debug import debug_log
 from ..llm import LLMBackend
+from ..runtime import stage as telemetry_stage
 
 if TYPE_CHECKING:
     from .base import Tool
@@ -59,6 +61,13 @@ _RELATIVE_THRESHOLD = 0.97
 # guarantees the downstream prompt stays compact regardless.
 _LLM_MAX_SELECTED = 5
 
+# Tool descriptions change only when the catalogue changes, while user queries
+# change every turn. Cache only the description vectors so embedding routing
+# pays for one query vector per turn instead of re-embedding the full catalogue.
+_TOOL_EMBEDDING_CACHE: dict[tuple, tuple[float, ...]] = {}
+_TOOL_EMBEDDING_CACHE_LOCK = threading.Lock()
+_TOOL_EMBEDDING_CACHE_MAX = 512
+
 # Common English stop-words excluded from keyword matching.
 _STOP_WORDS = frozenset({
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
@@ -95,6 +104,81 @@ def _tool_summary(name: str, description: str) -> str:
     """One-line summary used as embedding input for a tool."""
     readable_name = _CAMEL_RE.sub(" ", name).lower()
     return f"{readable_name}: {description}"
+
+
+def _embedding_service_key(backend: LLMBackend) -> tuple[str, object]:
+    """Identify a configured embedding service across backend instances."""
+    backend_type = f"{type(backend).__module__}.{type(backend).__qualname__}"
+    endpoint = getattr(backend, "_base_url", None)
+    if not isinstance(endpoint, str) or not endpoint:
+        endpoint = id(backend)
+    return backend_type, endpoint
+
+
+def _cached_tool_embedding(
+    backend: LLMBackend,
+    model: str,
+    name: str,
+    summary: str,
+    timeout_sec: float,
+):
+    key = (*_embedding_service_key(backend), model, name, summary)
+    with _TOOL_EMBEDDING_CACHE_LOCK:
+        cached = _TOOL_EMBEDDING_CACHE.get(key)
+    if cached is not None:
+        return list(cached)
+
+    vector = backend.embed(summary, model, timeout_sec=timeout_sec)
+    if vector is None:
+        return None
+    frozen = tuple(float(value) for value in vector)
+    with _TOOL_EMBEDDING_CACHE_LOCK:
+        if len(_TOOL_EMBEDDING_CACHE) >= _TOOL_EMBEDDING_CACHE_MAX:
+            oldest = next(iter(_TOOL_EMBEDDING_CACHE))
+            del _TOOL_EMBEDDING_CACHE[oldest]
+        _TOOL_EMBEDDING_CACHE[key] = frozen
+    return list(frozen)
+
+
+def warm_tool_embedding_cache(
+    builtin_tools: Dict[str, "Tool"],
+    mcp_tools: Dict[str, "ToolSpec"],
+    embedding_backend: LLMBackend,
+    embed_model: str,
+    timeout_sec: float,
+) -> int:
+    """Embed the static tool catalogue before the listener becomes ready.
+
+    Returns the number of catalogue entries available in the cache. Individual
+    failures are non-fatal because the live selector retains its existing
+    fail-open behaviour.
+    """
+    descriptions: dict[str, str] = {}
+    for name, tool in builtin_tools.items():
+        if name not in _ALWAYS_INCLUDED:
+            descriptions[name] = _tool_summary(name, tool.description)
+    for name, spec in mcp_tools.items():
+        descriptions[name] = _tool_summary(name, spec.description)
+
+    warmed = 0
+    for name, summary in descriptions.items():
+        try:
+            vector = _cached_tool_embedding(
+                embedding_backend,
+                embed_model,
+                name,
+                summary,
+                timeout_sec,
+            )
+        except Exception as exc:
+            debug_log(
+                f"Tool embedding warmup failed for {name}: {type(exc).__name__}",
+                "planning",
+            )
+            continue
+        if vector is not None:
+            warmed += 1
+    return warmed
 
 
 def _ensure_always_included(
@@ -191,7 +275,20 @@ def _select_embedding(
         all_tools[name] = _tool_summary(name, spec.description)
 
     for name, summary in all_tools.items():
-        tool_vec = embedding_backend.embed(summary, embed_model, timeout_sec=embed_timeout_sec)
+        try:
+            tool_vec = _cached_tool_embedding(
+                embedding_backend,
+                embed_model,
+                name,
+                summary,
+                embed_timeout_sec,
+            )
+        except Exception as exc:
+            debug_log(
+                f"Embedding tool selection: failed to embed {name}: {type(exc).__name__}",
+                "planning",
+            )
+            continue
         if tool_vec is None:
             continue
         tool_arr = np.array(tool_vec, dtype=np.float32)
@@ -414,24 +511,25 @@ def select_tools(
     Returns:
         List of tool name strings.
     """
-    if strategy == ToolSelectionStrategy.KEYWORD:
-        return _select_keyword(query, builtin_tools, mcp_tools)
-    elif strategy == ToolSelectionStrategy.EMBEDDING:
-        if embedding_backend is None:
-            debug_log("Embedding tool selection: no backend supplied, falling back to all tools", "planning")
-            return _all_tool_names(builtin_tools, mcp_tools)
-        return _select_embedding(
-            query, builtin_tools, mcp_tools,
-            embedding_backend, embed_model, embed_timeout_sec,
-        )
-    elif strategy == ToolSelectionStrategy.LLM:
-        if llm_backend is None:
-            debug_log("LLM tool selection: no backend supplied, falling back to keyword strategy", "planning")
+    with telemetry_stage("tool_routing"):
+        if strategy == ToolSelectionStrategy.KEYWORD:
             return _select_keyword(query, builtin_tools, mcp_tools)
-        return _select_llm(
-            query, builtin_tools, mcp_tools,
-            llm_backend, llm_model, llm_timeout_sec,
-            context_hint=context_hint,
-        )
-    else:
-        return _all_tool_names(builtin_tools, mcp_tools)
+        elif strategy == ToolSelectionStrategy.EMBEDDING:
+            if embedding_backend is None:
+                debug_log("Embedding tool selection: no backend supplied, falling back to all tools", "planning")
+                return _all_tool_names(builtin_tools, mcp_tools)
+            return _select_embedding(
+                query, builtin_tools, mcp_tools,
+                embedding_backend, embed_model, embed_timeout_sec,
+            )
+        elif strategy == ToolSelectionStrategy.LLM:
+            if llm_backend is None:
+                debug_log("LLM tool selection: no backend supplied, falling back to keyword strategy", "planning")
+                return _select_keyword(query, builtin_tools, mcp_tools)
+            return _select_llm(
+                query, builtin_tools, mcp_tools,
+                llm_backend, llm_model, llm_timeout_sec,
+                context_hint=context_hint,
+            )
+        else:
+            return _all_tool_names(builtin_tools, mcp_tools)

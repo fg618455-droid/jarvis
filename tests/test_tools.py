@@ -16,6 +16,11 @@ class DummyCfg:
         self.use_stdin = True
         self.web_search_enabled = False
         self.mcps = {}
+        self.security_level = "off"
+        self.security_confirm_channels = []
+        self.security_confirmation_timeout_sec = 60
+        self.telegram_bot_token = ""
+        self.telegram_chat_id = ""
 
 
 class DummyDB:

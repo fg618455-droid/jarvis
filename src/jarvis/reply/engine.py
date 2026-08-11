@@ -9,6 +9,8 @@ from typing import Optional, TYPE_CHECKING
 
 from ..utils.redact import redact
 from ..system_prompt import build_system_prompt
+from ..output.tts import resolve_voice_language
+from ..runtime import mark as telemetry_mark, stage as telemetry_stage
 from ..tools.registry import run_tool_with_retries, generate_tools_description, generate_tools_json_schema, BUILTIN_TOOLS
 from ..tools.builtin.stop import STOP_SIGNAL
 from ..debug import debug_log
@@ -30,15 +32,18 @@ def chat_with_messages(cfg, messages, *, timeout_sec=30.0, extra_options=None,
 
     Kept as a module-level function so tests can patch this single symbol
     to capture every chat call rather than reaching into the backend ABC.
+    It is also the single place every chat call is timed from, so an
+    agentic turn's model time is measured wherever the loop entered it.
     """
     backend = get_llm_backend(cfg)
-    return backend.chat(
-        cfg.llm_chat_model, messages,
-        timeout_sec=timeout_sec,
-        extra_options=extra_options,
-        tools=tools,
-        thinking=thinking,
-    )
+    with telemetry_stage("llm"):
+        return backend.chat(
+            cfg.llm_chat_model, messages,
+            timeout_sec=timeout_sec,
+            extra_options=extra_options,
+            tools=tools,
+            thinking=thinking,
+        )
 from .enrichment import (
     extract_search_params_for_memory,
     digest_memory_for_query,
@@ -66,6 +71,7 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
+from time import perf_counter as _perf_counter
 from ..utils.location import get_location_context_with_timezone
 from ..utils.time_context import format_time_context
 
@@ -74,6 +80,53 @@ if TYPE_CHECKING:
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
+
+def build_reply_prompt_prefix(cfg) -> str:
+    """Build the query-independent head of every main reply prompt."""
+    assistant_name = str(
+        getattr(cfg, "wake_word", "jarvis") or "jarvis"
+    ).strip().capitalize()
+    parts = [build_system_prompt(assistant_name).strip()]
+    parts.extend(get_system_prompts(detect_model_size(cfg.llm_chat_model)).to_list())
+
+    tts_engine = getattr(cfg, "tts_engine", "piper")
+    if tts_engine == "piper":
+        voice_language = resolve_voice_language(
+            getattr(cfg, "tts_piper_model_path", None)
+        )
+        if voice_language:
+            parts.append(
+                f"Always respond in {voice_language} regardless of the "
+                "language the user speaks in."
+            )
+    elif tts_engine == "chatterbox":
+        parts.append(
+            "Always respond in English regardless of the language the user speaks in."
+        )
+    return "\n".join(parts)
+
+
+def warm_up_reply_prefix(cfg, model: str, timeout_sec: float = 60.0) -> bool:
+    """Prefill the stable main-reply prefix in the configured backend cache."""
+    if not model:
+        return False
+    try:
+        response = get_llm_backend(cfg).chat(
+            model,
+            [
+                {"role": "system", "content": build_reply_prompt_prefix(cfg)},
+                {"role": "user", "content": "Reply with OK."},
+            ],
+            timeout_sec=timeout_sec,
+            extra_options={"keep_alive": "30m", "max_tokens": 1},
+            tools=None,
+            thinking=False,
+        )
+        return bool(response)
+    except Exception as exc:
+        debug_log(f"reply prompt prefill failed: {type(exc).__name__}", "voice")
+        return False
 
 
 def _indent_text(text: str, prefix: str = "  ") -> str:
@@ -584,7 +637,7 @@ def _maybe_digest_tool_result(
             tool_name=tool_name,
             tool_result=raw_tool_result,
             cfg=cfg,
-            chat_model=cfg.llm_chat_model,
+            chat_model=resolve_model(cfg, Tier.FAST),
             timeout_sec=float(getattr(cfg, 'llm_digest_timeout_sec', 8.0)),
             thinking=getattr(cfg, 'llm_thinking_enabled', False),
         )
@@ -632,6 +685,11 @@ def _maybe_digest_tool_result(
     return raw_tool_result
 
 
+# Matches the context block this module injects into the system message, so the
+# same block can be scrubbed back out when a model echoes it into its reply.
+_CONTEXT_ECHO_RE = re.compile(r"\s*\[Context:.*?\]", re.DOTALL)
+
+
 def _live_time_location_string(cfg) -> str:
     """Return a one-liner describing current local time and location, or ""."""
     try:
@@ -649,6 +707,33 @@ def _live_time_location_string(cfg) -> str:
     except Exception as e:
         debug_log(f"live time/location lookup failed: {e}", "memory")
         return ""
+
+
+def strip_context_echo(reply: Optional[str]) -> Optional[str]:
+    """Remove any `[Context: ...]` block the model copied into its answer.
+
+    The engine appends that block to the system message so the model knows the
+    current time and location. Small models routinely echo it back, and the
+    result gets spoken aloud. Prompt wording alone does not reliably stop this,
+    so the echo is scrubbed deterministically as well.
+
+    The marker is emitted by this module in a fixed shape, so matching it is
+    safe in every language the assistant speaks.
+    """
+    if not reply or not reply.strip():
+        return reply
+
+    cleaned = _CONTEXT_ECHO_RE.sub(" ", reply).strip()
+
+    # A reply that was nothing but the echo leaves us with no answer at all.
+    # Speaking the leak beats speaking silence.
+    if not cleaned:
+        debug_log("Reply was only a context echo; delivering as-is", "planning")
+        return reply
+
+    if cleaned != reply.strip():
+        debug_log("Stripped context echo from reply", "planning")
+    return cleaned
 
 
 def _previous_turn_failed_tool_names(recent_messages: list) -> list[str]:
@@ -857,22 +942,21 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             debug_log(f"⚠️ Failed to get cached MCP tools: {e}", "mcp")
             mcp_tools = {}
 
-    # ── Step 3: Pre-flight planner ─────────────────────────────────────
-    # The planner runs FIRST, before any memory lookup or tool routing.
-    # Its job is to decide up front what preparation this turn needs:
+    # ── Step 3: Tool routing and pre-flight planner ────────────────────
+    # The router narrows the catalogue before the planner. The planner then
+    # decides what additional preparation this turn needs:
     #
     #   - Does answering require information the user shared in prior
     #     conversations? If yes, the planner emits a leading
     #     ``searchMemory topic='...'`` directive and we run diary + graph
     #     enrichment; otherwise we skip the keyword-extraction LLM call,
     #     the diary/graph queries, and the memory-digest LLM call.
-    #   - Are any external tools needed? The tool names the planner
-    #     references become the allow-list directly — we skip the
-    #     separate tool-router LLM call.
+    #   - Are any external tools needed? Planner references are unioned into
+    #     the router's authoritative allow-list.
     #
-    # Fail-open: if the planner returns ``[]`` (short query, disabled,
-    # LLM timeout, empty response), we fall through to the legacy safe
-    # defaults — run the memory extractor and the tool router as before.
+    # Fail-open: when an enabled planner returns ``[]`` after a timeout or
+    # invalid response, memory enrichment runs. A disabled planner skips
+    # speculative long-term recall while retaining warm profile and tools.
     # A positive single-step ``["Reply to the user."]`` plan is NOT the
     # same as ``[]``: it's the planner deciding no memory or tools are
     # needed. Both cases are preserved for the engine to distinguish.
@@ -998,6 +1082,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 _planner_tool_catalog.append((str(_nm), _first[:120]))
 
     action_plan: list[str] = []
+    planner_enabled = bool(getattr(cfg, "planner_enabled", True))
 
     # Fast-path: skip the planner when the tool router found no real tools
     # AND the query is short. The planner's main job is decomposing multi-step
@@ -1022,7 +1107,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     _skip_planner = (
         _router_said_no_tools
         and _query_word_count <= 8
-        and getattr(cfg, "planner_enabled", True)
+        and planner_enabled
     )
     if _skip_planner:
         # Positive signal: no tools, no memory needed. The warm profile
@@ -1035,7 +1120,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             f"{_query_word_count} words — using reply-only plan",
             "planning",
         )
-    else:
+    elif planner_enabled:
         try:
             action_plan = plan_query(
                 cfg=cfg,
@@ -1046,6 +1131,8 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         except Exception as _plan_exc:  # pragma: no cover — defensive
             debug_log(f"planner step failed (non-fatal): {_plan_exc}", "planning")
             action_plan = []
+    else:
+        debug_log("planner disabled: skipping speculative long-term recall", "planning")
     if action_plan:
         _plan_preview = " | ".join(s[:50] for s in action_plan)
         print(
@@ -1062,7 +1149,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # - Plan without it → skip memory work entirely (no keyword LLM,
     #   no diary search, no graph search, no digest LLM).
     plan_demands_memory = bool(action_plan) and plan_requires_memory(action_plan)
-    needs_memory = (not action_plan) or plan_demands_memory
+    needs_memory = planner_enabled and ((not action_plan) or plan_demands_memory)
 
     # Recall gate: if the hot-window already carries a fresh tool result
     # covering the query topic, skip diary/graph enrichment for this turn.
@@ -1153,6 +1240,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
 
     # Step 4: Memory enrichment — controlled by cfg.memory_enrichment_source
     # "all" = diary + graph, "diary" = diary only, "graph" = graph only
+    _recall_begun = _perf_counter()
     enrichment_source = getattr(cfg, "memory_enrichment_source", "diary")
     conversation_context = ""
     # For small models, the diary + graph text is replaced by a single
@@ -1311,6 +1399,8 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             except Exception as e:
                 debug_log(f"graph enrichment failed: {e}", "memory")
 
+    telemetry_mark("recall", (_perf_counter() - _recall_begun) * 1000.0)
+
     # Step 4c: Memory digest for small models.
     #
     # Small models (~2B) degrade sharply as the system prompt grows, and the
@@ -1337,7 +1427,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 diary_entries=raw_diary_entries,
                 graph_parts=raw_graph_parts,
                 cfg=cfg,
-                chat_model=cfg.llm_chat_model,
+                chat_model=resolve_model(cfg, Tier.FAST),
                 timeout_sec=float(getattr(cfg, 'llm_digest_timeout_sec', 8.0)),
                 thinking=getattr(cfg, 'llm_thinking_enabled', False),
             )
@@ -1435,7 +1525,6 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # model has a concrete template to follow. Using text tools from the start also avoids
     # the wasted round-trip and prompt confusion of starting native and falling back mid-turn.
     use_text_tools = (model_size == ModelSize.SMALL)
-    prompts = get_system_prompts(model_size)
     debug_log(f"Model size detected: {model_size.value} for {cfg.llm_chat_model} (use_text_tools={use_text_tools})", "planning")
 
     # Compound-query decomposition for small models.
@@ -1462,23 +1551,14 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # steps are preserved unchanged.
     action_plan = strip_memory_directives(action_plan)
 
-    _assistant_name = str(getattr(cfg, "wake_word", "jarvis") or "jarvis").strip().capitalize()
+    _assistant_name = str(
+        getattr(cfg, "wake_word", "jarvis") or "jarvis"
+    ).strip().capitalize()
     _persona_prompt = build_system_prompt(_assistant_name)
+    _reply_prompt_prefix = build_reply_prompt_prefix(cfg)
 
     def _build_initial_system_message() -> str:
-        guidance = [_persona_prompt.strip()]
-
-        # Add model-size-appropriate prompt components
-        guidance.extend(prompts.to_list())
-
-        # Both current TTS engines (Piper, Chatterbox) only support English.
-        # Responding in another language would produce garbled audio.
-        # Remove this constraint when a multilingual TTS engine is added.
-        tts_engine = getattr(cfg, 'tts_engine', 'piper')
-        if tts_engine in ('piper', 'chatterbox'):
-            guidance.append(
-                "Always respond in English regardless of the language the user speaks in."
-            )
+        guidance = [_reply_prompt_prefix]
 
         if warm_profile_block:
             # Pre-query, query-agnostic user context. Lives OUTSIDE the
@@ -2439,6 +2519,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             continue
 
         # Natural-language content from the model. Normalise and deliver.
+        content = strip_context_echo(content)
         extracted = _extract_text_from_json_response(content)
         if extracted:
             candidate_reply = extracted

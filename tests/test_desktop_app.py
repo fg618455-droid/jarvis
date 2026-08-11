@@ -1337,61 +1337,59 @@ class TestCudaRecoveryAction:
         assert "-LogPath" in captured["params"]
 
 
-class TestMemoryViewerModulePath:
-    """Tests to verify memory viewer module references are valid.
+class TestControlCentreWindow:
+    """The window shows the control centre the daemon serves, or serves one.
 
-    These tests catch issues like wrong module paths in subprocess calls
-    without requiring actual GUI/server components.
+    These check the wiring without a GUI: a window that cannot find a URL
+    would open on an error page, which is the failure this catches.
     """
 
-    def test_memory_viewer_module_is_importable(self):
-        """The module used for subprocess mode should be importable."""
-        import importlib
+    def test_the_window_serves_the_configured_port(self, tmp_path, monkeypatch):
+        import json
 
-        pytest.importorskip("flask")
+        from jarvis.webui import WebUIServer
 
-        # This is the module path used in MemoryViewerWindow.start_server()
-        # If this fails, the subprocess command will fail at runtime
-        module = importlib.import_module("desktop_app.memory_viewer")
-        assert hasattr(module, "app"), "memory_viewer should have Flask 'app' attribute"
-        assert hasattr(module, "main"), "memory_viewer should have 'main' function"
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({"webui_port": 5199}), encoding="utf-8")
+        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
 
-    def test_memory_viewer_subprocess_module_runs(self):
-        """The module should be runnable with python -m (with correct PYTHONPATH)."""
-        pytest.importorskip("flask")
+        from desktop_app.app import ControlCentreWindow
 
-        # Set PYTHONPATH the same way start_server() does
-        src_path = Path(__file__).parent.parent / "src"
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(src_path)
+        window = ControlCentreWindow.__new__(ControlCentreWindow)
+        window._server = None
+        window._url = None
+        try:
+            assert window.start_server() is True
+            assert window._url.endswith(":5199")
+            assert isinstance(window._server, WebUIServer)
+        finally:
+            window.stop_server()
 
-        # Test that the module can at least be imported in subprocess
-        result = subprocess.run(
-            [sys.executable, "-c", "import desktop_app.memory_viewer"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env=env,
-        )
-        assert result.returncode == 0, f"Module import failed: {result.stderr}"
+    def test_an_already_served_control_centre_is_reused(self, tmp_path, monkeypatch):
+        import json
 
-    def test_memory_viewer_module_path_matches_code(self):
-        """Verify the module path in start_server matches the actual location."""
-        import re
-        from pathlib import Path
+        from jarvis.webui import WebUIConfig, WebUIServer
 
-        # Read the actual code to find the module path used
-        app_py = Path(__file__).parent.parent / "src" / "desktop_app" / "app.py"
-        content = app_py.read_text(encoding="utf-8")
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({"webui_port": 5198}), encoding="utf-8")
+        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
 
-        # Find the subprocess module path
-        match = re.search(r'"-m",\s*"([^"]+)"', content)
-        assert match, "Could not find subprocess module path in app.py"
+        running = WebUIServer(WebUIConfig(host="127.0.0.1", port=5198, token=""))
+        running.start()
 
-        module_path = match.group(1)
-        assert module_path == "desktop_app.memory_viewer", (
-            f"Module path should be 'desktop_app.memory_viewer', found '{module_path}'"
-        )
+        from desktop_app.app import ControlCentreWindow
+
+        window = ControlCentreWindow.__new__(ControlCentreWindow)
+        window._server = None
+        window._url = None
+        try:
+            assert window.start_server() is True
+            # Nothing new was started: the daemon's instance holds live state.
+            assert window._server is None
+            assert window._url == "http://127.0.0.1:5198"
+        finally:
+            window.stop_server()
+            running.stop()
 
 
 class TestDaemonSmokeTest:

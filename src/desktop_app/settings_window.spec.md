@@ -8,7 +8,7 @@ The Settings Window provides a graphical interface for editing `config.json` wit
 
 ## Design Principles
 
-1. **Metadata-driven**: All fields are defined in a `FIELD_METADATA` registry. Adding a new config parameter to the settings UI requires only adding a `FieldMeta` entry — no widget code changes.
+1. **Metadata-driven**: All fields are defined in the `FIELD_METADATA` registry in `src/jarvis/config_metadata.py`, shared with the control centre's settings view. Adding a new config parameter to both settings interfaces requires only adding a `FieldMeta` entry — no widget code changes.
 2. **Minimal config files**: Only non-default values are written to `config.json`. Removing a field from the config reverts it to the default.
 3. **Preserves unknown keys**: Keys not managed by the UI (e.g. `mcps`, `_config_version`, future additions) are preserved when saving.
 4. **Theme-consistent**: Uses the shared Jarvis theme from `themes.py`.
@@ -16,7 +16,7 @@ The Settings Window provides a graphical interface for editing `config.json` wit
 ## Architecture
 
 ```
-FieldMeta (dataclass)
+FieldMeta (dataclass, src/jarvis/config_metadata.py)
   ├── key: str           # config.json key name
   ├── label: str         # Human-readable label
   ├── description: str   # Tooltip text
@@ -60,10 +60,12 @@ The settings window uses a sidebar navigation pattern: a fixed-width `QListWidge
 9. Voice Activity Detection
 10. Timing & Windows
 11. Memory & Dialogue
-12. Location
-13. Features (includes web search, Wikipedia fallback, low-power mode, startup tune, and dictation toggles)
-14. MCP Servers
-15. Advanced
+12. Security
+13. Location
+14. Features (includes web search, Wikipedia fallback, low-power mode, startup tune, and dictation toggles)
+15. Control Centre
+16. MCP Servers
+17. Advanced
 
 ### LLM Provider
 
@@ -115,7 +117,7 @@ The Voice Input tab includes a device dropdown populated at window open time via
 ## Save Behaviour
 
 - Only keys that differ from `get_default_config()` are written.
-- Existing keys not managed by the UI are preserved (e.g. `mcps`, `active_profiles`, `wake_aliases`, `allowlist_bundles`, `stop_commands`).
+- Existing keys not managed by the UI are preserved (e.g. `mcps`, `active_profiles`, `wake_aliases`, `allowlist_bundles`).
 - After save, a dialog confirms success and reminds the user to restart.
 - If the daemon is running when save completes, the tray app offers to restart it.
 
@@ -170,7 +172,6 @@ These fields are managed elsewhere or are too complex for a simple form:
 - `active_profiles` — list managed by setup wizard
 - `allowlist_bundles` — list of bundle IDs
 - `wake_aliases` — list of strings (complex editing)
-- `stop_commands` / `stop_command_fuzzy_ratio` — list of strings
 - `use_stdin` — developer/CLI flag
 - `voice_debug` — environment variable only
 - `whisper_min_audio_duration` / `whisper_min_word_length` — rarely changed advanced params

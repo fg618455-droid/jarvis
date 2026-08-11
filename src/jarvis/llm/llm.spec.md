@@ -1,158 +1,174 @@
 # LLM Backend Specification
 
-The `jarvis.llm` package owns every LLM HTTP call Jarvis makes and lets the same reply engine, planner, intent judge, evaluator, memory pipeline, and tools run against any local runtime: Ollama, an OpenAI-compatible server (LM Studio, oMLX, llama.cpp's `llama-server`, vLLM, LocalAI), or an Anthropic-compatible server.
+The `jarvis.llm` package owns every LLM HTTP call. Jarvis speaks only generic, self-hostable protocols: native Ollama and OpenAI-compatible HTTP. Route configuration contains protocol names, URLs, credentials, model names, tiers, and timeouts. Runtime code has no vendor SDK or vendor-specific request path.
 
 ## Goals
 
-1. **Pluggable.** New backends drop in by subclassing `LLMBackend` and being registered in `factory.get_llm_backend`. Call sites stay unchanged.
-2. **Privacy-first.** Backends never send data anywhere unless the user has explicitly configured the URL. Defaults remain `127.0.0.1:11434`.
-3. **Single source of truth.** Every call site dispatches through `get_llm_backend(cfg)` / `get_embedding_backend(cfg)`. The `Settings` object carries provider, base URL, API key, and model fields; the factory reads them.
+1. **Offline by default.** An empty `llm_routes` list uses Ollama exactly as a local installation expects.
+2. **One dispatch path.** `get_llm_backend(cfg)` always returns `RoutedBackend`, including a purely local configuration.
+3. **Explicit privacy lane.** Memory writes and graph rewrites use `Tier.PRIVATE`, which contains one loopback `OllamaBackend` route. With route chains configured, embeddings also use loopback Ollama and never enter the router.
+4. **Fail-soft at the boundary.** Concrete OpenAI-compatible backends raise typed provider failures. `RoutedBackend` turns an exhausted chain into `None`, preserving the contract used by callers.
+5. **No secret disclosure.** URLs, credentials, response bodies, and exception messages are absent from error logs. Route credentials are masked in the control centre.
 
 ## Public surface
 
 ```python
 from jarvis.llm import (
-    LLMBackend,                  # provider-agnostic ABC
-    OllamaBackend,               # implementation: Ollama
-    OpenAICompatibleBackend,     # implementation: OpenAI-compatible servers
+    LLMBackend,
+    OllamaBackend,
+    OpenAICompatibleBackend,
+    RoutedBackend,
+    Route,
+    Tier,
+    ProviderError,
+    RateLimitedError,
+    QuotaExhaustedError,
+    AuthError,
+    ModelUnavailableError,
     ToolsNotSupportedError,
-    get_llm_backend,             # factory: settings → chat backend
-    get_embedding_backend,       # factory: settings → embedding backend
-    check_version,               # verify a URL points to a live Ollama server
-    call_llm_direct,             # base-URL helper (see below)
-    call_llm_streaming,
-    chat_with_messages,
-    extract_text_from_response,
+    get_llm_backend,
+    get_embedding_backend,
+    resolve_model,
 )
 ```
 
-Two interchangeable styles dispatch to the same backend:
+Function-style Ollama helpers remain available to performance tests and eval scripts that only have a base URL. Production modules construct backends through the factories.
 
-- **Object-style** (preferred): `get_llm_backend(cfg).direct(...)`. The factory dispatches on `cfg.llm_provider` so swapping providers does not touch call sites. Every site under `src/jarvis/` uses this.
-- **Function-style**: `call_llm_direct(base_url, ...)`. A thin wrapper that constructs an `OllamaBackend(base_url)` and delegates. Used by the performance-recording shims in `tests/performance/` and the eval scripts under `evals/`, where only a base URL is in scope.
+## Backend interface
 
-## `LLMBackend` interface
+| Method | Return | Contract |
+|---|---|---|
+| `direct(model, system, user, ...)` | `Optional[str]` | One system and user completion. |
+| `streaming(model, system, user, on_token, ...)` | `Optional[str]` | Streams text chunks and returns their concatenation. |
+| `chat(model, messages, ...)` | `Optional[dict]` | Arbitrary messages, including native tool schemas. |
+| `embed(text, model, ...)` | `Optional[list[float]]` | Vector embedding. Only concrete embedding backends are used. |
+| `list_models(...)` | `list[str]` | Models exposed by an endpoint. |
+| `warm_up(model, ...)` | `bool` | Best-effort model reachability and loading probe. |
 
-| Method | Returns | Contract |
-|--------|---------|----------|
-| `direct(model, system, user, *, timeout_sec, thinking, num_ctx, temperature, max_tokens)` | `Optional[str]` | Single-shot system+user. Returns assistant text, or `None` on timeout / error / empty content. `max_tokens` caps generation length — essential for small reasoning models on classification tasks. |
-| `streaming(model, system, user, *, on_token, timeout_sec, thinking)` | `Optional[str]` | Streams tokens via `on_token`; returns the concatenated full text or `None` if no content was produced. |
-| `chat(model, messages, *, timeout_sec, extra_options, tools, thinking)` | `Optional[Dict]` | Arbitrary messages array. Returns the raw response dict so callers (today: the reply engine) can inspect `content` and `tool_calls`. Raises `ToolsNotSupportedError` when the model rejects native tools. Re-raises `requests.ConnectionError` so callers can distinguish "server unreachable" from a transient HTTP failure. |
-| `embed(text, model, *, timeout_sec)` | `Optional[List[float]]` | Vector embedding. Returns `None` on error or when the runtime does not expose embeddings. |
-| `list_models(*, timeout_sec)` | `List[str]` | Names of models the runtime has available. Returns `[]` on error. |
-| `warm_up(model, *, timeout_sec, keep_alive)` | `bool` | Pre-load probe before the first real request. The `LLMBackend` default returns `True` (no-op for runtimes without a useful probe). `OllamaBackend` verifies the server is Ollama via `GET /api/version`, then issues a minimal `/api/chat` completion with the caller-provided `keep_alive` duration (default `"30m"`, `"1m"` in low-power mode) to page the model into resident memory **and** trigger full inference-pipeline initialisation (JIT compilation, KV-cache allocation) — the chat-endpoint warmup prevents the timeout that an empty `/api/generate` ping would mask on the first real call. `OpenAICompatibleBackend` first runs a fast reachability check (`GET /models`, 25 % of budget, max 5 s), then sends a single-token chat completion (`max_tokens=1`) to force the runtime to load the model into memory. |
-
-`direct()` and `streaming()` are convenience methods over `chat()`: they construct the `[system, user]` messages array internally so callers running classification-shaped passes (planner, intent judge, evaluator, enrichment extractor) do not have to. `chat()` is the low-level primitive for arbitrary message arrays — multi-turn dialogue, native tool calls, and anything that needs custom roles.
+`direct()` and `streaming()` are convenience shapes over chat completions. Messages are stripped to fields allowed by the OpenAI Chat Completions schema before transmission.
 
 ### Tool calling
 
-The `tools` parameter accepts the OpenAI-compatible JSON-schema format produced by `jarvis.tools.registry.generate_tools_json_schema()`. Ollama 0.4+ adopts that exact format, so no translation layer is needed for the Ollama backend; OpenAI-compatible and Anthropic-compatible backends translate inside their `chat()` methods so the reply engine sees a single shape.
-
-When a model rejects the `tools` parameter (Ollama returns HTTP 400 in that case), the backend raises `ToolsNotSupportedError`. The reply engine catches it and falls back to text-based tool calling for the rest of the session.
+`ToolsNotSupportedError` means the selected model rejected a supplied native tool schema. It is not a routing signal. `RoutedBackend` passes it to the reply engine, which changes to text-based tool calls without losing the turn.
 
 ### Streaming
 
-Each backend parses its own stream format internally (Ollama JSONL, OpenAI SSE, Anthropic SSE event blocks). The public `on_token(str)` contract is identical across backends.
+Routes may switch only before a token reaches the caller. Once the wrapped `on_token` callback has emitted content, a failure ends that stream and no later route is contacted.
 
-### Embeddings
+## Typed provider failures
 
-`embed()` is part of the same backend interface so the same provider can serve both chat and embeddings when capable. The `embedding_provider` config key lets users on runtimes without embeddings (e.g. some oMLX builds) route embeddings through Ollama while keeping chat on their preferred runtime. Every embedding call site under `src/jarvis/` resolves through `get_embedding_backend(cfg)`.
+`OpenAICompatibleBackend` raises:
+
+| Condition | Exception | Metadata |
+|---|---|---|
+| HTTP 429 rate limit | `RateLimitedError` | `retry_after`, parsed from `Retry-After` or generic rate-limit reset headers |
+| HTTP 429 quota exhaustion | `QuotaExhaustedError` | `reset_at`, when the endpoint states one |
+| HTTP 401 or 403 | `AuthError` | none |
+| HTTP 404 | `ModelUnavailableError` | none |
+| Timeout or other request failure | `ProviderError` | none |
+
+Exception text is generic and contains no endpoint URL, key, response body, or model name. `ToolsNotSupportedError` remains separate.
+
+## Routing
+
+`Route` is a frozen dataclass with `name`, `provider`, `base_url`, `api_key`, `model`, `tier`, and `timeout_sec`. Its credential field is excluded from `repr`.
+
+`RoutedBackend` groups routes by tier and tries each unblocked route in configuration order. A route's timeout is the smaller of its own limit and the caller's limit. A provider failure, connection failure, timeout, model failure, auth failure, or empty response moves to the next candidate. An exhausted chain returns `None`.
+
+Configured FAST and CHAT chains always end with loopback Ollama. A configuration with no routes has one effective local candidate per lane. `resolve_model()` returns a string-compatible value carrying its `Tier`, so existing backend method signatures remain ordinary model-string APIs while the router can select a chain.
+
+`warm_up()` warms the first available candidate for the requested lane and its local Ollama candidate. `list_models()` combines unique names from reachable routes.
+
+### Cooldown state
+
+`RouteStateStore` writes `~/.jarvis/llm_routes_state.json` atomically with mode `0o600` where the platform supports POSIX permissions. The file contains route hashes and health counters, never URLs, models, or credentials.
+
+| Failure | Block |
+|---|---|
+| 429 with `Retry-After` | Exactly the stated duration |
+| 429 without a duration | 60 seconds, then 300 seconds, then 900 seconds |
+| Quota exhaustion with reset | Until the stated reset |
+| Quota exhaustion without reset | Until midnight UTC |
+| 401 or 403 | Invalid for the process lifetime |
+
+Hits, failures, last safe error label, and future block time feed the control centre. Persisted cooldowns prevent a restart from immediately touching a rate-limited or quota-exhausted key. Authentication invalidation is deliberately process-local, so a restarted process can retry a corrected external credential.
+
+## Lanes
+
+| Tier | Chain | Contexts |
+|---|---|---|
+| `Tier.FAST` | Configured fast routes, then local | intent judge, tool router, tool search, enrichment extractor, memory and tool digests, graph placement picker, evaluator, weather place extraction |
+| `Tier.CHAT` | Configured chat routes, then local | reply loop, planner, step resolver, dictation cleanup, nutrition calls, other tool-specific completions |
+| `Tier.PRIVATE` | loopback Ollama only | diary summary, deflection rewrite, topic optimisation, graph extraction, node merge, graph auto-split |
+
+Memory retrieval may send the selected snippets into FAST or CHAT calls. Memory creation, graph mutation, and embeddings stay local.
+
+## Embeddings
+
+With `llm_routes` configured, `get_embedding_backend(cfg)` returns an `OllamaBackend` whose URL is loopback. It never returns `RoutedBackend`, and the model remains `cfg.ollama_embed_model`, preserving the vector space used by stored embeddings. A configured non-loopback Ollama URL falls back to `http://127.0.0.1:11434` for private and embedding work. A single-endpoint configuration with no routes retains its explicit embedding-provider behaviour.
 
 ## Configuration
 
-Provider-aware fields in `Settings` (see [src/jarvis/config.py](../config.py)):
-
 | Key | Default | Meaning |
-|-----|---------|---------|
-| `llm_provider` | `"ollama"` | `"ollama"` or `"openai_compatible"`. Unknown values fall back to `"ollama"`. |
-| `llm_base_url` | (OpenAI-compatible only) | The OpenAI-compatible server's URL, e.g. `http://localhost:1234/v1` (LM Studio default). Read only when `llm_provider == openai_compatible`; the Ollama path always uses `ollama_base_url`. |
-| `llm_api_key` | `""` | Optional bearer token. Sent only when non-empty. |
-| `llm_chat_model` | (OpenAI-compatible only) | The model name the OpenAI-compatible server exposes. Read only when `llm_provider == openai_compatible` (falling back to `ollama_chat_model` if blank); the Ollama path uses `ollama_chat_model`. |
-| `embedding_provider` | inherits `llm_provider` | `"ollama"` / `"openai_compatible"`. Override for runtimes without embeddings. |
-| `embedding_base_url` | inherits from llm config | Override per-provider URL. |
-| `embedding_api_key` | inherits `llm_api_key` | Override per-provider key. |
-| `embedding_model` | (OpenAI-compatible only) | The OpenAI-compatible embedding model. Read only when the effective embedding provider is `openai_compatible` (falling back to `ollama_embed_model` if blank); the Ollama path uses `ollama_embed_model`. |
-| `low_power_mode` | `false` | When enabled, voice startup skips LLM warmup and Ollama keep-alive windows used by warmup and the intent judge are short. |
+|---|---|---|
+| `llm_routes` | `[]` | Ordered generic endpoint entries for FAST and CHAT |
+| `llm_provider` | `"ollama"` | Single-endpoint protocol used when `llm_routes` is empty |
+| `llm_base_url` | `""` | Single-endpoint URL used when `llm_routes` is empty |
+| `llm_api_key` | `""` | Single-endpoint bearer credential used when `llm_routes` is empty |
+| `llm_chat_model` | local model | Effective first CHAT model |
+| `fast_model` | automatic | Effective first FAST model |
+| `ollama_base_url` | `http://127.0.0.1:11434` | Ollama URL for a local-only setup; private work requires loopback |
+| `ollama_chat_model` | setup selection | Local chat and private model |
+| `ollama_embed_model` | `nomic-embed-text` | Local embedding model |
 
-The `ollama_base_url` / `ollama_chat_model` / `ollama_embed_model` keys hold the Ollama configuration and are authoritative whenever the active (chat or embedding) provider is Ollama. `_load_settings` resolves `cfg.llm_chat_model`, `cfg.embedding_model`, and `cfg.fast_model` per-provider — the Ollama keys win on the Ollama path, the provider-aware keys win on the OpenAI-compatible path — so the codebase reads a single resolved field while each provider keeps its own on-disk model name. The v1 → v2 migration promotes any explicitly-set `ollama_*` values into the provider-aware keys; per-provider resolution means a promoted value never shadows the Ollama picker. The v2 → v3 migration folds the retired per-context model keys (`intent_judge_model`, `tool_router_model`, `evaluator_model`, `planner_model`) into `fast_model` (an explicitly chosen judge or router model is kept; the old default value is not pinned).
+Each `llm_routes` entry has this shape:
 
-### Model tiers
+```json
+{
+  "name": "descriptive-name",
+  "provider": "openai_compatible",
+  "base_url": "https://endpoint.example/v1",
+  "api_key": "",
+  "model": "model-exposed-by-the-endpoint",
+  "tier": "chat",
+  "timeout_sec": 4.0
+}
+```
 
-Every LLM context runs on one of two models, resolved through `resolve_model(cfg, tier)` in `tiers.py`:
+The v3 to v4 migration converts an explicitly configured OpenAI-compatible endpoint into the first FAST and CHAT candidates. Pure Ollama configs retain an empty route list. The loader accepts only the owned route shape and ignores malformed entries.
 
-| Tier | Field | Contexts | Default |
-|------|-------|----------|---------|
-| `Tier.FAST` | `cfg.fast_model` | intent judge, tool router, tool searcher, enrichment extractor, graph placement, max-turn digest, evaluator | `gemma4:e2b` on the Ollama chat path; the active chat model on an OpenAI-compatible provider (the Ollama pull-name does not exist there) |
-| `Tier.CHAT` | `cfg.llm_chat_model` | main reply loop, planner + plan-step resolver, summariser, graph extraction, tool-specific calls, memory/tool-result digests (size-gated passes on the chat model) | the model picked at setup |
+`scripts/import_fcc_keys.py` probes keys from `~/.fcc/.env` and writes routes only for endpoints that advertise a model. `python -m jarvis.llm.probe` performs `GET /models`, prints no credential material, and stores the observed catalogues in `~/.jarvis/llm_probe.json` with mode `0o600`. Model names come from live endpoint responses or a probed FCC smoke model that is present in that response.
 
-Fast-tier contexts take a few thousand tokens in and emit tiny strict-JSON answers, so latency dominates; chat-tier contexts produce long-form output, so quality dominates. Contexts state their tier instead of defining a per-context fallback chain, and any future routing logic lands in exactly one place.
+## Wire shapes
 
-### Factory dispatch
+### Ollama
 
-- `get_llm_backend(cfg)` reads `llm_provider`. For `openai_compatible` it resolves `llm_base_url` (falling back to `ollama_base_url`); for `ollama` it uses `ollama_base_url` directly so a stale `llm_base_url` from a previous OpenAI-compatible config cannot leak into the Ollama backend. `llm_api_key` is read regardless (sent only when non-empty).
-- `get_embedding_backend(cfg)` reads `embedding_provider` (falls back to `llm_provider` when unset), resolves `embedding_base_url` (falls back per-provider: `llm_base_url` for OpenAI-compatible, `ollama_base_url` for Ollama), and `embedding_api_key` (falls back to `llm_api_key`).
-- Construction is fail-soft: an unset URL becomes the default Ollama URL, so `get_*_backend` never raises. Errors surface at request time, not construction time.
+- `POST /api/chat`, `POST /api/embeddings`, `GET /api/tags`, `GET /api/version`
+- JSON-lines streaming
+- OpenAI-compatible tool schemas
+- `cache_prompt: true` on chat payloads
+- `max_tokens` translated to `num_predict`
 
-### v1 → v2 config migration
+### OpenAI-compatible
 
-The migration in `_migrate_config` runs once when `_config_version < 2`:
-
-1. If `llm_provider` is unset, default to `"ollama"`.
-2. Promote `ollama_base_url` → `llm_base_url`, `ollama_chat_model` → `llm_chat_model`, `ollama_embed_model` → `embedding_model` (only when the new key is empty).
-3. Bump `_config_version` to `2` and persist via `_save_json` (which restricts the file to `0o600` on POSIX so credentials are not world-readable).
-
-## Wire-shape specifics
-
-### Ollama (`OllamaBackend`)
-
-- Endpoints: `POST /api/chat`, `POST /api/embeddings`, `GET /api/tags`, `POST /api/generate` (used by `warm_up`).
-- Streaming: JSON-lines (`{...}\n`).
-- Tool calls: native `tools` parameter (Ollama 0.4+); arguments returned as a Python dict.
-- Prompt caching: every chat payload (`chat()`, `direct()`, `streaming()`) sets `cache_prompt: true` explicitly so the server retains the request's KV state and reuses it when the next request shares the same prefix. Callers keep prefixes cacheable by keeping system prompts byte-static and pushing per-call data (time, hints) to the tail of the prompt (see `docs/llm_contexts.md` "KV-cache discipline").
-- `extra_options` keys map onto the wire shape: `keep_alive` / `format` / `think` go to the payload root; `max_tokens` (the canonical generation cap across backends) is translated to `num_predict`; everything else (incl. `temperature`, `num_ctx`, `num_predict`) folds into the nested `options` object. Callers can also pass an explicit `options` sub-dict for explicit nesting (its `max_tokens` is likewise translated).
-- `warm_up(model, keep_alive="30m")` first verifies the endpoint is actually an Ollama server via `GET /api/version`, then issues a minimal `POST /api/chat` (system + user message pair, `stream: false`, `options: {num_predict: 1, temperature: 0.0}`) with the requested `keep_alive`, exercising the full inference pipeline (JIT compilation, KV-cache allocation) so the first real call does not time out. The model stays resident for the requested `keep_alive` duration; low power mode passes a short residency instead of the default half hour.
-
-### OpenAI-compatible (`OpenAICompatibleBackend`)
-
-- Endpoints: `POST /chat/completions`, `POST /embeddings`, `GET /models`.
-- Streaming: Server-Sent Events. Lines start with `data:` and an empty payload terminator is `data: [DONE]`. Comment lines (`: ping`) and malformed payloads are skipped.
-- Tool calls: native `tools` parameter; OpenAI returns `tool_calls[*].function.arguments` as a JSON-encoded string. The backend decodes them to a dict so the reply engine sees a single shape.
-- Response normalisation: `_normalise_response` lifts `choices[0].message` to top-level `message` so callers do not branch on provider. Servers that already return Ollama-shaped responses pass through unchanged.
-- `extra_options` lifts sampling fields (`temperature`, `max_tokens`, `top_p`, `stop`, …) to the payload root and silently drops Ollama-only knobs (`keep_alive`, `num_ctx`, `num_predict`, `think`) that have no equivalent in the OpenAI shape.
-- `warm_up(model)` is a two-phase probe: it first issues ``GET /models`` as a fast reachability check (capped at 25 % of the budget, max 5 s), then sends a minimal chat completion (``max_tokens=1``, ``content: "ping"``) to force the runtime to load the model into memory. Without the inference phase, an OpenAI-compatible server may keep the model in a cold state until the first real user request, incurring latency on the first query. The fallback stance remains: a failed warmup is informational and never blocks operation.
-- Authentication: `Authorization: Bearer <api_key>` header sent only when `api_key` is non-empty.
-- Error logs do not echo URLs or API keys: HTTP errors print only the status code, generic exceptions print only the class name, connection errors print a fixed string and re-raise so callers can apply their own back-off.
-- `check_capabilities(chat_model, embed_model=None, *, timeout_sec)` returns a `ServerCapabilities` dataclass (`reachable`, `chat`, `tools`, `embeddings`, `models`). It probes with real requests — `list_models`, a one-message chat, a trivial tool call, and an embedding — and never raises (every failure collapses to a `False` flag). `chat` is True for either a text reply or a tool-call-only reply. Used by the setup wizard and the desktop startup check to report honestly what a server+model can do before the user relies on it. The probe issues real inference, so it is recorded in `docs/llm_contexts.md`.
-
-## Module-local LLM wrappers
-
-Each migrated module exposes a single intercept point so tests can patch one symbol per module instead of reaching into the backend ABC:
-
-- `jarvis.reply.engine.chat_with_messages(cfg, messages, ...)` — agentic-loop chat boundary.
-- `jarvis.reply.planner.call_llm_direct(*, cfg, chat_model, ...)` — planner + step resolver.
-- `jarvis.reply.evaluator.call_llm_direct(*, cfg, chat_model, ...)` — terminal evaluator.
-- `jarvis.reply.enrichment.call_llm_direct(*, cfg, chat_model, ...)` — memory enrichment extractor + digest passes.
-- `jarvis.memory.graph_ops.call_llm_direct(*, cfg, chat_model, ...)` — knowledge graph extraction, best-child picker, node merge.
-- `jarvis.memory.conversation._direct_llm(cfg, system_prompt, user_content, ...)` — diary summary, deflection rewrite, topic optimisation.
-- `jarvis.tools.builtin.nutrition.log_meal.call_llm_direct(*, cfg, chat_model, ...)` — nutrition extractor + follow-up generator.
-- `jarvis.tools.builtin.weather.get_llm_backend` — hoisted to module scope so the place extractor's backend lookup is patchable.
-
-A factory-dispatch wiring guard at `tests/test_factory_dispatch_wiring.py` parametrises across each migrated module and asserts the wrapper actually constructs `OpenAICompatibleBackend` for `llm_provider: openai_compatible` and `OllamaBackend` for `ollama`. A regression that drops `get_llm_backend(cfg)` from a wrapper would bypass every unit test but trip this guard.
-
-`import requests` is re-exported from the package `__init__.py` so tests that patch `jarvis.llm.requests.post` keep working without reaching into the per-backend modules.
+- `POST /chat/completions`, `POST /embeddings`, `GET /models`
+- Server-Sent Events streaming
+- Tool-call argument strings decoded to dictionaries on responses and encoded on subsequent requests
+- Ollama-only request options omitted
+- Optional `Authorization: Bearer` header
 
 ## File layout
 
-```
+```text
 src/jarvis/llm/
-├── __init__.py             # public re-exports + function-style helpers
-├── backend.py              # LLMBackend ABC + ToolsNotSupportedError
-├── ollama.py               # OllamaBackend + extract_text_from_response
-├── openai_compatible.py    # OpenAICompatibleBackend + _normalise_response
-├── factory.py              # get_llm_backend(cfg) + get_embedding_backend(cfg)
-└── llm.spec.md             # this file
+├── backend.py
+├── factory.py
+├── ollama.py
+├── openai_compatible.py
+├── route.py
+├── route_state.py
+├── route_catalogue.py
+├── probe.py
+├── tiers.py
+└── llm.spec.md
 ```
-
-## Failure handling
-
-Backends fail soft for transient issues so the reply engine can degrade gracefully: timeouts and HTTP errors return `None` (or `[]` for `list_models`); HTTP 400 with `tools` set raises `ToolsNotSupportedError`; any other unexpected error is logged via `debug_log("...", "llm")` and returns `None`. The one exception is `requests.ConnectionError` (server unreachable), which `chat()` re-raises so callers like the intent judge can apply their own back-off — voice, for example, wants a 30s cooldown after a connection-refused error so it stops hammering an unresponsive Ollama between wake words.

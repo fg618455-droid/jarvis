@@ -112,15 +112,16 @@ Here's a quick snapshot of today's headlines...
 How about the Fermi Paradox? Given the vast number of stars...
 ```
 
-**Echo detection** (Jarvis ignores its own speech):
+**Wake acknowledgement** (a standalone wake word collects one request):
 ```
+  📝 Heard: "Jarvis"
+👂 Ja, ich bin bereit. Was kann ich für Sie tun?
+
+  📝 Heard: "Open YouTube"
+✨ Working on it: open YouTube
+
 🤖 Jarvis
 I have opened YouTube for you.
-
-👂 Listening for follow-up (3s)...
-  📝 Heard: "I have opened YouTube for you."
-  🔇 Heard (echo): "i have opened youtube for you."
-💤 Returning to wake word mode
 ```
 
 </details>
@@ -162,12 +163,14 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 
 - **Conversational Awareness** - Understands ongoing discussions. Ask "Jarvis, what do you think?" and it knows what you're talking about. Works naturally in multi-person conversations.
 - **Text Chat** - Type to Jarvis alongside voice. Voice and text share one conversation, so a follow-up typed in the chat window continues a voice discussion. Text never speaks. Open it from the tray menu (`💬 Chat`) while Jarvis is listening. The window is styled like an SMS thread with a single contact: speech bubbles, timestamps, and an online/typing presence line. It shows a local status banner while Jarvis starts, stops, or needs to be restarted, and every message you send carries a rewind button that rolls the conversation back to that point and regenerates the reply.
-- **Unlimited Memory** - Never forgets. Searches across all your conversation history. Memory Viewer GUI included.
+- **Unlimited Memory** - Never forgets. Searches across all your conversation history. Browse and edit it in the Control Centre.
+- **Control Centre** - A local web interface the daemon serves at `http://127.0.0.1:5055`: live state, memory, conversation, tools, security, technical readings, and every setting. Offline, no build step, nothing leaves the machine.
 - **Adaptive Tone** - Automatically surgical for code, pragmatic for business, encouraging for wellbeing — no manual mode switching
 - **Smart Tool Selection** - Embedding-based relevance filtering picks only the tools needed per query — add unlimited MCP tools without performance degradation
 - **Built-in Tools** - Screenshot OCR, web search (DuckDuckGo → Brave → Wikipedia fallback chain with auto-fetch), weather, current time in any city or timezone, file access, nutrition tracking, location awareness, plus a tool-discovery escape hatch the agent uses to widen its own toolset mid-reply
 - **Knowledge Graph Memory** - Self-organising memory that learns from conversations, auto-splits by topic, and surfaces relevant knowledge automatically
-- **Natural Voice** - Say "Jarvis" anywhere in your sentence, interrupt with "stop", follow up without repeating the wake word
+- **Natural Voice** - Say "Jarvis" anywhere in your sentence, interrupt with "stop", then follow up without repeating the wake word
+- **Fast Stop** - Use the tray action `⚡ Stop Now (Skip Diary)` to release local model resources quickly when you need your machine back immediately.
 - **Dictation Mode** - Free, offline alternative to WisprFlow — hold a hotkey, speak, release to paste text into any app
 - **MCP Integration** - Connect to thousands of external tools (Home Assistant, GitHub, Slack, etc.)
 
@@ -194,9 +197,37 @@ Most users won't need to change anything. Open **⚙️ Settings** from the tray
 </p>
 
 <details>
-<summary><strong>LLM Provider (Ollama or OpenAI-compatible)</strong></summary>
+<summary><strong>Security confirmations</strong></summary>
 
-By default Jarvis runs everything locally through [Ollama](https://ollama.com): no API keys, nothing leaves your machine. If you already run an OpenAI-compatible server you can point Jarvis at it instead. Your data still only travels to the servers you control.
+Jarvis asks before sensitive tool execution. The default `critical` level protects every MCP tool, meal deletion, and local file writes, appends, or deletion. Set `paranoid` to confirm every tool, or `off` only in a controlled development environment.
+
+Configure the order under **⚙️ Settings → 🔐 Security**. Jarvis skips channels that are not configured or cannot open. A refusal or timeout denies the tool immediately, and no available channel also denies it.
+
+- **Desktop** shows the tool and arguments in a local Qt dialog and needs no credentials.
+- **Telegram** sends Approve and Deny buttons to one authorised chat. Create a bot with BotFather, send the bot a message, then configure the bot token and chat ID. You can use the settings window or the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` environment variables, and a configured value wins over the environment. This option sends the displayed tool name and arguments to whichever Bot API server `telegram_api_base_url` names, which is Telegram's by default. Telegram publishes the Bot API server as software, so pointing that key at your own instance keeps the traffic on your machine.
+- **Voice/console** asks for a random four-digit code. Voice is the weakest option because anyone in the room can hear and repeat the code.
+
+```json
+{
+  "security_level": "critical",
+  "security_confirm_channels": ["desktop", "telegram", "voice"],
+  "security_confirmation_timeout_sec": 60,
+  "telegram_bot_token": "",
+  "telegram_chat_id": "",
+  "telegram_api_base_url": "https://api.telegram.org"
+}
+```
+
+Telegram is optional and remains unavailable until both credentials are set. Jarvis continues to work locally with desktop and voice confirmation when Telegram is not configured.
+
+</details>
+
+<details>
+<summary><strong>LLM routes (local or OpenAI-compatible)</strong></summary>
+
+By default Jarvis runs everything locally through [Ollama](https://ollama.com): no API keys, nothing leaves your machine. Optional generic OpenAI-compatible routes can serve the FAST and CHAT lanes. Each configured chain falls back in order and ends at local Ollama.
+
+Diary summaries, topic cleanup, knowledge-graph writes, and embeddings always use loopback Ollama. Cloud-routed memory reads send only the snippets selected for that call. Changing the embedding model or endpoint is deliberately unsupported because it would invalidate the stored vector space.
 
 Pick the provider in the Setup Wizard's first step, or under **⚙️ Settings → 🔌 LLM Provider**. No JSON editing required. On the OpenAI-compatible page the wizard does the legwork for you: it auto-detects running local servers, offers a one-click preset for your app, and when you press **Connect** it loads the server's model list and checks the chosen model for chat, tool calling, and embeddings, so you know it works before you finish setup.
 
@@ -212,32 +243,37 @@ Tested local servers (all run on your own machine):
 | vLLM | `http://localhost:8000/v1` | Tool calling depends on the model. |
 | oMLX (Apple Silicon) | varies | No embeddings endpoint, so memory uses keyword search unless you route embeddings to Ollama (below). |
 
-For reference, the underlying config keys are:
+The control centre's **LLM routes** view shows active routes, cooldowns, failures, and masked keys. It performs no outbound request until you press **Probe models**. A route entry has this shape:
 
 ```json
 {
-  "llm_provider": "openai_compatible",
-  "llm_base_url": "http://localhost:1234/v1",
-  "llm_api_key": "",
-  "llm_chat_model": "your-served-model-name"
+  "llm_routes": [
+    {
+      "name": "my-chat-endpoint",
+      "provider": "openai_compatible",
+      "base_url": "http://localhost:1234/v1",
+      "api_key": "",
+      "model": "your-served-model-name",
+      "tier": "chat",
+      "timeout_sec": 4.0
+    }
+  ]
 }
 ```
 
-- `llm_base_url`: your server's OpenAI API base URL.
-- `llm_api_key`: only if your server requires one; leave empty otherwise.
-- `llm_chat_model`: whatever model name your server exposes.
-- `fast_model` (optional): the small, quick model used for real-time work (voice intent, tool routing, quick classifications). Leave empty for automatic: `gemma4:e2b` on Ollama, your chat model on an OpenAI-compatible server. Set it to pin a dedicated small model.
+- `tier` is `fast` for short classification work or `chat` for replies and planning.
+- `timeout_sec` is a per-route deadline. A timeout moves the call to the next candidate.
+- HTTP rate limits and quota resets are persisted in `~/.jarvis/llm_routes_state.json`, so restarting does not immediately retry a blocked key.
+- HTTP 401 and 403 responses remove the key for the process lifetime.
 
-**Embeddings** (used for memory search) can run on a different backend. If your chat server has no embeddings endpoint, memory falls back to keyword search. To keep full semantic memory, route embeddings to Ollama (the wizard offers this automatically when it detects a server that cannot embed):
+To inspect current catalogues and import FCC credentials once:
 
-```json
-{
-  "embedding_provider": "ollama",
-  "embedding_model": "nomic-embed-text"
-}
+```bash
+python -m jarvis.llm.probe
+python scripts/import_fcc_keys.py
 ```
 
-Leave `embedding_provider` empty to use the same provider as chat. With no working embeddings, memory search degrades gracefully to keyword search.
+Neither command prints a credential. The importer writes only routes whose endpoint advertises a model during that run. Config and route-state files are restricted to the current user where POSIX permissions are available.
 
 </details>
 
@@ -279,6 +315,8 @@ is ready. The first LLM-backed request after startup or idle may be slower.
 
 Speed is relative to the original large model. [Source](https://github.com/openai/whisper)
 
+`whisper_model` also accepts a Hugging Face repo ID (`"deepdml/faster-whisper-large-v3-turbo-ct2"`) or a directory holding a converted model, which is how you run a model this table does not name.
+
 #### GPU Acceleration (Windows)
 If you have an NVIDIA GPU, Jarvis can use CUDA for much faster speech recognition. The Windows installer offers an optional CUDA download during setup. For development:
 ```bash
@@ -286,20 +324,25 @@ pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 ```
 CUDA is detected automatically — no configuration needed.
 
-#### Hallucination Filters
-Whisper sometimes produces confident but false transcriptions during silence or background noise (e.g. news-show intros, music). Two thresholds filter these out before they reach the intent judge:
+#### Spoken Language
+- `"whisper_language": ""` — the ISO-639-1 code of the language you speak, e.g. `de` or `ja`. Left empty, Whisper identifies the language on every utterance. Naming it skips that pass (noticeably faster) and stops Whisper from wandering into another language on noisy input. Words you borrow from other languages still transcribe correctly. The setting covers dictation too.
 
+#### Hallucination Filters
+Whisper sometimes produces confident but false transcriptions during silence or background noise (e.g. news-show intros, music). These filter them out before they reach the intent judge:
+
+- `"whisper_vad": true` — runs Whisper's own voice-activity detection and discards non-speech audio before decoding. This is the only filter that catches the stock phrase Whisper invents from room noise, because that transcript looks confident by every other measure. Turn it off only if short interjections are being swallowed.
 - `"whisper_min_confidence": 0.3` — drops segments whose `avg_logprob`-derived confidence falls below this value. Raise if you see low-confidence noise leaking through; lower if real speech is being dropped.
 - `"whisper_no_speech_threshold": 0.5` — drops any segment whose `no_speech_prob` is at or above this value, regardless of `avg_logprob`. Catches the case where Whisper is confident about a hallucinated phrase but its own no-speech signal says the audio was silent. Applies to both the faster-whisper and MLX backends.
+- `"whisper_min_language_probability": 0.0` — drops an utterance when Whisper is unsure which language it heard, which is how noise hallucinations tend to look. `0.85` is a workable setting. Has no effect when `whisper_language` is set, since a named language is reported as certain by definition.
 
-Both thresholds are exposed in the Settings window under *Whisper*.
+All of these are exposed in the Settings window under *Whisper*.
 
 </details>
 
 <details>
 <summary><strong>Voice Interface (Advanced)</strong></summary>
 
-**LLM Intent Judge** - Jarvis uses a small LLM for intelligent voice intent classification (echo detection, query extraction, stop commands). On the default Ollama setup this is `gemma4:e2b`, installed automatically alongside your chosen chat model during setup. On an OpenAI-compatible provider the judge uses your served chat model instead, so there is nothing extra to install. The intent judge cannot be disabled but gracefully falls back to simpler text matching if the LLM server is unavailable.
+**LLM Intent Judge** - Jarvis uses a small LLM for contextual voice intent classification and query extraction. An assistant name at the first or last spoken token takes a deterministic fast path; interior mentions and wake-word-free follow-ups use the judge. On the default Ollama setup this is `gemma4:e2b`, installed automatically alongside your chosen chat model during setup. On an OpenAI-compatible provider the judge uses your served chat model instead, so there is nothing extra to install. The intent judge cannot be disabled but gracefully falls back to simpler text matching if the LLM server is unavailable.
 
 **Tool Router** - When `"tool_selection_strategy": "llm"` (the default), Jarvis asks the fast model to pick which tools are relevant for each query, shrinking the tool catalogue the chat model sees. It's already warm and small enough not to stall the turn. Other strategies: `"keyword"` (fast, no LLM), `"embedding"` (nomic-embed-text), `"all"` (no filtering).
 
@@ -588,7 +631,7 @@ Get API key at [composio.dev](https://composio.dev)
 
 **Linux: No tray icon** - `sudo apt install libayatana-appindicator3-1`
 
-**Jarvis keeps deflecting on questions it answered before** - small models can record their own past failures into the diary, which then primes future sessions to repeat them. New writes are scrubbed automatically; to clean historical entries, open the Memory Viewer, switch to the Diary tab, and click **Clean up deflection narration** in the sidebar Maintenance section. Only sentences that narrate the assistant's failures are removed; the rest of each entry stays.
+**Jarvis keeps deflecting on questions it answered before** - small models can record their own past failures into the diary, which then primes future sessions to repeat them. New writes are scrubbed automatically; to clean stored entries, open the control centre's **Memory** view and choose **Clean deflection narration** in the **Maintenance** section. Only sentences that narrate the assistant's failures are removed; the rest of each entry stays.
 
 </details>
 

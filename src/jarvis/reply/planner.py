@@ -41,6 +41,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from ..debug import debug_log
 from ..llm import get_llm_backend, resolve_model, Tier
+from ..runtime import stage as telemetry_stage
 
 
 def call_llm_direct(*, cfg, chat_model, system_prompt, user_content,
@@ -451,6 +452,20 @@ def plan_query(
 
     if not getattr(cfg, "planner_enabled", True):
         return []
+
+    with telemetry_stage("planner"):
+        return _plan_query(cfg, query, dialogue_context, tools, timeout_sec=timeout_sec)
+
+
+def _plan_query(
+    cfg,
+    query: str,
+    dialogue_context: str,
+    tools: Sequence[Tuple[str, str]],
+    *,
+    timeout_sec: Optional[float] = None,
+) -> List[str]:
+    """Ask the planning model for an ordered list of sub-tasks."""
 
     # Planning runs on the CHAT tier: the plan is the scaffolding the chat
     # model then follows, so the two must be matched — a weaker planner on a

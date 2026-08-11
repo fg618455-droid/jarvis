@@ -17,24 +17,30 @@ os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
 os.environ.setdefault('MKL_NUM_THREADS', '1')
 os.environ.setdefault('OMP_NUM_THREADS', '1')
 
-# Fix Windows console encoding for Unicode/emoji characters
+# Windows consoles default to a codepage that cannot render the emoji this
+# app prints, so the streams are reconfigured in place.
+#
+# In place matters: wrapping ``sys.stdout.buffer`` in a fresh TextIOWrapper
+# hands ownership of that buffer to an object nothing holds a reference to,
+# and closing it on collection takes the original stream down with it. Any
+# process that captures stdout, a test runner above all, then loses it the
+# moment this module is imported.
+#
+# Only the real console streams are touched. Test harnesses (pytest) and
+# embedding code substitute their own capture objects for sys.stdout/stderr,
+# and reconfiguring those corrupts capture for the rest of the process.
+#
 # Skip in bundled mode (frozen) - encoding is handled by desktop_app.py
 if sys.platform == 'win32' and not getattr(sys, 'frozen', False):
-    try:
-        import io
-        # Only wrap the real console streams. Test harnesses (pytest) and
-        # embedding code replace sys.stdout/sys.stderr with their own capture
-        # objects; wrapping those detaches and closes their buffers, which
-        # corrupts output capture for the rest of the process.
-        if (sys.stdout is sys.__stdout__ and hasattr(sys.stdout, 'buffer')
-                and hasattr(sys.stdout.buffer, 'write')):
-            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-        if (sys.stderr is sys.__stderr__ and hasattr(sys.stderr, 'buffer')
-                and hasattr(sys.stderr.buffer, 'write')):
-            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-    except Exception:
-        pass
+    for _stream, _real in ((sys.stdout, sys.__stdout__), (sys.stderr, sys.__stderr__)):
+        if _stream is not _real or _stream is None:
+            continue
+        try:
+            _stream.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
 
+from pathlib import Path
 from typing import Optional
 from faster_whisper import WhisperModel
 
@@ -310,6 +316,18 @@ def _notify_chat(event_type: str, data, *, callbacks: dict, use_ipc: bool) -> No
         _emit_chat_event(event_type, data)
 
 
+def chat_query_lock() -> threading.Lock:
+    """The lock every reply-engine entry point shares.
+
+    Voice, the desktop chat window and the control centre's typed turns all
+    run the engine against the same dialogue memory, so exactly one of them
+    may hold this at a time. Callers that can afford to wait use
+    ``query_lock``; callers that must answer immediately acquire it
+    non-blocking and refuse when it is taken.
+    """
+    return _chat_query_lock
+
+
 @contextlib.contextmanager
 def query_lock():
     """Context manager that acquires the shared voice+text query lock (blocking).
@@ -582,6 +600,15 @@ def get_tts_engine():
     return _global_tts_engine
 
 
+def get_dialogue_memory():
+    """The running dialogue memory, or None when no daemon is up.
+
+    A typed turn from the control centre shares the spoken conversation
+    when the daemon is running, and stands alone when it is not.
+    """
+    return _global_dialogue_memory
+
+
 def get_dictation_engine():
     """Get the global dictation engine (used by desktop app for history window)."""
     return _global_dictation_engine
@@ -767,6 +794,34 @@ def main(smoke_test: bool = False) -> None:
     print(f"🧠 Using chat model: {cfg.llm_chat_model}", flush=True)
     print(f"🎤 Using whisper model: {cfg.whisper_model}", flush=True)
 
+    # Live state and per-turn timings, described before anything can report.
+    from .runtime import Phase, get_recorder, get_runtime_state, set_phase
+
+    runtime_state = get_runtime_state()
+    runtime_state.reset()
+    runtime_state.describe_models(
+        chat=cfg.llm_chat_model,
+        fast=getattr(cfg, "fast_model", "") or cfg.llm_chat_model,
+        embedding=cfg.embedding_model,
+        whisper=cfg.whisper_model,
+        whisper_device=cfg.whisper_device,
+        tts_engine=cfg.tts_engine,
+        tts_voice=getattr(cfg, "tts_piper_model_path", None) or cfg.tts_voice,
+    )
+    runtime_state.describe_audio(
+        device=cfg.voice_device,
+        sample_rate=cfg.sample_rate,
+        wake_word=cfg.wake_word,
+        language=getattr(cfg, "whisper_language", "") or "auto",
+    )
+    get_recorder().use_journal(Path(cfg.db_path).parent / "turns.jsonl")
+
+    # Control centre: started early so the interface is already reachable
+    # while Whisper and the models are still loading.
+    from .webui import start_from_settings as _start_webui
+
+    webui_server = _start_webui(cfg)
+
     # MCP preflight: discover and cache external MCP tools
     mcps = getattr(cfg, "mcps", {}) or {}
     if mcps:
@@ -863,13 +918,13 @@ def main(smoke_test: bool = False) -> None:
 
     # Knowledge graph: wipe + re-seed if the on-disk shape predates the
     # User/Directives/World taxonomy. Non-destructive to the diary —
-    # users can re-import via the memory viewer.
+    # users can re-import from the control centre's Memory view.
     try:
         from .memory.graph import GraphMemoryStore
         _graph_store_boot = GraphMemoryStore(cfg.db_path)
         if _graph_store_boot.migrate_legacy_shape():
             print("🧹 Wiped legacy knowledge graph; re-seeded User / Directives / World branches", flush=True)
-            print("   📥 Open the memory viewer and use 'Import from Diary' to repopulate.", flush=True)
+            print("   📥 Open the control centre's Memory view and use 'Import diary' to repopulate.", flush=True)
         _graph_store_boot.close()
     except Exception as e:
         debug_log(f"graph legacy-shape migration failed (non-fatal): {e}", "memory")
@@ -928,7 +983,12 @@ def main(smoke_test: bool = False) -> None:
     voice_thread: Optional[threading.Thread] = None
     voice_thread = VoiceListener(db, cfg, tts, _global_dialogue_memory)
     voice_thread.start()
+    from .security.voice_confirm import set_voice_confirmation_requester
+    set_voice_confirmation_requester(
+        voice_thread.request_security_confirmation if tts.enabled else None
+    )
     print("✓ Voice listener thread started (loading Whisper model in background)", flush=True)
+    set_phase(Phase.IDLE)
 
     # Initialize dictation engine (hold-to-dictate)
     dictation = None
@@ -1009,6 +1069,7 @@ def main(smoke_test: bool = False) -> None:
                 voice_thread.join(timeout=2.0)
             except Exception:
                 pass
+        set_voice_confirmation_requester(None)
 
         if tts is not None:
             try:
@@ -1031,6 +1092,9 @@ def main(smoke_test: bool = False) -> None:
             except Exception:
                 pass
             _warm_profile_graph_listener = None
+
+        if webui_server is not None:
+            webui_server.stop()
 
         # Reset module-level globals so in-process re-entry is clean.
         _global_dialogue_memory = None
@@ -1062,6 +1126,23 @@ def main(smoke_test: bool = False) -> None:
                     request_stop()
                     break
                 stripped = line.strip()
+                if stripped.startswith("SECURITY_CONFIRM_RESPONSE:"):
+                    try:
+                        import json as _json
+                        from .security.desktop_confirm import resolve_desktop_confirmation
+
+                        payload = _json.loads(stripped.split(":", 1)[1])
+                        resolve_desktop_confirmation(
+                            str(payload["request_id"]),
+                            bool(payload.get("approved", False)),
+                        )
+                    except Exception as exc:
+                        debug_log(f"invalid desktop confirmation response: {exc}", "security")
+                    continue
+                if stripped == SHUTDOWN_SKIP_DIARY_COMMAND:
+                    debug_log("fast shutdown command received, skipping diary update", "jarvis")
+                    request_stop(skip_diary_update=True)
+                    break
                 if stripped == "SHUTDOWN":
                     debug_log("SHUTDOWN command received, requesting stop", "jarvis")
                     request_stop()
@@ -1082,16 +1163,17 @@ def main(smoke_test: bool = False) -> None:
             pass  # stdin might not be available
 
     # Run the monitor on Windows (shutdown signal) and whenever the desktop
-    # app explicitly signals it owns our stdin (subprocess chat query-in on
-    # any platform). The desktop app sets JARVIS_STDIN_IPC=1 when spawning us
-    # so that a bare ``python -m jarvis.main < /dev/null`` (or a systemd unit
-    # with StandardInput=null) does NOT start the monitor and immediately exit
-    # on EOF. Bundled mode uses a QThread, not a subprocess, so it's skipped.
+    # app explicitly signals it owns our stdin (subprocess chat query-in and
+    # security confirmations on any platform). The desktop app sets
+    # JARVIS_STDIN_IPC=1 when spawning us so that a bare
+    # ``python -m jarvis.main < /dev/null`` (or a systemd unit with
+    # StandardInput=null) does NOT start the monitor and immediately exit on
+    # EOF. Bundled mode uses a QThread, not a subprocess, so it's skipped.
     _start_stdin_monitor = (
-        (sys.platform == "win32" and not getattr(sys, 'frozen', False))
-        or (
-            not getattr(sys, 'frozen', False)
-            and os.environ.get("JARVIS_STDIN_IPC") == "1"
+        not getattr(sys, 'frozen', False)
+        and (
+            sys.platform == "win32"
+            or os.environ.get("JARVIS_STDIN_IPC") == "1"
         )
     )
     if _start_stdin_monitor:
@@ -1120,6 +1202,8 @@ def main(smoke_test: bool = False) -> None:
     finally:
         print("🔄 Daemon shutting down - saving memory...", flush=True)
         debug_log("daemon finally block starting - performing cleanup", "jarvis")
+        from .security.voice_confirm import set_voice_confirmation_requester
+        set_voice_confirmation_requester(None)
 
         # Clean shutdown - stop dictation first
         if dictation is not None:
@@ -1187,6 +1271,9 @@ def main(smoke_test: bool = False) -> None:
             except Exception:
                 pass
             _warm_profile_graph_listener = None
+
+        if webui_server is not None:
+            webui_server.stop()
 
         debug_log("daemon stopped", "jarvis")
         print("👋 Daemon stopped", flush=True)

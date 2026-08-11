@@ -7,7 +7,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Iterator, Optional, List, Tuple, Union, Callable
 from .db import Database
-from ..llm import get_embedding_backend, get_llm_backend
+from ..llm import Tier, get_embedding_backend, get_llm_backend, resolve_model
 from ..debug import debug_log
 from ..utils.redact import redact, scrub_secrets
 
@@ -19,7 +19,7 @@ def _direct_llm(cfg, system_prompt: str, user_content: str, *,
     ``conversation._direct_llm`` to capture every diary/summary LLM round-trip
     without reaching through the backend ABC."""
     return get_llm_backend(cfg).direct(
-        cfg.llm_chat_model, system_prompt, user_content,
+        resolve_model(cfg, Tier.PRIVATE), system_prompt, user_content,
         timeout_sec=timeout_sec, thinking=thinking,
         max_tokens=max_tokens,
     )
@@ -30,7 +30,7 @@ def _stream_llm(cfg, system_prompt: str, user_content: str, *,
                 timeout_sec: float = 30.0, thinking: bool = False) -> Optional[str]:
     """Streaming counterpart to ``_direct_llm`` — same patch-point property."""
     return get_llm_backend(cfg).streaming(
-        cfg.llm_chat_model, system_prompt, user_content,
+        resolve_model(cfg, Tier.PRIVATE), system_prompt, user_content,
         on_token=on_token, timeout_sec=timeout_sec, thinking=thinking,
     )
 
@@ -1817,7 +1817,7 @@ def update_diary_from_dialogue_memory(
                         store=graph_store,
                         summary=summary_text,
                         cfg=cfg,
-                        chat_model=cfg.llm_chat_model,
+                        chat_model=resolve_model(cfg, Tier.PRIVATE),
                         timeout_sec=graph_timeout,
                         thinking=thinking,
                         date_utc=today,

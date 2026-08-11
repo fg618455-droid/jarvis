@@ -60,6 +60,11 @@ def test_mcp_tool_execution_in_context():
         def __init__(self):
             self.mcps = {"test-server": {"command": "fake"}}
             self.voice_debug = False
+            self.security_level = "off"
+            self.security_confirm_channels = []
+            self.security_confirmation_timeout_sec = 60
+            self.telegram_bot_token = ""
+            self.telegram_chat_id = ""
     
     # Mock successful execution
     class FakeMCPClient:
@@ -97,6 +102,11 @@ def test_mcp_error_handling_in_context():
         def __init__(self):
             self.mcps = {"test-server": {"command": "fake"}}
             self.voice_debug = False
+            self.security_level = "off"
+            self.security_confirm_channels = []
+            self.security_confirmation_timeout_sec = 60
+            self.telegram_bot_token = ""
+            self.telegram_chat_id = ""
     
     # Mock failing execution
     class FailingMCPClient:
@@ -138,6 +148,11 @@ def test_mcp_exception_with_empty_message_still_yields_diagnosable_error():
         def __init__(self):
             self.mcps = {"test-server": {"command": "fake"}}
             self.voice_debug = False
+            self.security_level = "off"
+            self.security_confirm_channels = []
+            self.security_confirmation_timeout_sec = 60
+            self.telegram_bot_token = ""
+            self.telegram_chat_id = ""
 
     class TimingOutMCPClient:
         def __init__(self, config):

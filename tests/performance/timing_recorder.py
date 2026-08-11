@@ -34,6 +34,8 @@ from jarvis import llm as _llm_module
 # — the perf harness silently buckets unknown callers into "other:<qualname>"
 # so drift here is visible but not loud.
 _CALLER_TO_CONTEXT: dict[str, str] = {
+    # Startup reply-prefix prefill
+    "warm_up_reply_prefix": "reply_prefix_warmup",
     # Context 1 — main chat loop uses chat_with_messages
     "run_reply_engine": "main_chat_turn",
     # Context 2 — intent judge (calls via internal helper)

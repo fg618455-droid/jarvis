@@ -5,6 +5,7 @@ import sys
 import re
 import requests
 import threading
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import os
@@ -25,6 +26,7 @@ from .types import ToolExecutionResult
 from ..config import Settings
 from .external.mcp_client import MCPClient
 from ..debug import debug_log
+from ..runtime import Phase, record_tool, set_phase_if
 
 
 # Registry of all builtin tools
@@ -317,15 +319,95 @@ def run_tool_with_retries(
     max_retries: int = 1,
     language: Optional[str] = None,
 ) -> ToolExecutionResult:
+    """Run one tool through the security gate and time it.
+
+    Every tool the assistant runs, builtin or MCP, passes through here, so
+    this is where a turn learns what it called and how long each call took.
+    """
+    begun = time.perf_counter()
+    set_phase_if(Phase.THINKING, Phase.TOOL)
+    try:
+        result = _run_tool_with_retries(
+            db, cfg, tool_name, tool_args, system_prompt,
+            original_prompt, redacted_text, max_retries, language,
+        )
+    except Exception as exc:
+        record_tool(
+            (tool_name or "").strip(),
+            (time.perf_counter() - begun) * 1000.0,
+            ok=False,
+            error=str(exc),
+        )
+        raise
+    finally:
+        set_phase_if(Phase.TOOL, Phase.THINKING)
+    record_tool(
+        (tool_name or "").strip(),
+        (time.perf_counter() - begun) * 1000.0,
+        ok=result.success,
+        error=result.error_message,
+        confirmed=None if result.success else _was_denied(result),
+    )
+    return result
+
+
+def _was_denied(result: ToolExecutionResult) -> Optional[bool]:
+    """Whether a failed result was a refusal rather than a fault."""
+    message = result.error_message or ""
+    return False if "denied by security confirmation" in message else None
+
+
+def _run_tool_with_retries(
+    db,
+    cfg: Settings,
+    tool_name: str,
+    tool_args: Optional[Dict[str, Any]],
+    system_prompt: str,
+    original_prompt: str,
+    redacted_text: str,
+    max_retries: int = 1,
+    language: Optional[str] = None,
+) -> ToolExecutionResult:
     # Normalize tool name to canonical camelCase
     raw_name = (tool_name or "").strip()
     name = raw_name
+
+    # Friendly user print helper (non-debug only)
+    def _user_print(message: str) -> None:
+        # 4-space indent: tool messages happen INSIDE an agentic-loop
+        # turn. The turn header (`  🔁 Turn N/M`) sits at 2 spaces, so
+        # per-tool activity nests one level deeper for visual hierarchy.
+        if not getattr(cfg, "voice_debug", False):
+            try:
+                print(f"    {message}")
+            except Exception:
+                pass
+
+    def _security_allows_tool() -> bool:
+        from jarvis.security.gate import SecurityGate
+
+        try:
+            gate = SecurityGate.get_or_create(cfg)
+            return gate.confirm(raw_name, tool_args or {})
+        except Exception as exc:
+            debug_log(f"security gate failed closed for {raw_name}: {exc}", "security")
+            return False
+
+    def _denied_result() -> ToolExecutionResult:
+        _user_print(f"🔒 {raw_name} was denied by the security gate.")
+        return ToolExecutionResult(
+            success=False,
+            reply_text=None,
+            error_message="Tool execution denied by security confirmation.",
+        )
 
     # Check if tool name is a discovered MCP tool (server__toolname format)
     if "__" in raw_name:
         server_name, mcp_tool_name = raw_name.split("__", 1)
         mcps_config = getattr(cfg, "mcps", {})
         if mcps_config and server_name in mcps_config:
+            if not _security_allows_tool():
+                return _denied_result()
             try:
                 if MCPClient is None:
                     return ToolExecutionResult(success=False, reply_text=None, error_message="MCP client not available. Install 'mcp' package.")
@@ -339,19 +421,10 @@ def run_tool_with_retries(
                 detail = str(e) or type(e).__name__
                 return ToolExecutionResult(success=False, reply_text=None, error_message=f"MCP tool '{raw_name}' error: {detail}")
 
-    # Friendly user print helper (non-debug only)
-    def _user_print(message: str) -> None:
-        # 4-space indent: tool messages happen INSIDE an agentic-loop
-        # turn. The turn header (`  🔁 Turn N/M`) sits at 2 spaces, so
-        # per-tool activity nests one level deeper for visual hierarchy.
-        if not getattr(cfg, "voice_debug", False):
-            try:
-                print(f"    {message}")
-            except Exception:
-                pass
-
     # Check builtin tools first
     if name in BUILTIN_TOOLS:
+        if not _security_allows_tool():
+            return _denied_result()
         tool = BUILTIN_TOOLS[name]
         return tool.execute(
             db=db,

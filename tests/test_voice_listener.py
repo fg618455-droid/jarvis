@@ -1694,7 +1694,13 @@ class TestLlmWarmup:
 
         assert len(threads) == 3
         assert chat_warm.call_args.args[1] == "llama3.1"
-        assert mock_embed_backend.embed.call_args.args == ("ping", "nomic-embed-text")
+        embedded_texts = [call.args[0] for call in mock_embed_backend.embed.call_args_list]
+        assert embedded_texts
+        assert all(":" in text for text in embedded_texts)
+        assert all(
+            call.args[1] == "nomic-embed-text"
+            for call in mock_embed_backend.embed.call_args_list
+        )
         assert listener._llm_warmup_results["embed"] == ("nomic-embed-text", True)
 
     def test_skips_embed_warmup_when_empty(self):

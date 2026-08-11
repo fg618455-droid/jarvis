@@ -12,6 +12,8 @@ from pathlib import Path
 
 from unittest.mock import patch
 
+import pytest
+
 
 def _write_ips(path: Path, mtime: float, *, app_name: str = "Jarvis",
                exc_type: str = "SIGABRT", indicator: str = "DirtyVM_FLUSH",
@@ -45,6 +47,17 @@ def _fresh_mtime() -> float:
 
 
 class TestCollectMacosCrashReport:
+    @pytest.fixture(autouse=True)
+    def _on_macos(self):
+        """Run these as if on macOS whatever the host is.
+
+        The collector returns None immediately off darwin, so without this
+        every assertion below either passes vacuously or fails for a reason
+        that has nothing to do with the parsing being tested.
+        """
+        with patch("sys.platform", "darwin"):
+            yield
+
     def test_returns_none_when_diagnostics_dir_missing(self, tmp_path):
         from desktop_app.app import collect_macos_crash_report
         crash_log = tmp_path / "jarvis_desktop_crash.log"

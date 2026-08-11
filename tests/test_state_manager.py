@@ -1,8 +1,7 @@
 """
 Tests for voice listening state manager.
 
-These tests verify the state transitions, timer-based hot window management,
-and query collection behavior.
+These tests verify the state transitions and timer-based hot window management.
 """
 
 import time
@@ -21,28 +20,6 @@ class TestStateTransitions:
         sm = StateManager()
         assert sm.get_state() == ListeningState.WAKE_WORD
 
-    def test_start_collection_changes_state(self):
-        """Starting collection changes state to COLLECTING."""
-        sm = StateManager()
-        sm.start_collection("hello")
-        assert sm.get_state() == ListeningState.COLLECTING
-
-    def test_clear_collection_returns_to_wake_word(self):
-        """Clearing collection returns to WAKE_WORD state."""
-        sm = StateManager()
-        sm.start_collection("hello")
-        sm.clear_collection()
-        assert sm.get_state() == ListeningState.WAKE_WORD
-
-    def test_is_collecting_helper(self):
-        """is_collecting() accurately reflects state."""
-        sm = StateManager()
-        assert sm.is_collecting() is False
-        sm.start_collection("test")
-        assert sm.is_collecting() is True
-        sm.clear_collection()
-        assert sm.is_collecting() is False
-
     def test_is_hot_window_active_helper(self):
         """is_hot_window_active() accurately reflects state."""
         sm = StateManager()
@@ -50,62 +27,6 @@ class TestStateTransitions:
         # Force hot window state for testing
         sm._state = ListeningState.HOT_WINDOW
         assert sm.is_hot_window_active() is True
-
-
-class TestQueryCollection:
-    """Tests for query collection functionality."""
-
-    def test_start_collection_stores_initial_text(self):
-        """Starting collection stores initial text."""
-        sm = StateManager()
-        sm.start_collection("hello world")
-        assert sm.get_pending_query() == "hello world"
-
-    def test_add_to_collection_appends_text(self):
-        """Adding to collection appends text."""
-        sm = StateManager()
-        sm.start_collection("hello")
-        sm.add_to_collection("world")
-        assert sm.get_pending_query() == "hello world"
-
-    def test_add_to_collection_only_works_when_collecting(self):
-        """Adding to collection only works in COLLECTING state."""
-        sm = StateManager()
-        sm.add_to_collection("ignored")
-        assert sm.get_pending_query() == ""
-
-    def test_clear_collection_returns_query(self):
-        """Clearing collection returns the accumulated query."""
-        sm = StateManager()
-        sm.start_collection("hello")
-        sm.add_to_collection("world")
-        query = sm.clear_collection()
-        assert query == "hello world"
-        assert sm.get_pending_query() == ""
-
-    def test_silence_timeout_triggers_collection_complete(self):
-        """Collection times out after silence period."""
-        sm = StateManager(voice_collect_seconds=0.05)  # 50ms timeout
-        sm.start_collection("test")
-
-        # Initially no timeout
-        assert sm.check_collection_timeout() is False
-
-        # Wait for timeout
-        time.sleep(0.06)
-        assert sm.check_collection_timeout() is True
-
-    def test_max_duration_timeout(self):
-        """Collection times out after max duration."""
-        sm = StateManager(max_collect_seconds=0.05)  # 50ms max
-        sm.start_collection("test")
-
-        # Keep adding to prevent silence timeout
-        for _ in range(3):
-            time.sleep(0.02)
-            sm.add_to_collection("more")
-
-        assert sm.check_collection_timeout() is True
 
 
 class TestHotWindowActivation:
@@ -144,26 +65,6 @@ class TestHotWindowActivation:
             assert sm.is_hot_window_active() is False
 
         sm.stop()
-
-    def test_hot_window_not_activated_during_collection(self):
-        """Hot window doesn't activate if already collecting."""
-        sm = StateManager(echo_tolerance=0.05, hot_window_seconds=1.0)
-
-        with patch('builtins.print'):
-            sm.schedule_hot_window_activation()
-
-            # Start collection before activation
-            time.sleep(0.02)
-            sm.start_collection("new query")
-
-            # Wait past activation time
-            time.sleep(0.1)
-
-            # Should still be in COLLECTING, not HOT_WINDOW
-            assert sm.get_state() == ListeningState.COLLECTING
-
-        sm.stop()
-
 
 class TestHotWindowExpiry:
     """Tests for hot window expiry timer."""
@@ -251,16 +152,6 @@ class TestHotWindowExpiry:
             time.sleep(0.06)
             assert sm.is_hot_window_active() is False
 
-        sm.stop()
-
-    def test_reset_hot_window_expiry_noop_when_collecting(self):
-        """reset_hot_window_expiry does not interfere with COLLECTING state."""
-        sm = StateManager()
-        sm.start_collection("test query")
-        assert sm.get_state() == ListeningState.COLLECTING
-
-        sm.reset_hot_window_expiry()
-        assert sm.get_state() == ListeningState.COLLECTING
         sm.stop()
 
     def test_check_hot_window_expiry_fallback(self):
@@ -458,25 +349,22 @@ class TestThreadSafety:
 
     def test_concurrent_state_access(self):
         """State operations are thread-safe."""
-        sm = StateManager(voice_collect_seconds=10.0)
+        sm = StateManager(echo_tolerance=10.0)
         errors = []
 
         def reader():
             for _ in range(100):
                 try:
                     _ = sm.get_state()
-                    _ = sm.is_collecting()
-                    _ = sm.get_pending_query()
+                    _ = sm.is_hot_window_active()
                 except Exception as e:
                     errors.append(e)
 
         def writer():
             for i in range(100):
                 try:
-                    if i % 2 == 0:
-                        sm.start_collection(f"test {i}")
-                    else:
-                        sm.clear_collection()
+                    sm.schedule_hot_window_activation()
+                    sm.cancel_hot_window_activation()
                 except Exception as e:
                     errors.append(e)
 

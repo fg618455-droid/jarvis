@@ -31,7 +31,7 @@ from desktop_app.app import (
     acquire_single_instance_lock,
     JarvisSystemTray,
     LogViewerWindow,
-    MemoryViewerWindow,
+    ControlCentreWindow,
     LogSignals,
 )
 
@@ -48,6 +48,6 @@ __all__ = [
     'acquire_single_instance_lock',
     'JarvisSystemTray',
     'LogViewerWindow',
-    'MemoryViewerWindow',
+    'ControlCentreWindow',
     'LogSignals',
 ]

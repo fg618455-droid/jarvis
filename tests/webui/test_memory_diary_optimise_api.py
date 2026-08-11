@@ -38,7 +38,8 @@ def _make_fake_optimise(events):
 class TestDiaryOptimiseTopicsEndpoint:
     @pytest.fixture(autouse=True)
     def setup_app(self, tmp_path):
-        from src.desktop_app import memory_viewer
+        from jarvis.webui.api import memory as memory_api
+        from tests.webui.conftest import control_centre_client
         from src.jarvis.memory.db import Database
 
         self.db_path = str(tmp_path / "test.db")
@@ -52,9 +53,7 @@ class TestDiaryOptimiseTopicsEndpoint:
                 date_utc=date_utc, summary=summary, topics=topics, source_app="jarvis",
             )
         self.seed_db = seed_db
-
-        memory_viewer.app.config["TESTING"] = True
-        self.client = memory_viewer.app.test_client()
+        self.client = control_centre_client()
 
     # Controlled fake events from optimise_diary_topics.
     _FAKE_EVENTS = [
@@ -76,8 +75,8 @@ class TestDiaryOptimiseTopicsEndpoint:
 
         # Patch at both import paths that the endpoint may resolve to.
         with (
-            patch("src.desktop_app.memory_viewer._get_db_path", return_value=self.db_path),
-            patch("src.desktop_app.memory_viewer.load_settings", return_value=cfg),
+            patch("jarvis.webui.api.memory._get_db_path", return_value=self.db_path),
+            patch("jarvis.webui.api.memory.load_settings", return_value=cfg),
             patch("src.jarvis.memory.conversation.optimise_diary_topics", _make_fake_optimise(fake_events)),
             patch("jarvis.memory.conversation.optimise_diary_topics", _make_fake_optimise(fake_events)),
         ):
@@ -154,19 +153,3 @@ class TestDiaryOptimiseTopicsEndpoint:
         events = self._stream(fake_events=no_change_events)
         complete = events[-1]
         assert complete["rows_changed"] == 0
-
-    def test_optimise_button_handler_wired_outside_graph_init(self):
-        """Regression guard: btn-optimise-topics must be wired in the
-        always-run page setup, not inside initGraph() which only fires
-        when the user opens the Knowledge tab."""
-        html = self.client.get("/").get_data(as_text=True)
-
-        wiring = "document.getElementById('btn-optimise-topics')"
-        assert wiring in html, "optimise-topics button has no click handler in the rendered page"
-
-        wiring_idx = html.index(wiring)
-        init_graph_idx = html.index("async function initGraph()")
-        assert wiring_idx < init_graph_idx, (
-            "btn-optimise-topics wiring is nested inside initGraph(); "
-            "the button will not work until the user first opens the Knowledge tab"
-        )

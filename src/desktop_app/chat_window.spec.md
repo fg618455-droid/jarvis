@@ -44,8 +44,10 @@ submission is **rejected**, not queued, and the caller is notified via the
 `busy` event so the UI can show "Jarvis is busy" rather than silently
 dropping the message. The voice path acquires the same lock blocking (via
 `jarvis.daemon.query_lock`) so a voice query waits for an in-flight text
-query to finish rather than being dropped. Voice and text therefore cannot
-run `run_reply_engine` concurrently against the shared dialogue memory.
+query to finish rather than being dropped. The control centre's typed turns
+take the same lock non-blocking (via `jarvis.daemon.chat_query_lock`) and
+answer 409 when it is held. No two entry points therefore run
+`run_reply_engine` concurrently against the shared dialogue memory.
 
 ### Cancellation
 

@@ -49,6 +49,10 @@ DEFAULT_CHAT_MODEL = "gemma4:e2b"
 # this pull-name only exists on Ollama.
 DEFAULT_FAST_MODEL = "gemma4:e2b"
 
+# Host serving the Telegram Bot API. The server is published as software, so
+# a local instance keeps confirmation traffic off a third party's machine.
+DEFAULT_TELEGRAM_API_BASE_URL = "https://api.telegram.org"
+
 
 def get_supported_model_ids() -> set[str]:
     """Get set of supported model IDs for quick lookup."""
@@ -92,6 +96,7 @@ class Settings:
     llm_base_url: str
     llm_api_key: str
     llm_chat_model: str
+    llm_routes: list[Dict[str, Any]]
     embedding_provider: str  # "" (= same as llm_provider) | "ollama" | "openai_compatible"
     embedding_base_url: str
     embedding_api_key: str
@@ -117,6 +122,21 @@ class Settings:
     active_profiles: list[str]
     use_stdin: bool
     voice_debug: bool
+
+    # Security confirmation
+    security_level: str
+    security_confirm_channels: list[str]
+    security_confirmation_timeout_sec: int
+    telegram_bot_token: str
+    telegram_chat_id: str
+    telegram_api_base_url: str
+
+    # Control centre (local web interface served by the daemon)
+    webui_enabled: bool
+    webui_port: int
+    webui_bind_host: str
+    webui_token: str
+    webui_open_browser: bool
 
     # Screen Capture
     allowlist_bundles: list[str]
@@ -144,11 +164,6 @@ class Settings:
     sample_rate: int
     voice_min_energy: float
 
-    # Voice Collection & Timing
-    voice_block_seconds: float
-    voice_collect_seconds: float
-    voice_max_collect_seconds: float
-
     # Wake Word Detection
     wake_word: str
     wake_aliases: list[str]
@@ -162,6 +177,8 @@ class Settings:
     whisper_vad: bool
     whisper_min_confidence: float
     whisper_no_speech_threshold: float
+    whisper_min_language_probability: float
+    whisper_language: str
     whisper_min_audio_duration: float
     whisper_min_word_length: int
 
@@ -172,16 +189,17 @@ class Settings:
     vad_pre_roll_ms: int
     endpoint_silence_ms: int
     max_utterance_ms: int
-    tts_max_utterance_ms: int
 
     # UI/UX Features
     tune_enabled: bool
     hot_window_enabled: bool
     hot_window_seconds: float
+    wake_command_timeout_seconds: float
+    wake_acknowledgement: str
+    conversation_mode_acknowledgement: str
     low_power_mode: bool
 
     # Echo Detection
-    echo_energy_threshold: float
     echo_tolerance: float
 
     # Fast tier — the small, warm, low-latency model behind the real-time
@@ -283,6 +301,18 @@ def default_config_path() -> Path:
     if xdg:
         return Path(xdg) / "jarvis" / "config.json"
     return Path.home() / ".config" / "jarvis" / "config.json"
+
+
+def resolve_config_path() -> Path:
+    """The config file this process reads and writes.
+
+    ``JARVIS_CONFIG_PATH`` points a run at a different file, which is how
+    tests and side-by-side installs stay off the real one. Anything that
+    edits the config has to resolve it the same way the loader does, or it
+    writes to a file nothing reads.
+    """
+    override = os.environ.get("JARVIS_CONFIG_PATH")
+    return Path(override).expanduser() if override else default_config_path()
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -395,6 +425,40 @@ def _migrate_config(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any]:
         cfg_json["_config_version"] = 3
         modified = True
 
+    # Migration v4: an explicitly configured OpenAI-compatible endpoint
+    # becomes the first candidate in both routed lanes. Purely local configs
+    # keep an empty route list and therefore retain their single local path.
+    if migration_version < 4:
+        if "llm_routes" not in cfg_json:
+            provider = str(cfg_json.get("llm_provider", "ollama") or "ollama").strip().lower()
+            base_url = str(cfg_json.get("llm_base_url", "") or "").strip()
+            api_key = str(cfg_json.get("llm_api_key", "") or "")
+            chat_model = str(cfg_json.get("llm_chat_model", "") or "").strip()
+            fast_model = str(cfg_json.get("fast_model", "") or "").strip() or chat_model
+            if provider == "openai_compatible" and base_url and chat_model:
+                cfg_json["llm_routes"] = [
+                    {
+                        "name": "configured-fast",
+                        "provider": provider,
+                        "base_url": base_url,
+                        "api_key": api_key,
+                        "model": fast_model,
+                        "tier": "fast",
+                        "timeout_sec": 4.0,
+                    },
+                    {
+                        "name": "configured-chat",
+                        "provider": provider,
+                        "base_url": base_url,
+                        "api_key": api_key,
+                        "model": chat_model,
+                        "tier": "chat",
+                        "timeout_sec": 4.0,
+                    },
+                ]
+        cfg_json["_config_version"] = 4
+        modified = True
+
     # Save migrated config
     if modified:
         if _save_json(cfg_path, cfg_json):
@@ -449,6 +513,46 @@ def _expand_path(value: Any) -> Optional[str]:
         return str(value)
 
 
+def _expand_model_reference(value: Any) -> Optional[str]:
+    """Normalise a model setting that may name a model rather than a file.
+
+    A Whisper model is given as a size ("medium"), a Hugging Face repo ID
+    ("owner/model"), or a directory on disk. Only the last is a path, and
+    path normalisation would rewrite the repo ID's separator to a backslash
+    on Windows, leaving an identifier the loader cannot resolve. Expansion
+    therefore applies to what is recognisably a path and nothing else.
+    """
+    if value in (None, "", "null"):
+        return None
+    raw = str(value)
+    try:
+        is_a_path = raw.startswith("~") or Path(raw).is_absolute() or Path(raw).exists()
+    except Exception:
+        is_a_path = False
+    return _expand_path(raw) if is_a_path else raw
+
+
+def _normalise_language_code(value: Any) -> str:
+    """Normalise a user-supplied language setting to a bare lowercase code.
+
+    Whisper only accepts lowercase ISO-639-1 codes, while a config file written
+    by hand plausibly carries "DE" or a stray space. Anything unusable becomes
+    an empty string, which means automatic identification.
+    """
+    if not isinstance(value, str):
+        return ""
+    return value.strip().lower()
+
+
+def resolve_transcription_language(cfg: Any) -> Optional[str]:
+    """The language to transcribe in, or None to let Whisper identify it.
+
+    Both Whisper backends take the language as an optional keyword where None
+    means "identify it", so this is what every transcription call passes.
+    """
+    return _normalise_language_code(getattr(cfg, "whisper_language", "")) or None
+
+
 def _ensure_dict(value: Any) -> Dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -485,6 +589,7 @@ def get_default_config() -> Dict[str, Any]:
         "llm_base_url": "",  # falls back to ollama_base_url when empty
         "llm_api_key": "",
         "llm_chat_model": "",  # falls back to ollama_chat_model when empty
+        "llm_routes": [],
         "embedding_provider": "",  # "" = same as llm_provider
         "embedding_base_url": "",
         "embedding_api_key": "",
@@ -503,6 +608,21 @@ def get_default_config() -> Dict[str, Any]:
         # Profiles & Behavior
         "active_profiles": ["developer", "business", "life"],
         "use_stdin": False,
+
+        # Security confirmation
+        "security_level": "critical",
+        "security_confirm_channels": ["desktop", "web", "telegram", "voice"],
+        "security_confirmation_timeout_sec": 60,
+        "telegram_bot_token": "",
+        "telegram_chat_id": "",
+        "telegram_api_base_url": DEFAULT_TELEGRAM_API_BASE_URL,
+
+        # Control centre
+        "webui_enabled": True,
+        "webui_port": 5055,
+        "webui_bind_host": "127.0.0.1",
+        "webui_token": "",
+        "webui_open_browser": False,
 
         # Screen Capture
         "allowlist_bundles": [
@@ -536,11 +656,6 @@ def get_default_config() -> Dict[str, Any]:
         "sample_rate": 16000,
         "voice_min_energy": 0.02,
 
-        # Voice Collection & Timing
-        "voice_block_seconds": 4.0,
-        "voice_collect_seconds": 4.5,
-        "voice_max_collect_seconds": 180.0,
-
         # Wake Word Detection
         "wake_word": "jarvis",
         "wake_aliases": ["joris", "charis", "chavis", "jar is", "jaivis", "jervis", "jarvus", "jarviz", "javis", "jairus", "jarryst", "chyrus"],
@@ -554,6 +669,15 @@ def get_default_config() -> Dict[str, Any]:
         "whisper_vad": True,
         "whisper_min_confidence": 0.3,  # Filter low-confidence segments (hallucinations)
         "whisper_no_speech_threshold": 0.5,  # Hard cutoff: reject segments where no_speech_prob >= this
+        # Reject an utterance when Whisper is unsure which language it heard.
+        # Noise hallucinations identify at 0.46-0.76 where real speech reaches
+        # 0.9+. 0.0 disables the gate; 0.85 is a workable setting.
+        "whisper_min_language_probability": 0.0,
+        # ISO-639-1 code of the language spoken to Jarvis, e.g. "de" or "ja".
+        # Empty means Whisper identifies the language per utterance. Naming it
+        # skips that pass and keeps Whisper from drifting into another language
+        # on noisy input; loanwords inside the named language still transcribe.
+        "whisper_language": "",
         "whisper_min_audio_duration": 0.15,
         "whisper_min_word_length": 1,
 
@@ -564,14 +688,15 @@ def get_default_config() -> Dict[str, Any]:
         "vad_pre_roll_ms": 240,
         "endpoint_silence_ms": 800,
         "max_utterance_ms": 12000,
-        "tts_max_utterance_ms": 3000,  # Shorter timeout during TTS for quick stop detection
 
         # UI/UX Features
         "tune_enabled": True,
-        "hot_window_enabled": True,
+        "hot_window_enabled": False,
         "hot_window_seconds": 3.0,
+        "wake_command_timeout_seconds": 12.0,
+        "wake_acknowledgement": "Ja, ich bin bereit. Was kann ich für Sie tun?",
+        "conversation_mode_acknowledgement": "Der Gesprächsmodus ist aktiv.",
         "low_power_mode": False,
-        "echo_energy_threshold": 2.0,
         "echo_tolerance": 0.3,  # Time tolerance for echo detection timing
 
         # Audio Wake Word Detection
@@ -623,10 +748,6 @@ def get_default_config() -> Dict[str, Any]:
         "planner_enabled": True,
         "planner_timeout_sec": 3.0,
 
-        # Stop Commands
-        "stop_commands": ["stop", "quiet", "shush", "silence", "enough", "shut up"],
-        "stop_command_fuzzy_ratio": 0.8,
-
         # Location Services
         "location_enabled": True,
         "location_cache_minutes": 60,
@@ -667,8 +788,7 @@ def load_settings() -> Settings:
     load_dotenv(override=False)
 
     # Resolve config path
-    cfg_path_env = os.environ.get("JARVIS_CONFIG_PATH")
-    cfg_path = Path(cfg_path_env).expanduser() if cfg_path_env else default_config_path()
+    cfg_path = resolve_config_path()
     cfg_dir = cfg_path.parent
     try:
         cfg_dir.mkdir(parents=True, exist_ok=True)
@@ -699,6 +819,34 @@ def load_settings() -> Settings:
     ollama_embed_model = str(merged.get("ollama_embed_model"))
     ollama_chat_model = str(merged.get("ollama_chat_model"))
 
+    llm_routes: list[Dict[str, Any]] = []
+    raw_routes = merged.get("llm_routes", [])
+    if isinstance(raw_routes, list):
+        for raw in raw_routes:
+            if not isinstance(raw, dict):
+                continue
+            provider = str(raw.get("provider", "") or "").strip().lower()
+            tier = str(raw.get("tier", "") or "").strip().lower()
+            base_url = str(raw.get("base_url", "") or "").strip().rstrip("/")
+            model = str(raw.get("model", "") or "").strip()
+            if provider not in ("ollama", "openai_compatible"):
+                continue
+            if tier not in ("fast", "chat") or not base_url or not model:
+                continue
+            try:
+                timeout_sec = max(0.1, float(raw.get("timeout_sec", 4.0)))
+            except (TypeError, ValueError):
+                timeout_sec = 4.0
+            llm_routes.append({
+                "name": str(raw.get("name", "") or f"route-{len(llm_routes) + 1}").strip(),
+                "provider": provider,
+                "base_url": base_url,
+                "api_key": str(raw.get("api_key", "") or ""),
+                "model": model,
+                "tier": tier,
+                "timeout_sec": timeout_sec,
+            })
+
     # Provider-aware fields. The two field sets are per-provider: the
     # ``ollama_*`` fields are authoritative when the provider is Ollama,
     # the ``llm_*`` / ``embedding_*`` fields when it is OpenAI-compatible.
@@ -716,18 +864,32 @@ def load_settings() -> Settings:
         llm_chat_model = str(merged.get("llm_chat_model", "") or "").strip() or ollama_chat_model
     else:
         llm_chat_model = ollama_chat_model
+    first_chat_route = next((route for route in llm_routes if route["tier"] == "chat"), None)
+    if first_chat_route is not None:
+        llm_provider = first_chat_route["provider"]
+        llm_base_url = first_chat_route["base_url"]
+        llm_api_key = first_chat_route["api_key"]
+        llm_chat_model = first_chat_route["model"]
     embedding_provider_raw = str(merged.get("embedding_provider", "") or "").strip().lower()
     if embedding_provider_raw not in ("", "ollama", "openai_compatible"):
         embedding_provider_raw = ""
     embedding_provider = embedding_provider_raw
     embedding_base_url = str(merged.get("embedding_base_url", "") or "").strip()
     embedding_api_key = str(merged.get("embedding_api_key", "") or "").strip()
-    # Effective embedding provider inherits the chat provider when unset.
-    _effective_embed_provider = embedding_provider or llm_provider
-    if _effective_embed_provider == "openai_compatible":
-        embedding_model = str(merged.get("embedding_model", "") or "").strip() or ollama_embed_model
-    else:
+    if llm_routes:
+        embedding_provider = "ollama"
+        embedding_base_url = ollama_base_url
+        embedding_api_key = ""
         embedding_model = ollama_embed_model
+    else:
+        effective_embedding_provider = embedding_provider or llm_provider
+        if effective_embedding_provider == "openai_compatible":
+            embedding_model = (
+                str(merged.get("embedding_model", "") or "").strip()
+                or ollama_embed_model
+            )
+        else:
+            embedding_model = ollama_embed_model
     use_stdin = bool(merged.get("use_stdin", False))
     active_profiles = _ensure_list(merged.get("active_profiles"))
     tts_enabled = bool(merged.get("tts_enabled", True))
@@ -762,15 +924,10 @@ def load_settings() -> Settings:
 
     voice_device_val = merged.get("voice_device")
     voice_device = None if voice_device_val in (None, "", "default", "system") else str(voice_device_val)
-    voice_block_seconds = float(merged.get("voice_block_seconds", 4.0))
-    voice_collect_seconds = float(merged.get("voice_collect_seconds", 2.5))
-    voice_max_collect_seconds = float(merged.get("voice_max_collect_seconds", 60.0))
     wake_word = str(merged.get("wake_word", "jarvis")).strip().lower()
     wake_aliases = [a.strip().lower() for a in _ensure_list(merged.get("wake_aliases")) if a.strip()]
     wake_fuzzy_ratio = float(merged.get("wake_fuzzy_ratio", 0.78))
-    # whisper_model accepts a size name ("medium") or a local model
-    # directory; _expand_path is a no-op for plain names.
-    whisper_model = _expand_path(merged.get("whisper_model")) or "medium"
+    whisper_model = _expand_model_reference(merged.get("whisper_model")) or "medium"
     whisper_backend = os.environ.get("JARVIS_WHISPER_BACKEND", "").lower() or str(merged.get("whisper_backend", "auto")).lower()
     if whisper_backend not in ("auto", "mlx", "faster-whisper"):
         whisper_backend = "auto"
@@ -786,13 +943,18 @@ def load_settings() -> Settings:
     vad_pre_roll_ms = int(merged.get("vad_pre_roll_ms", 240))
     endpoint_silence_ms = int(merged.get("endpoint_silence_ms", 800))
     max_utterance_ms = int(merged.get("max_utterance_ms", 12000))
-    tts_max_utterance_ms = int(merged.get("tts_max_utterance_ms", 3000))
     sample_rate = int(merged.get("sample_rate", 16000))
     tune_enabled = bool(merged.get("tune_enabled", True))
-    hot_window_enabled = bool(merged.get("hot_window_enabled", True))
+    hot_window_enabled = bool(merged.get("hot_window_enabled", False))
     hot_window_seconds = float(merged.get("hot_window_seconds", 3.0))
+    wake_command_timeout_seconds = max(
+        1.0, float(merged.get("wake_command_timeout_seconds", 12.0))
+    )
+    wake_acknowledgement = str(merged.get("wake_acknowledgement", "") or "").strip()
+    conversation_mode_acknowledgement = str(
+        merged.get("conversation_mode_acknowledgement", "") or ""
+    ).strip()
     low_power_mode = bool(merged.get("low_power_mode", False))
-    echo_energy_threshold = float(merged.get("echo_energy_threshold", 2.0))
     echo_tolerance = float(merged.get("echo_tolerance", 0.3))
 
     # Fast tier — the small, warm model behind the real-time classification
@@ -807,6 +969,9 @@ def load_settings() -> Settings:
         fast_model = (
             llm_chat_model if llm_provider == "openai_compatible" else DEFAULT_FAST_MODEL
         )
+    first_fast_route = next((route for route in llm_routes if route["tier"] == "fast"), None)
+    if first_fast_route is not None:
+        fast_model = first_fast_route["model"]
     intent_judge_timeout_sec = float(merged.get("intent_judge_timeout_sec", 6.0))
 
     # Transcript Buffer - ambient speech context for intent judge (separate from dialogue)
@@ -876,6 +1041,8 @@ def load_settings() -> Settings:
     mcps = _ensure_dict(merged.get("mcps"))
     whisper_min_confidence = float(merged.get("whisper_min_confidence", 0.4))
     whisper_no_speech_threshold = float(merged.get("whisper_no_speech_threshold", 0.5))
+    whisper_min_language_probability = float(merged.get("whisper_min_language_probability", 0.0))
+    whisper_language = _normalise_language_code(merged.get("whisper_language"))
     whisper_min_audio_duration = float(merged.get("whisper_min_audio_duration", 0.3))
     whisper_min_word_length = int(merged.get("whisper_min_word_length", 2))
     llm_chat_timeout_sec = float(merged.get("llm_chat_timeout_sec", 180.0))
@@ -883,6 +1050,49 @@ def load_settings() -> Settings:
     llm_digest_timeout_sec = float(merged.get("llm_digest_timeout_sec", 8.0))
     llm_embedding_timeout_sec = float(merged.get("llm_embedding_timeout_sec", 60.0))
     llm_profile_select_timeout_sec = float(merged.get("llm_profile_select_timeout_sec", 30.0))
+    security_level = str(merged.get("security_level", "critical")).strip().lower()
+    if security_level not in ("off", "critical", "paranoid"):
+        security_level = "critical"
+    security_confirm_channels = [
+        str(channel).strip().lower()
+        for channel in _ensure_list(merged.get("security_confirm_channels"))
+        if str(channel).strip()
+    ]
+    security_confirmation_timeout_sec = max(
+        1, min(300, int(merged.get("security_confirmation_timeout_sec", 60)))
+    )
+    # The settings window is the primary way to configure these, so a
+    # configured value wins over an environment token that may belong to an
+    # unrelated project.
+    telegram_bot_token = str(
+        merged.get("telegram_bot_token", "")
+        or os.environ.get("TELEGRAM_BOT_TOKEN")
+        or ""
+    ).strip()
+    telegram_chat_id = str(
+        merged.get("telegram_chat_id", "")
+        or os.environ.get("TELEGRAM_CHAT_ID")
+        or ""
+    ).strip()
+    telegram_api_base_url = str(
+        merged.get("telegram_api_base_url", "")
+        or DEFAULT_TELEGRAM_API_BASE_URL
+    ).strip().rstrip("/")
+
+    webui_enabled = bool(merged.get("webui_enabled", True))
+    # A port below 1024 needs rights the daemon does not run with, and a
+    # hand-edited config is the usual source of an unusable value. Falling
+    # back to the default keeps the control centre reachable rather than
+    # failing the whole daemon start.
+    try:
+        webui_port = int(merged.get("webui_port", 5055))
+    except (TypeError, ValueError):
+        webui_port = 5055
+    if not 1024 <= webui_port <= 65535:
+        webui_port = 5055
+    webui_bind_host = str(merged.get("webui_bind_host", "") or "").strip() or "127.0.0.1"
+    webui_token = str(merged.get("webui_token", "") or "").strip()
+    webui_open_browser = bool(merged.get("webui_open_browser", False))
 
     return Settings(
         # Database & Storage
@@ -894,6 +1104,7 @@ def load_settings() -> Settings:
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
         llm_chat_model=llm_chat_model,
+        llm_routes=llm_routes,
         embedding_provider=embedding_provider,
         embedding_base_url=embedding_base_url,
         embedding_api_key=embedding_api_key,
@@ -911,6 +1122,21 @@ def load_settings() -> Settings:
         active_profiles=active_profiles,
         use_stdin=use_stdin,
         voice_debug=voice_debug,
+
+        # Security confirmation
+        security_level=security_level,
+        security_confirm_channels=security_confirm_channels,
+        security_confirmation_timeout_sec=security_confirmation_timeout_sec,
+        telegram_bot_token=telegram_bot_token,
+        telegram_chat_id=telegram_chat_id,
+        telegram_api_base_url=telegram_api_base_url,
+
+        # Control centre
+        webui_enabled=webui_enabled,
+        webui_port=webui_port,
+        webui_bind_host=webui_bind_host,
+        webui_token=webui_token,
+        webui_open_browser=webui_open_browser,
 
         # Screen Capture
         allowlist_bundles=allowlist_bundles,
@@ -938,11 +1164,6 @@ def load_settings() -> Settings:
         sample_rate=sample_rate,
         voice_min_energy=voice_min_energy,
 
-        # Voice Collection & Timing
-        voice_block_seconds=voice_block_seconds,
-        voice_collect_seconds=voice_collect_seconds,
-        voice_max_collect_seconds=voice_max_collect_seconds,
-
         # Wake Word Detection
         wake_word=wake_word,
         wake_aliases=wake_aliases,
@@ -956,6 +1177,8 @@ def load_settings() -> Settings:
         whisper_vad=whisper_vad,
         whisper_min_confidence=whisper_min_confidence,
         whisper_no_speech_threshold=whisper_no_speech_threshold,
+        whisper_min_language_probability=whisper_min_language_probability,
+        whisper_language=whisper_language,
         whisper_min_audio_duration=whisper_min_audio_duration,
         whisper_min_word_length=whisper_min_word_length,
 
@@ -966,14 +1189,15 @@ def load_settings() -> Settings:
         vad_pre_roll_ms=vad_pre_roll_ms,
         endpoint_silence_ms=endpoint_silence_ms,
         max_utterance_ms=max_utterance_ms,
-        tts_max_utterance_ms=tts_max_utterance_ms,
 
         # UI/UX Features
         tune_enabled=tune_enabled,
         hot_window_enabled=hot_window_enabled,
         hot_window_seconds=hot_window_seconds,
+        wake_command_timeout_seconds=wake_command_timeout_seconds,
+        wake_acknowledgement=wake_acknowledgement,
+        conversation_mode_acknowledgement=conversation_mode_acknowledgement,
         low_power_mode=low_power_mode,
-        echo_energy_threshold=echo_energy_threshold,
         echo_tolerance=echo_tolerance,
         # Fast tier (voice intent, tool routing, quick classifications)
         fast_model=fast_model,
