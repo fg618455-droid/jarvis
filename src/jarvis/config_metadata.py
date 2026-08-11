@@ -38,11 +38,15 @@ LLM_ROUTE_FIELD_METADATA = (
     FieldMeta("base_url", "Base URL", "Endpoint base URL", "llm_routes", "str"),
     FieldMeta("api_key", "API Key", "Bearer credential for this endpoint", "llm_routes", "password",
               nullable=True),
+    FieldMeta("api_key_env", "API Key Environment", "Environment variable containing the bearer credential", "llm_routes", "str",
+              nullable=True),
     FieldMeta("model", "Model", "Model name exposed by the endpoint", "llm_routes", "str"),
     FieldMeta("tier", "Tier", "Route chain that uses this endpoint", "llm_routes", "choice",
               choices=[("fast", "Fast"), ("chat", "Chat")]),
     FieldMeta("timeout_sec", "Timeout", "Seconds before trying the next route", "llm_routes", "float",
               min_val=0.1, max_val=600, step=0.5, suffix="s"),
+    FieldMeta("enabled", "Enabled", "Whether this route participates in its tier chain", "llm_routes", "bool"),
+    FieldMeta("capabilities", "Capabilities", "Supported request shapes: chat, stream, tools", "llm_routes", "list"),
 )
 
 

@@ -80,14 +80,25 @@ def _normalise_routes(raw_routes: Any, existing: list[dict[str, Any]]) -> list[d
         api_key = str(raw.get("api_key", "") or "")
         if api_key.startswith(MASK):
             api_key = str(existing_by_identity.get((name, tier), {}).get("api_key", "") or "")
+        api_key_env = str(raw.get("api_key_env", "") or "").strip()
+        raw_capabilities = raw.get("capabilities", ["chat", "stream", "tools"])
+        if not isinstance(raw_capabilities, list):
+            raise ValueError(f"route {index + 1} has invalid capabilities")
+        capabilities = list(dict.fromkeys(
+            str(value).strip().lower() for value in raw_capabilities
+            if str(value).strip().lower() in ("chat", "stream", "tools")
+        ))
         clean.append({
             "name": name,
             "provider": provider,
             "base_url": base_url,
             "api_key": api_key,
+            "api_key_env": api_key_env,
             "model": model,
             "tier": tier,
             "timeout_sec": timeout_sec,
+            "enabled": bool(raw.get("enabled", True)),
+            "capabilities": capabilities,
         })
     return clean
 

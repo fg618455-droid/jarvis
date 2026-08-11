@@ -129,13 +129,18 @@ Each `llm_routes` entry has this shape:
   "provider": "openai_compatible",
   "base_url": "https://endpoint.example/v1",
   "api_key": "",
+  "api_key_env": "PROVIDER_API_KEY",
   "model": "model-exposed-by-the-endpoint",
   "tier": "chat",
-  "timeout_sec": 4.0
+  "timeout_sec": 4.0,
+  "enabled": true,
+  "capabilities": ["chat", "stream", "tools"]
 }
 ```
 
-The v3 to v4 migration converts an explicitly configured OpenAI-compatible endpoint into the first FAST and CHAT candidates. Pure Ollama configs retain an empty route list. The loader accepts only the owned route shape and ignores malformed entries.
+The loader accepts this tiered shape and ignores malformed entries. List order is route order. A credential may be stored directly in `api_key` or referenced by `api_key_env`; environment values are resolved only when the backend is built and are never copied into configuration.
+
+Config migration version 5 converts priority-based route lists into ordered FAST and CHAT entries. It preserves activation, capabilities, and environment-variable names without reading their values. Existing tiered entries receive the same explicit defaults, and repeated migration is idempotent.
 
 `scripts/import_fcc_keys.py` probes keys from `~/.fcc/.env` and writes routes only for endpoints that advertise a model. `python -m jarvis.llm.probe` performs `GET /models`, prints no credential material, and stores the observed catalogues in `~/.jarvis/llm_probe.json` with mode `0o600`. Model names come from live endpoint responses or a probed FCC smoke model that is present in that response.
 

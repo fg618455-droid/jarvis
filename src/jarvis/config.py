@@ -459,6 +459,97 @@ def _migrate_config(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any]:
         cfg_json["_config_version"] = 4
         modified = True
 
+    # Migration v5 owns one tiered route shape. Priority-based routes are
+    # expanded into FAST and CHAT entries while preserving order, activation,
+    # capabilities, and environment-backed credentials.
+    if migration_version < 5:
+        raw_routes = cfg_json.get("llm_routes", [])
+        if not isinstance(raw_routes, list):
+            raw_routes = []
+
+        def _capabilities(raw: Dict[str, Any]) -> list[str]:
+            value = raw.get("capabilities", ["chat", "stream", "tools"])
+            if not isinstance(value, (list, tuple, set, frozenset)):
+                value = ["chat", "stream", "tools"]
+            allowed = {"chat", "stream", "tools"}
+            return list(dict.fromkeys(
+                str(item).strip().lower()
+                for item in value
+                if str(item).strip().lower() in allowed
+            ))
+
+        def _route(raw: Dict[str, Any], tier: str, index: int) -> Dict[str, Any] | None:
+            provider = str(raw.get("provider", "ollama") or "ollama").strip().lower()
+            if provider not in ("ollama", "openai_compatible"):
+                return None
+            base_url = str(raw.get("base_url", "") or "").strip().rstrip("/")
+            if not base_url and provider == "ollama":
+                base_url = str(cfg_json.get("ollama_base_url", "http://127.0.0.1:11434") or "").strip().rstrip("/")
+            if not base_url and raw.get("local"):
+                base_url = str(cfg_json.get("llm_base_url", "") or "").strip().rstrip("/")
+            model = str(raw.get("model", "") or "").strip()
+            if not base_url or not model:
+                return None
+            try:
+                timeout_sec = max(0.1, float(raw.get("timeout_sec", 4.0)))
+            except (TypeError, ValueError):
+                timeout_sec = 4.0
+            api_key = str(raw.get("api_key", "") or "")
+            if not api_key and raw.get("local"):
+                api_key = str(cfg_json.get("llm_api_key", "") or "")
+            return {
+                "name": str(raw.get("name", "") or raw.get("id", "") or f"route-{index + 1}").strip(),
+                "provider": provider,
+                "base_url": base_url,
+                "api_key": api_key,
+                "api_key_env": str(raw.get("api_key_env", "") or "").strip(),
+                "model": model,
+                "tier": tier,
+                "timeout_sec": timeout_sec,
+                "enabled": bool(raw.get("enabled", True)),
+                "capabilities": _capabilities(raw),
+            }
+
+        tiered = [
+            raw for raw in raw_routes
+            if isinstance(raw, dict) and str(raw.get("tier", "")).strip().lower() in ("fast", "chat")
+        ]
+        untiered = [
+            raw for raw in raw_routes
+            if isinstance(raw, dict) and str(raw.get("tier", "")).strip().lower() not in ("fast", "chat")
+        ]
+        clean_routes: list[Dict[str, Any]] = []
+        if untiered and not tiered:
+            def _priority(item: tuple[int, Dict[str, Any]]) -> tuple[int, int]:
+                try:
+                    value = int(item[1].get("priority", 0) or 0)
+                except (TypeError, ValueError):
+                    value = 0
+                return value, item[0]
+
+            ordered = sorted(
+                enumerate(untiered),
+                key=_priority,
+            )
+            for tier in ("fast", "chat"):
+                for index, raw in ordered:
+                    route = _route(raw, tier, index)
+                    if route is not None:
+                        clean_routes.append(route)
+        else:
+            for index, raw in enumerate(raw_routes):
+                if not isinstance(raw, dict):
+                    continue
+                tier = str(raw.get("tier", "")).strip().lower()
+                if tier not in ("fast", "chat"):
+                    continue
+                route = _route(raw, tier, index)
+                if route is not None:
+                    clean_routes.append(route)
+        cfg_json["llm_routes"] = clean_routes
+        cfg_json["_config_version"] = 5
+        modified = True
+
     # Save migrated config
     if modified:
         if _save_json(cfg_path, cfg_json):
@@ -842,9 +933,19 @@ def load_settings() -> Settings:
                 "provider": provider,
                 "base_url": base_url,
                 "api_key": str(raw.get("api_key", "") or ""),
+                "api_key_env": str(raw.get("api_key_env", "") or "").strip(),
                 "model": model,
                 "tier": tier,
                 "timeout_sec": timeout_sec,
+                "enabled": bool(raw.get("enabled", True)),
+                "capabilities": [
+                    capability
+                    for capability in dict.fromkeys(
+                        str(item).strip().lower()
+                        for item in raw.get("capabilities", ["chat", "stream", "tools"])
+                    )
+                    if capability in ("chat", "stream", "tools")
+                ] if isinstance(raw.get("capabilities", ["chat", "stream", "tools"]), (list, tuple, set, frozenset)) else ["chat", "stream", "tools"],
             })
 
     # Provider-aware fields. The two field sets are per-provider: the
@@ -864,7 +965,10 @@ def load_settings() -> Settings:
         llm_chat_model = str(merged.get("llm_chat_model", "") or "").strip() or ollama_chat_model
     else:
         llm_chat_model = ollama_chat_model
-    first_chat_route = next((route for route in llm_routes if route["tier"] == "chat"), None)
+    first_chat_route = next((
+        route for route in llm_routes
+        if route["tier"] == "chat" and route["enabled"]
+    ), None)
     if first_chat_route is not None:
         llm_provider = first_chat_route["provider"]
         llm_base_url = first_chat_route["base_url"]
@@ -969,7 +1073,10 @@ def load_settings() -> Settings:
         fast_model = (
             llm_chat_model if llm_provider == "openai_compatible" else DEFAULT_FAST_MODEL
         )
-    first_fast_route = next((route for route in llm_routes if route["tier"] == "fast"), None)
+    first_fast_route = next((
+        route for route in llm_routes
+        if route["tier"] == "fast" and route["enabled"]
+    ), None)
     if first_fast_route is not None:
         fast_model = first_fast_route["model"]
     intent_judge_timeout_sec = float(merged.get("intent_judge_timeout_sec", 6.0))
