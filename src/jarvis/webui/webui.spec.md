@@ -113,10 +113,12 @@ alone, so saving a form never overwrites a secret with its own mask.
 ## LLM routes view
 
 The LLM routes view displays the ordered FAST, CHAT, and PRIVATE chains. Each
-row shows active state, protocol, model, masked credential, hit and failure
-counts, block time, and the last safe error label. The PRIVATE chain is
-read-only and contains one loopback Ollama route. Configured FAST and CHAT
-entries are editable using only the route schema described by the LLM spec.
+entry keeps active state, protocol, model, masked credential, hit and failure
+counts, block time, and the last safe error label within its chain card. The
+entry layout wraps long model names and error labels instead of overflowing
+into neighbouring chains. The PRIVATE chain is read-only and contains one
+loopback Ollama route. Configured FAST and CHAT entries are editable using
+only the route schema described by the LLM spec.
 
 Loading and refreshing the view reads local config and cooldown state only.
 The only control that contacts a configured endpoint is **Probe models**.

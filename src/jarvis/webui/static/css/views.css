@@ -435,6 +435,99 @@
   resize: vertical;
 }
 
+.llm-chain {
+  min-width: 0;
+}
+
+.route-list {
+  display: grid;
+}
+
+.route-entry {
+  display: grid;
+  gap: var(--s3);
+  min-width: 0;
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.route-entry:first-child {
+  padding-top: 0;
+}
+
+.route-entry:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.route-primary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--s2);
+}
+
+.route-identity {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.route-name,
+.route-model,
+.route-provider,
+.route-metric dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.route-name {
+  font-weight: 600;
+}
+
+.route-model {
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.route-provider {
+  color: var(--fg-mute);
+  font-size: 11px;
+}
+
+.route-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: var(--s2) var(--s3);
+}
+
+.route-metric {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.route-metric dt {
+  color: var(--fg-mute);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.route-metric dd {
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.route-error-metric {
+  grid-column: 1 / -1;
+}
+
+.route-metric .route-error {
+  color: var(--warn);
+}
+
 .log-lines {
   margin: 0;
   max-height: min(65vh, 54rem);

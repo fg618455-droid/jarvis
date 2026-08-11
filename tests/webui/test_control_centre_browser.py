@@ -29,6 +29,7 @@ VIEWS = [
     "security",
     "system",
     "settings",
+    "llm",
 ]
 
 
@@ -111,6 +112,52 @@ class TestEveryViewRenders:
 
         assert page.evaluate("location.hash") == "#/tools"
         assert not page.console_errors
+
+
+class TestLlmRouteLayout:
+    """The route view keeps every operational detail inside its own card."""
+
+    def _open_with_routes(self, page, served):
+        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.evaluate(
+            """async () => {
+                const { api } = await import('/static/js/api.js');
+                api.llmRoutes = async () => ({ chains: {
+                    fast: [{
+                        active: true, blocked_until: null, failures: 1,
+                        hits: 4, invalid: false, last_error: '',
+                        masked_key: '••••••••LmVX', model: 'meta-llama/llama-prompt-guard-2-22m',
+                        name: 'groq', tier: 'fast',
+                    }],
+                    chat: [{
+                        active: false, blocked_until: null, failures: 2,
+                        hits: 12, invalid: false, last_error: 'rate limit reached',
+                        masked_key: '••••••••kwrd', model: 'zai-glm-4.7',
+                        name: 'cerebras', tier: 'chat',
+                    }],
+                    private: [{
+                        active: true, blocked_until: null, failures: 12,
+                        hits: 28, invalid: false, last_error: '',
+                        masked_key: '', model: 'qwen2.5:7b-ctx8k',
+                        name: 'local-private', tier: 'private',
+                    }],
+                }});
+            }"""
+        )
+        page.goto(f"{served}/#/llm")
+        page.wait_for_selector(".llm-chain", state="visible")
+
+    def test_route_details_wrap_within_each_chain_card(self, page, served):
+        self._open_with_routes(page, served)
+
+        assert page.locator(".llm-chain").count() == 3
+        assert page.get_by_text("meta-llama/llama-prompt-guard-2-22m", exact=True).is_visible()
+        assert page.get_by_text("rate limit reached", exact=True).is_visible()
+
+        widths = page.locator(".llm-chain").evaluate_all(
+            "cards => cards.map(card => ({ client: card.clientWidth, scroll: card.scrollWidth }))"
+        )
+        assert all(item["scroll"] <= item["client"] for item in widths)
 
 
 class TestMemoryMaintenance:

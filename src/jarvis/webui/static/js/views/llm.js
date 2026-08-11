@@ -2,7 +2,7 @@
 
 import { api } from "../api.js";
 import { t } from "../i18n.js";
-import { chip, clear, el, table, toast } from "../ui.js";
+import { chip, clear, el, empty, toast } from "../ui.js";
 
 export async function mount(root) {
   const head = el("div", { class: "view-head" }, [
@@ -104,27 +104,53 @@ function paintChains(container, chains) {
   clear(container);
   for (const tier of ["fast", "chat", "private"]) {
     const routes = chains[tier] || [];
-    container.append(el("section", { class: "card" }, [
+    container.append(el("section", { class: "card llm-chain" }, [
       el("header", {}, [
         el("h2", { text: t(`llm.tier.${tier}`) }),
         el("span", { class: "aside", text: `${routes.length}` }),
       ]),
-      table([
-        {
-          label: t("llm.status"),
-          render: (route) => route.active
-            ? chip(t("llm.active"))
-            : route.invalid || route.blocked_until
-              ? chip(t("llm.blocked"), "warn")
-              : chip(t("llm.ready")),
-        },
-        { label: t("common.name"), render: (route) => route.name },
-        { label: t("llm.model"), render: (route) => route.model },
-        { label: t("llm.key"), render: (route) => route.masked_key || "—" },
-        { label: t("llm.hits"), numeric: true, render: (route) => route.hits },
-        { label: t("llm.failures"), numeric: true, render: (route) => route.failures },
-        { label: t("llm.lastError"), render: (route) => route.last_error || "—" },
-      ], routes),
+      routeList(routes),
     ]));
   }
+}
+
+function routeList(routes) {
+  if (!routes.length) return empty(t("common.none"));
+  return el("div", { class: "route-list" }, routes.map((route) => {
+    const status = route.active
+      ? chip(t("llm.active"))
+      : route.invalid || route.blocked_until
+        ? chip(t("llm.blocked"), "warn")
+        : chip(t("llm.ready"));
+    const metrics = [
+      routeMetric(t("llm.key"), route.masked_key || "—", "route-key"),
+      routeMetric(t("llm.hits"), route.hits, "num"),
+      routeMetric(t("llm.failures"), route.failures, "num"),
+    ];
+    if (route.last_error) {
+      metrics.push(routeMetric(t("llm.lastError"), route.last_error, "route-error"));
+    }
+
+    return el("article", { class: "route-entry" }, [
+      el("div", { class: "route-primary" }, [
+        status,
+        el("div", { class: "route-identity" }, [
+          el("strong", { class: "route-name", text: route.name }),
+          el("code", { class: "route-model", text: route.model || "—" }),
+          el("span", { class: "route-provider", text: route.provider }),
+        ]),
+      ]),
+      el("dl", { class: "route-metrics" }, metrics),
+    ]);
+  }));
+}
+
+function routeMetric(label, value, valueClass) {
+  const metricClass = valueClass === "route-error"
+    ? "route-metric route-error-metric"
+    : "route-metric";
+  return el("div", { class: metricClass }, [
+    el("dt", { text: label }),
+    el("dd", { class: valueClass, text: String(value ?? "—") }),
+  ]);
 }
