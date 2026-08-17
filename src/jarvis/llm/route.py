@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+import os
+import threading
+import time
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -22,6 +26,28 @@ from .tiers import Tier
 
 
 @dataclass(frozen=True)
+class RequestDeadline:
+    """A monotonic budget shared by the caller and route selection."""
+
+    ends_at: float
+
+    @classmethod
+    def after(
+        cls,
+        seconds: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> "RequestDeadline":
+        return cls(clock() + max(0.0, float(seconds)))
+
+    def remaining(self, *, clock: Callable[[], float] = time.monotonic) -> float:
+        return max(0.0, self.ends_at - clock())
+
+    def expired(self, *, clock: Callable[[], float] = time.monotonic) -> bool:
+        return self.remaining(clock=clock) <= 0.0
+
+
+@dataclass(frozen=True)
 class Route:
     """One model endpoint in a tier's ordered fallback chain."""
 
@@ -32,11 +58,15 @@ class Route:
     model: str
     tier: Tier
     timeout_sec: float
+    api_key_env: str = ""
+    enabled: bool = True
+    capabilities: frozenset[str] = frozenset({"chat", "stream", "tools"})
 
 
 def _build_backend(route: Route) -> LLMBackend:
+    api_key = os.environ.get(route.api_key_env) if route.api_key_env else route.api_key
     if route.provider == "openai_compatible":
-        return OpenAICompatibleBackend(route.base_url, api_key=route.api_key or None)
+        return OpenAICompatibleBackend(route.base_url, api_key=api_key or None)
     return OllamaBackend(route.base_url)
 
 
@@ -49,11 +79,15 @@ class RoutedBackend(LLMBackend):
         *,
         state_store: RouteStateStore | None = None,
         backend_factory: Callable[[Route], LLMBackend] = _build_backend,
+        clock: Callable[[], float] = time.monotonic,
+        local_progress_sec: float = 1.2,
     ) -> None:
         self._routes = tuple(routes)
         self._state = state_store or RouteStateStore()
         self._backend_factory = backend_factory
         self._backends: dict[Route, LLMBackend] = {}
+        self._clock = clock
+        self.local_progress_sec = max(0.0, float(local_progress_sec))
 
     @property
     def routes(self) -> tuple[Route, ...]:
@@ -74,11 +108,21 @@ class RoutedBackend(LLMBackend):
             self._backends[route] = backend
         return backend
 
-    def _available(self, tier: Tier):
+    def _available(self, tier: Tier, capability: str = "chat"):
         for route in self.routes_for(tier):
+            if not route.enabled or capability not in route.capabilities:
+                continue
             if self._state.is_invalid_for_run(route) or self._state.is_blocked(route):
                 continue
             yield route
+
+    @staticmethod
+    def _is_local(route: Route) -> bool:
+        try:
+            host = (urlparse(route.base_url).hostname or "").lower()
+        except ValueError:
+            return False
+        return host in {"localhost", "127.0.0.1", "::1"}
 
     @staticmethod
     def _timeout(caller_timeout: float, route: Route) -> float:
@@ -93,8 +137,14 @@ class RoutedBackend(LLMBackend):
             "llm",
         )
 
-    def _run(self, model: str, invoke: Callable[[LLMBackend, Route], Any]):
-        for route in self._available(self._tier(model)):
+    def _run(
+        self,
+        model: str,
+        invoke: Callable[[LLMBackend, Route], Any],
+        *,
+        capability: str = "chat",
+    ):
+        for route in self._available(self._tier(model), capability):
             try:
                 result = invoke(self._backend(route), route)
             except ToolsNotSupportedError:
@@ -118,35 +168,112 @@ class RoutedBackend(LLMBackend):
         ))
 
     def streaming(self, chat_model, system_prompt, user_content, on_token=None,
-                  timeout_sec=30.0, thinking=False):
-        emitted = False
+                  timeout_sec=30.0, thinking=False,
+                  deadline: RequestDeadline | None = None):
+        deadline = deadline or RequestDeadline.after(timeout_sec, clock=self._clock)
+        available = list(self._available(self._tier(chat_model), "stream"))
+        stream_routes = (
+            [route for route in available if self._is_local(route)]
+            + [route for route in available if not self._is_local(route)]
+        )
+        for route in stream_routes:
+            remaining = deadline.remaining(clock=self._clock)
+            if remaining <= 0.0:
+                break
 
-        def forward(token: str) -> None:
-            nonlocal emitted
-            emitted = True
-            if on_token:
-                on_token(token)
+            lock = threading.RLock()
+            progress_or_done = threading.Event()
+            completed = threading.Event()
+            state: dict[str, Any] = {
+                "active": True,
+                "emitted": False,
+                "chunks": [],
+                "result": None,
+                "error": None,
+            }
 
-        for route in self._available(self._tier(chat_model)):
-            try:
-                result = self._backend(route).streaming(
-                    route.model, system_prompt, user_content, on_token=forward,
-                    timeout_sec=self._timeout(timeout_sec, route), thinking=thinking,
-                )
-            except ToolsNotSupportedError:
-                raise
-            except (ProviderError, requests.exceptions.RequestException, TimeoutError) as error:
+            def forward(token: str) -> None:
+                if not token or not token.strip():
+                    return
+                with lock:
+                    if not state["active"]:
+                        return
+                    state["emitted"] = True
+                    state["chunks"].append(token)
+                    progress_or_done.set()
+                    if on_token:
+                        on_token(token)
+
+            def invoke() -> None:
+                try:
+                    state["result"] = self._backend(route).streaming(
+                        route.model,
+                        system_prompt,
+                        user_content,
+                        on_token=forward,
+                        timeout_sec=min(
+                            self._timeout(timeout_sec, route),
+                            deadline.remaining(clock=self._clock),
+                        ),
+                        thinking=thinking,
+                    )
+                except Exception as error:
+                    state["error"] = error
+                finally:
+                    completed.set()
+                    progress_or_done.set()
+
+            worker = threading.Thread(
+                target=invoke,
+                daemon=True,
+                name=f"jarvis-route-{route.name}",
+            )
+            worker.start()
+            progress_wait = (
+                min(remaining, self.local_progress_sec)
+                if self._is_local(route)
+                else remaining
+            )
+            progress_or_done.wait(progress_wait)
+
+            with lock:
+                emitted = bool(state["emitted"])
+                finished = completed.is_set()
+                result = state["result"]
+                error = state["error"]
+
+            if emitted:
+                completed.wait(deadline.remaining(clock=self._clock))
+                with lock:
+                    state["active"] = False
+                    result = state["result"]
+                    error = state["error"]
+                    chunks = "".join(state["chunks"])
+                if error is not None:
+                    if isinstance(error, ToolsNotSupportedError):
+                        raise error
+                    if isinstance(error, (ProviderError, requests.exceptions.RequestException, TimeoutError)):
+                        self._failed(route, error)
+                    return None
+                self._state.record_hit(route)
+                return result or chunks
+
+            with lock:
+                state["active"] = False
+
+            if finished and result is not None:
+                if on_token and isinstance(result, str) and result.strip():
+                    on_token(result)
+                self._state.record_hit(route)
+                return result
+            if isinstance(error, ToolsNotSupportedError):
+                raise error
+            if isinstance(error, (ProviderError, requests.exceptions.RequestException, TimeoutError)):
                 self._failed(route, error)
-                if emitted:
-                    return None
-                continue
-            if result is None:
-                self._failed(route, "EmptyResponse")
-                if emitted:
-                    return None
-                continue
-            self._state.record_hit(route)
-            return result
+            elif error is not None:
+                self._failed(route, ProviderError(type(error).__name__))
+            else:
+                self._failed(route, "ProgressDeadlineExceeded" if not finished else "EmptyResponse")
         return None
 
     def chat(self, chat_model, messages, timeout_sec=30.0, extra_options=None,
@@ -154,14 +281,19 @@ class RoutedBackend(LLMBackend):
         return self._run(chat_model, lambda backend, route: backend.chat(
             route.model, messages, timeout_sec=self._timeout(timeout_sec, route),
             extra_options=extra_options, tools=tools, thinking=thinking,
-        ))
+        ), capability="tools" if tools else "chat")
 
     def embed(self, text, model, timeout_sec=15.0):
         return None
 
     def list_models(self, timeout_sec=5.0) -> list[str]:
         models: list[str] = []
-        for route in self._routes:
+        routes = dict.fromkeys(
+            route
+            for tier in (Tier.FAST, Tier.CHAT)
+            for route in self._available(tier, "chat")
+        )
+        for route in routes:
             try:
                 found = self._backend(route).list_models(
                     timeout_sec=self._timeout(timeout_sec, route)
@@ -177,7 +309,7 @@ class RoutedBackend(LLMBackend):
     def warm_up(self, model, timeout_sec=60.0, keep_alive="30m") -> bool:
         routes = self.routes_for(self._tier(model))
         first_healthy = next(self._available(self._tier(model)), None)
-        local = next((route for route in reversed(routes) if route.provider == "ollama"), None)
+        local = next((route for route in routes if self._is_local(route)), None)
         targets = []
         for route in (first_healthy, local):
             if route is not None and route not in targets:
@@ -220,6 +352,9 @@ class RoutedBackend(LLMBackend):
                     "model": route.model,
                     "tier": tier.value,
                     "timeout_sec": route.timeout_sec,
+                    "enabled": route.enabled,
+                    "capabilities": sorted(route.capabilities),
+                    "api_key_env": route.api_key_env,
                     "active": route == active,
                     "invalid": self._state.is_invalid_for_run(route),
                     **status,

@@ -5,6 +5,22 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
+
+def pytest_collection_modifyitems(items):
+    """Give every collected test one CI classification."""
+    classifications = {"unit", "integration", "e2e", "performance", "eval"}
+    for item in items:
+        if classifications.intersection(marker.name for marker in item.iter_markers()):
+            continue
+        path = str(item.fspath).replace("\\", "/").lower()
+        if "_e2e" in path:
+            item.add_marker(pytest.mark.e2e)
+        elif "/performance/" in path:
+            item.add_marker(pytest.mark.performance)
+        else:
+            item.add_marker(pytest.mark.unit)
+
+
 # Robustly locate repository root (directory containing src/jarvis)
 _this_file = Path(__file__).resolve()
 ROOT = None

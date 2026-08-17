@@ -195,7 +195,7 @@ class TestV4Migration:
             "served-fast", "served-chat"
         ]
         on_disk = json.loads(cfg_path.read_text())
-        assert on_disk["_config_version"] == 4
+        assert on_disk["_config_version"] == 5
         assert on_disk["llm_routes"] == settings.llm_routes
 
     def test_local_config_keeps_empty_route_list(self, tmp_path, monkeypatch):
@@ -204,4 +204,4 @@ class TestV4Migration:
         )
 
         assert settings.llm_routes == []
-        assert json.loads(cfg_path.read_text())["_config_version"] == 4
+        assert json.loads(cfg_path.read_text())["_config_version"] == 5

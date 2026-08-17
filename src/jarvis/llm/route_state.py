@@ -33,6 +33,7 @@ def route_state_key(route: Any) -> str:
         str(getattr(route, "name", "")),
         str(getattr(route, "provider", "")),
         str(getattr(route, "api_key", "")),
+        str(getattr(route, "api_key_env", "")),
     ))
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
     return f"{getattr(getattr(route, 'tier', None), 'value', 'chat')}:{digest}"

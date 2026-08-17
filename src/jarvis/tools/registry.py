@@ -25,6 +25,7 @@ from .builtin.tool_search import ToolSearchTool
 from .types import ToolExecutionResult
 from ..config import Settings
 from .external.mcp_client import MCPClient
+from .external.mcp_preflight import preflight_mcp_config
 from ..debug import debug_log
 from ..runtime import Phase, record_tool, set_phase_if
 
@@ -137,6 +138,11 @@ def discover_mcp_tools(mcps_config: Dict[str, Any]) -> Tuple[Dict[str, ToolSpec]
 
         for server_name in mcps_config.keys():
             try:
+                preflight = preflight_mcp_config(mcps_config[server_name])
+                if not preflight.available:
+                    errors[server_name] = preflight.reason
+                    debug_log(f"MCP server '{server_name}' disabled: {preflight.reason}", "mcp")
+                    continue
                 tools = client.list_tools(server_name)
                 for tool_info in tools:
                     tool_name = tool_info.get("name")
@@ -409,17 +415,37 @@ def _run_tool_with_retries(
             if not _security_allows_tool():
                 return _denied_result()
             try:
+                preflight = preflight_mcp_config(mcps_config[server_name])
+                if not preflight.available:
+                    return ToolExecutionResult.failure(
+                        preflight.code, preflight.reason, phase="preflight"
+                    )
                 if MCPClient is None:
-                    return ToolExecutionResult(success=False, reply_text=None, error_message="MCP client not available. Install 'mcp' package.")
+                    return ToolExecutionResult.failure("unsupported", "MCP support is not installed.", phase="preflight")
 
                 client = MCPClient(mcps_config)
                 result = client.invoke_tool(server_name=server_name, tool_name=mcp_tool_name, arguments=tool_args or {})
                 is_error = bool(result.get("isError", False))
                 text = result.get("text") or None
-                return ToolExecutionResult(success=(not is_error), reply_text=text, error_message=(text if is_error else None))
+                if is_error:
+                    return ToolExecutionResult.failure("execution_failed", text or "The MCP tool reported an error.",
+                        technical_details=text)
+                if not text:
+                    return ToolExecutionResult.failure("execution_failed", "The MCP tool returned no usable result.",
+                        technical_details="empty MCP response")
+                return ToolExecutionResult(success=True, reply_text=text)
             except Exception as e:
                 detail = str(e) or type(e).__name__
-                return ToolExecutionResult(success=False, reply_text=None, error_message=f"MCP tool '{raw_name}' error: {detail}")
+                # ``reply_text`` remains the safe user-facing contract while
+                # ``error_message`` preserves the legacy diagnostic detail
+                # for the planner and existing callers.
+                return ToolExecutionResult(
+                    success=False,
+                    reply_text=f"MCP tool '{raw_name}' could not run.",
+                    error_message=detail,
+                    error_code="execution_failed",
+                    technical_details=detail,
+                )
 
     # Check builtin tools first
     if name in BUILTIN_TOOLS:
@@ -440,6 +466,6 @@ def _run_tool_with_retries(
 
     # Unknown tool
     debug_log(f"unknown tool requested: {tool_name}", "tools")
-    return ToolExecutionResult(success=False, reply_text=None, error_message=f"Unknown tool: {tool_name}")
+    return ToolExecutionResult.failure("invalid_config", f"Unknown tool: {tool_name}", phase="routing")
 
 

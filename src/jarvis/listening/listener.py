@@ -1260,6 +1260,19 @@ class VoiceListener(threading.Thread):
         from ..reply.engine import run_reply_engine
         from ..daemon import query_lock
 
+        def _memory_lookup_started() -> None:
+            phrase = str(
+                getattr(self.cfg, "memory_lookup_acknowledgement", "") or ""
+            ).strip()
+            if phrase and self.tts and self.tts.enabled:
+                try:
+                    self.tts.speak(phrase)
+                except Exception as exc:
+                    debug_log(
+                        f"memory acknowledgement TTS failed: {type(exc).__name__}",
+                        "voice",
+                    )
+
         # Process the query (keep thinking tune playing during processing).
         # Hold the shared voice+text query lock so a voice query and a text
         # chat query cannot run the reply engine concurrently against the
@@ -1270,6 +1283,7 @@ class VoiceListener(threading.Thread):
                 reply = run_reply_engine(
                     self.db, self.cfg, None, query, self.dialogue_memory,
                     language=self._last_detected_language,
+                    on_memory_lookup_started=_memory_lookup_started,
                 )
         except Exception as e:
             # Log the error visibly - this should never happen silently

@@ -18,6 +18,12 @@ Design principles enforced by the engine:
 - Response Language: the initial system message always constrains the reply language, in one of two ways. A Piper voice speaks exactly one language, so when one is configured the reply is pinned to it; the name is read from the voice's own `<model>.onnx.json` metadata via `resolve_voice_language` in `src/jarvis/output/tts.py`, so swapping in a voice of any language needs no code change. Chatterbox is English-only and always carries the English constraint. Otherwise — speech off, a non-Piper engine, text chat, or metadata that cannot be read — the model is told to answer in the same language the user used. No language is ever guessed: naming the wrong one would mute the assistant's ability to answer the user in their own language, while mirroring the user cannot, and it holds for every language rather than a surveyed list. Saying nothing at all is not neutral, because the surrounding prompt is English and the model drifts to English with it.
 - Data Privacy: Inputs are redacted and logging is concise and purposeful via `debug_log`.
 
+### Reply deadlines and memory acknowledgement
+
+Every turn creates a monotonic `RequestDeadline` from `simple_reply_first_audio_sec`. Once the existing language-independent planner and recall gate establish that long-term memory is needed, a caller-unspecified budget is rebased to `memory_reply_first_audio_sec`. Deadline-aware sources share the remaining budget rather than each receiving a fresh full timeout.
+
+There is no word-list early router and no path that bypasses tool selection based on hard-coded language patterns. Memory intent comes from the normal planner. When retrieval will run, the engine invokes `on_memory_lookup_started` once. The voice listener may speak the configured `memory_lookup_acknowledgement`; its empty default keeps the behaviour silent and language-neutral.
+
 ### Entry and Inputs
 - Entry point: the reply engine receives a user query from the ingestion layer.
 - Inputs:
@@ -25,6 +31,7 @@ Design principles enforced by the engine:
   - persistent store: a database-like service, optionally with vector search.
   - configuration: model endpoints, timeouts, feature flags, and tool settings.
   - speech synthesizer (optional): for spoken output and hot-window activation.
+  - optional request deadline and memory-lookup callback: shared latency budget and a language-neutral notification boundary.
 
 ### Steps and Branches (Agentic Messages Loop)
 1. Redact
@@ -60,6 +67,7 @@ Design principles enforced by the engine:
      - `context_hint` carries a compact summary of what is already live in the assistant's context (current time, location, short-term dialogue). The extractor uses it to skip implicit personal questions whose answers are already visible — those facts do not need to be pulled from long-term memory.
    - If `keywords` present, call `search_conversation_memory_by_keywords(db, keywords, from_time, to_time, ...)` to retrieve relevant snippets (bounded by configured max results).
    - Join snippets into a `conversation_context` string for inclusion in the system message.
+   - When `remio_memory_enabled` is true, start a bounded Remio note search alongside diary retrieval. Accept up to three attributable `[Remio: title]` excerpts within two seconds and the remaining request deadline. A missing or stalled local service is invisible to diary and graph enrichment.
 
 5. Build Initial Messages
    - messages = [
@@ -295,6 +303,7 @@ Turn 4: LLM → {content: "Here's a comprehensive comparison of the iPhone 15 mo
   - `llm_chat_timeout_sec` (messages loop turn)
 - Memory enrichment:
   - `memory_enrichment_max_results` limits recalled snippets.
+  - `remio_memory_enabled` (default `true`) adds a bounded search of the local Remio knowledge base when the planner requests memory. Remio excerpts remain source-labelled and failures are ignored.
   - `memory_digest_enabled` (default `null` = auto-on for SMALL models ≤7B, off for LARGE) distils the combined diary + graph dump into a short relevance-filtered note via a cheap LLM pass before injecting into the system prompt. See **Memory Digest for Small Models** below.
   - `tool_result_digest_enabled` (default `null` = auto-on for SMALL models ≤7B) distils raw tool-result payloads (especially webSearch UNTRUSTED WEB EXTRACT blocks and fetch_web_page responses) into a short attributed fact note before appending as a tool-role message. Auto-on for small models mitigates large payloads (fetch_web_page truncates at 50,000 chars) blowing the 8192 num_ctx window. Set to `true` to force on, `false` to force off. See **Tool-Result Digest for Small Models** below.
 - Tools and MCP:

@@ -18,6 +18,7 @@ from jarvis.llm import (
     OllamaBackend,
     OpenAICompatibleBackend,
     RoutedBackend,
+    RequestDeadline,
     Route,
     Tier,
     ProviderError,
@@ -53,7 +54,9 @@ Function-style Ollama helpers remain available to performance tests and eval scr
 
 ### Streaming
 
-Routes may switch only before a token reaches the caller. Once the wrapped `on_token` callback has emitted content, a failure ends that stream and no later route is contacted.
+`RequestDeadline` carries one monotonic budget across route attempts. When no explicit deadline is supplied, `RoutedBackend.streaming()` derives it from the caller timeout. Streaming promotes an available loopback route for a 1.2-second progress window before continuing through the remaining route chain. This affects timing only; `routes_for(tier)` retains the configured tier order.
+
+The first route to emit meaningful text owns the answer. Its wrapped callback becomes the only output path, and later output from an abandoned worker is discarded. Once a route owns the answer, a failure ends that stream and no later route is contacted. This output gate prevents a slow local worker from duplicating a cloud response.
 
 ## Typed provider failures
 
@@ -71,9 +74,9 @@ Exception text is generic and contains no endpoint URL, key, response body, or m
 
 ## Routing
 
-`Route` is a frozen dataclass with `name`, `provider`, `base_url`, `api_key`, `model`, `tier`, and `timeout_sec`. Its credential field is excluded from `repr`.
+`Route` is a frozen dataclass with `name`, `provider`, `base_url`, `api_key`, `api_key_env`, `model`, `tier`, `timeout_sec`, `enabled`, and `capabilities`. Its direct credential field is excluded from `repr`; an environment credential is resolved only while constructing its backend.
 
-`RoutedBackend` groups routes by tier and tries each unblocked route in configuration order. A route's timeout is the smaller of its own limit and the caller's limit. A provider failure, connection failure, timeout, model failure, auth failure, or empty response moves to the next candidate. An exhausted chain returns `None`.
+`RoutedBackend` groups routes by tier and tries each enabled, capable, unblocked route in configuration order. Deadline-aware streaming applies the local progress rule above. A route's timeout is the smaller of its own limit and the remaining caller budget. A provider failure, connection failure, timeout, model failure, auth failure, or empty response moves to the next candidate. An exhausted chain returns `None`.
 
 Configured FAST and CHAT chains always end with loopback Ollama. A configuration with no routes has one effective local candidate per lane. `resolve_model()` returns a string-compatible value carrying its `Tier`, so existing backend method signatures remain ordinary model-string APIs while the router can select a chain.
 
@@ -129,13 +132,18 @@ Each `llm_routes` entry has this shape:
   "provider": "openai_compatible",
   "base_url": "https://endpoint.example/v1",
   "api_key": "",
+  "api_key_env": "PROVIDER_API_KEY",
   "model": "model-exposed-by-the-endpoint",
   "tier": "chat",
-  "timeout_sec": 4.0
+  "timeout_sec": 4.0,
+  "enabled": true,
+  "capabilities": ["chat", "stream", "tools"]
 }
 ```
 
-The v3 to v4 migration converts an explicitly configured OpenAI-compatible endpoint into the first FAST and CHAT candidates. Pure Ollama configs retain an empty route list. The loader accepts only the owned route shape and ignores malformed entries.
+The loader accepts this tiered shape and ignores malformed entries. List order is route order. A credential may be stored directly in `api_key` or referenced by `api_key_env`; environment values are resolved only when the backend is built and are never copied into configuration.
+
+Config migration version 5 converts priority-based route lists into ordered FAST and CHAT entries. It preserves activation, capabilities, and environment-variable names without reading their values. Existing tiered entries receive the same explicit defaults, and repeated migration is idempotent.
 
 `scripts/import_fcc_keys.py` probes keys from `~/.fcc/.env` and writes routes only for endpoints that advertise a model. `python -m jarvis.llm.probe` performs `GET /models`, prints no credential material, and stores the observed catalogues in `~/.jarvis/llm_probe.json` with mode `0o600`. Model names come from live endpoint responses or a probed FCC smoke model that is present in that response.
 

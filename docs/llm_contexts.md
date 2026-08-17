@@ -239,10 +239,10 @@ Driven by `detect_model_size(model_name) → SMALL (≤7.5B) | LARGE (>7.5B)` �
 
 ## Config keys
 
-- Routes and models: `llm_routes` contains ordered FAST and CHAT entries. `llm_chat_model` and `fast_model` carry the first effective route models for prompt sizing. `ollama_chat_model` is the PRIVATE and local-fallback model. Every explicit context model is obtained through `resolve_model(cfg, tier)`.
+- Routes and models: `llm_routes` contains ordered FAST and CHAT entries. `llm_chat_model` and `fast_model` carry the first effective route models for prompt sizing. `ollama_chat_model` is the PRIVATE and local-fallback model. Every explicit context model is obtained through `resolve_model(cfg, tier)`. Streaming uses one monotonic request deadline; an available loopback route receives a 1.2-second progress window before the remaining tier chain is tried, and the first route to emit text exclusively owns the answer.
 - Embeddings: `ollama_embed_model` through loopback `get_embedding_backend(cfg)`. Embeddings never use `llm_routes`.
-- Flags: `memory_digest_enabled`, `tool_result_digest_enabled`, `llm_thinking_enabled`, `intent_judge_thinking_enabled`, `tool_selection_strategy`, `planner_enabled`, `low_power_mode`
-- Timeouts: `llm_chat_timeout_sec` (45s), `llm_digest_timeout_sec` (8s, shared across #4/#5/#6), `llm_tools_timeout_sec`, `intent_judge_timeout_sec` (6s), `planner_timeout_sec` (3s)
+- Flags: `memory_digest_enabled`, `tool_result_digest_enabled`, `remio_memory_enabled`, `llm_thinking_enabled`, `intent_judge_thinking_enabled`, `tool_selection_strategy`, `planner_enabled`, `low_power_mode`. Enabled Remio retrieval runs locally alongside planner-directed diary lookup, contributes attributable excerpts only, and fails without changing the prompt.
+- Timeouts: `llm_chat_timeout_sec` (45s), `llm_digest_timeout_sec` (8s, shared across #4/#5/#6), `llm_tools_timeout_sec`, `intent_judge_timeout_sec` (6s), `planner_timeout_sec` (3s), `simple_reply_first_audio_sec` (3s), `memory_reply_first_audio_sec` (10s). Reply budgets are monotonic and planner-directed memory work shares the remaining budget.
 - Caps: `agentic_max_turns` (8), `tool_search_max_calls` (3), `_LLM_MAX_SELECTED` (5), `_DIGEST_MAX_CHARS` (400), `_TOOL_DIGEST_MAX_CHARS` (600). Per-context `max_tokens` caps listed above (50–1500 depending on task — the intent judge's 1500 covers reasoning + answer on reasoning models; rewrite tasks scale with input length).
 - Runtime residency: `low_power_mode` skips startup LLM warmups and shortens Ollama `keep_alive` for intent judge and warmup calls from `"30m"` to `"1m"`. It does not change prompts, model selection, timeouts, or context limits.
 

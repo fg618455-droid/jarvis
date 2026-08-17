@@ -10,6 +10,8 @@ The desktop app is a **separate package** from the core `jarvis` module. It depe
 - Building alternative UIs (web, mobile) without modifying core logic
 - Keeping PyQt6 dependencies isolated from the core package
 
+Importing `desktop_app` does not import `desktop_app.app` or Qt. Public app exports are resolved lazily on first attribute access, so non-GUI helpers can import the package without a working Qt installation.
+
 ## Package Structure
 
 ```

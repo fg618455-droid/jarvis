@@ -52,9 +52,12 @@ def test_put_routes_preserves_a_masked_key(api_client, tmp_path, monkeypatch):
         "provider": current["provider"],
         "base_url": current["base_url"],
         "api_key": current["masked_key"],
+        "api_key_env": "ROUTE_API_KEY",
         "model": "replacement-model",
         "tier": current["tier"],
         "timeout_sec": current["timeout_sec"],
+        "enabled": False,
+        "capabilities": ["chat", "stream"],
     }
 
     response = api_client.put("/api/llm/routes", json={"routes": [route]})
@@ -62,7 +65,10 @@ def test_put_routes_preserves_a_masked_key(api_client, tmp_path, monkeypatch):
     assert response.status_code == 200
     stored = json.loads(path.read_text())["llm_routes"][0]
     assert stored["api_key"] == "synthetic-credential"
+    assert stored["api_key_env"] == "ROUTE_API_KEY"
     assert stored["model"] == "replacement-model"
+    assert stored["enabled"] is False
+    assert stored["capabilities"] == ["chat", "stream"]
 
 
 def test_route_api_and_debug_log_never_emit_clear_key(

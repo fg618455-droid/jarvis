@@ -163,7 +163,7 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 
 - **Conversational Awareness** - Understands ongoing discussions. Ask "Jarvis, what do you think?" and it knows what you're talking about. Works naturally in multi-person conversations.
 - **Text Chat** - Type to Jarvis alongside voice. Voice and text share one conversation, so a follow-up typed in the chat window continues a voice discussion. Text never speaks. Open it from the tray menu (`💬 Chat…`) while Jarvis is listening. The window is styled like an SMS thread with a single contact: speech bubbles, timestamps, and an online/typing presence line. It shows a local status banner while Jarvis starts, stops, or needs to be restarted, and every message you send carries a rewind button that rolls the conversation back to that point and regenerates the reply.
-- **Unlimited Memory** - Never forgets. Searches across all your conversation history. Browse and edit it in the Control Centre.
+- **Unlimited Memory** - Never forgets. Searches across all your conversation history and can add bounded, attributable excerpts from a local Remio knowledge base. Browse and edit Jarvis memory in the Control Centre.
 - **Control Centre** - A local web interface the daemon serves at `http://127.0.0.1:5055`: live state, memory, conversation, tools, security, technical readings, and every setting. Offline, no build step, nothing leaves the machine.
 - **Adaptive Tone** - Automatically surgical for code, pragmatic for business, encouraging for wellbeing — no manual mode switching
 - **Smart Tool Selection** - Embedding-based relevance filtering picks only the tools needed per query — add unlimited MCP tools without performance degradation
@@ -256,16 +256,20 @@ The control centre's **LLM routes** view shows active routes, cooldowns, failure
       "provider": "openai_compatible",
       "base_url": "http://localhost:1234/v1",
       "api_key": "",
+      "api_key_env": "PROVIDER_API_KEY",
       "model": "your-served-model-name",
       "tier": "chat",
-      "timeout_sec": 4.0
+      "timeout_sec": 4.0,
+      "enabled": true,
+      "capabilities": ["chat", "stream", "tools"]
     }
   ]
 }
 ```
 
 - `tier` is `fast` for short classification work or `chat` for replies and planning.
-- `timeout_sec` is a per-route deadline. A timeout moves the call to the next candidate.
+- `api_key_env` keeps the credential outside the config; its value is resolved only when the route is used. `api_key` remains available for migrated configurations.
+- `timeout_sec` is a per-route limit. Streaming also shares one request deadline across attempts. A local route gets 1.2 seconds to start; if it stays silent, the remaining tier chain continues. The first route to emit text owns the answer, so late local output cannot duplicate a cloud reply.
 - HTTP rate limits and quota resets are persisted in `~/.jarvis/llm_routes_state.json`, so restarting does not immediately retry a blocked key.
 - HTTP 401 and 403 responses remove the key for the process lifetime.
 

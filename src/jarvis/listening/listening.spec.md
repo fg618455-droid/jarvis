@@ -371,6 +371,7 @@ If the intent judge later rejects the query (and no hot window override applies)
 | `wake_command_timeout_seconds` | 12 | Duration of the one-request capture after a standalone wake word. |
 | `wake_acknowledgement` | configured phrase | Spoken acknowledgement for a standalone wake word. |
 | `conversation_mode_acknowledgement` | configured phrase | Spoken acknowledgement when continuous conversation begins. |
+| `memory_lookup_acknowledgement` | empty | Optional phrase spoken once before planner-directed long-term memory retrieval. Empty is silent and language-neutral. |
 
 Note: The intent judge has no enable flag. It is used for contextual wake-name occurrences and hot-window input, while edge-position wake addresses take the deterministic fast path. It falls back to simple wake-word detection when Ollama is unavailable.
 

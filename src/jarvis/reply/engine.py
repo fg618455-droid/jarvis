@@ -5,7 +5,7 @@ Handles memory enrichment, tool planning and execution.
 """
 
 from __future__ import annotations
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from ..utils.redact import redact
 from ..system_prompt import build_system_prompt
@@ -21,6 +21,7 @@ from ..llm import (
     resolve_model,
     Tier,
     ToolsNotSupportedError,
+    RequestDeadline,
 )
 
 
@@ -877,7 +878,10 @@ def _build_enrichment_context_hint(cfg, recent_messages: list) -> Optional[str]:
 def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                     text: str, dialogue_memory: "DialogueMemory",
                     language: Optional[str] = None,
-                    quiet: bool = False) -> Optional[str]:
+                    quiet: bool = False,
+                    deadline: Optional[RequestDeadline] = None,
+                    on_memory_lookup_started: Optional[Callable[[], None]] = None,
+                    ) -> Optional[str]:
     """
     Main entry point for reply generation.
 
@@ -903,6 +907,10 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     """
     # Step 1: Redact sensitive information
     redacted = redact(text)
+    caller_supplied_deadline = deadline is not None
+    deadline = deadline or RequestDeadline.after(
+        _first_audio_budget(cfg, "simple_reply_first_audio_sec", 3.0)
+    )
 
     # Step 2: Check for recent dialogue context
     recent_messages = []
@@ -1182,6 +1190,19 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 needs_memory = False
         except Exception as exc:  # noqa: BLE001
             debug_log(f"recall gate failed (fail-open): {exc}", "memory")
+    if needs_memory:
+        if not caller_supplied_deadline:
+            deadline = RequestDeadline.after(
+                _first_audio_budget(cfg, "memory_reply_first_audio_sec", 10.0)
+            )
+        if on_memory_lookup_started is not None:
+            try:
+                on_memory_lookup_started()
+            except Exception as exc:
+                debug_log(
+                    f"memory lookup callback failed: {type(exc).__name__}",
+                    "memory",
+                )
     # Topic hint from the directive (if any) — passed to the memory
     # extractor so keyword selection is anchored on what the planner
     # actually wanted to look up, instead of re-deriving from the raw
@@ -1315,6 +1336,44 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     else:
         debug_log("memory enrichment skipped: planner did not request it", "memory")
 
+    # Remio is a local, optional source. Start it before the diary query so
+    # both sources spend the same wall-clock budget. The worker is output-free
+    # and its result is accepted only below, before prompt construction.
+    remio_pool = None
+    remio_future = None
+    if (
+        needs_memory
+        and keywords
+        and bool(getattr(cfg, "remio_memory_enabled", False))
+        and deadline.remaining() > 0.15
+    ):
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            from ..memory.remio import RemioAdapter
+
+            remio_pool = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="jarvis-remio",
+            )
+            remio_future = remio_pool.submit(
+                RemioAdapter(
+                    timeout_sec=min(2.0, deadline.remaining()),
+                    max_results=min(
+                        3,
+                        int(getattr(cfg, "memory_enrichment_max_results", 3)),
+                    ),
+                ).search,
+                " ".join(keywords[:8]),
+            )
+        except Exception as exc:
+            if remio_pool is not None:
+                remio_pool.shutdown(wait=False, cancel_futures=True)
+                remio_pool = None
+            debug_log(
+                f"remio retrieval start failed (non-fatal): {type(exc).__name__}",
+                "memory",
+            )
+
     # Step 4a: Diary enrichment (episodic conversation history)
     if enrichment_source in ("all", "diary") and keywords:
         try:
@@ -1347,6 +1406,37 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 debug_log(f"diary enrichment: {len(context_results)} results", "memory")
         except Exception as e:
             debug_log(f"diary enrichment failed: {e}", "memory")
+
+    if remio_future is not None:
+        try:
+            from ..memory.remio import format_hits
+
+            wait_budget = min(2.0, deadline.remaining())
+            remio_hits = (
+                remio_future.result(timeout=wait_budget)
+                if wait_budget > 0.0
+                else []
+            )
+            remio_context = format_hits(remio_hits)
+            if remio_context:
+                raw_diary_entries.extend(hit.text for hit in remio_hits)
+                conversation_context = "\n\n".join(
+                    part
+                    for part in (conversation_context, remio_context)
+                    if part
+                )
+                debug_log(
+                    f"remio enrichment: {len(remio_hits)} attributable hits",
+                    "memory",
+                )
+        except Exception as exc:
+            debug_log(
+                f"remio enrichment failed (non-fatal): {type(exc).__name__}",
+                "memory",
+            )
+        finally:
+            if remio_pool is not None:
+                remio_pool.shutdown(wait=False, cancel_futures=True)
 
     # Step 4b: Graph memory enrichment (structured knowledge about the user).
     # The graph is a question-answer index: each node holds knowledge facts the
@@ -2649,3 +2739,11 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             debug_log(f"dialogue memory error: {e}", "memory")
 
     return reply
+
+
+def _first_audio_budget(cfg: Any, key: str, default: float) -> float:
+    """Read a latency budget without allowing bad config to fail a turn."""
+    try:
+        return float(getattr(cfg, key, default))
+    except (TypeError, ValueError):
+        return default
