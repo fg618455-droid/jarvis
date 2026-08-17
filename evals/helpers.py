@@ -246,27 +246,11 @@ class MockConfig:
     ollama_chat_model: str = "gemma4:e2b"
     ollama_embed_model: str = "nomic-embed-text"
     # Provider-aware fields (for LM Studio, OpenAI-compatible, etc.)
-    llm_provider: str = ""
+    llm_provider: str = "ollama"
     llm_base_url: str = ""
     llm_chat_model: str = ""
+    fast_model: str = ""
     embedding_model: Optional[str] = None
-
-    def __post_init__(self):
-        """Auto-configure provider from EVAL_JUDGE_BASE_URL when set."""
-        import os as _os
-        judge_url = _os.environ.get("EVAL_JUDGE_BASE_URL", "").strip()
-        if judge_url and "11434" not in judge_url:
-            # Non-default judge URL (e.g. LM Studio) → switch to
-            # OpenAI-compatible provider. The backend appends
-            # ``/chat/completions``, so the base URL must include ``/v1``
-            # for servers that require the versioned path (LM Studio,
-            # oMLX, etc.).
-            self.llm_provider = "openai_compatible"
-            self.llm_base_url = judge_url.rstrip("/") + "/v1"
-            judge_model = _os.environ.get("EVAL_JUDGE_MODEL", "").strip()
-            if judge_model:
-                self.llm_chat_model = judge_model
-                self.ollama_chat_model = judge_model
     db_path: str = ":memory:"
     sqlite_vss_path: Optional[str] = None
     voice_debug: bool = True
@@ -294,6 +278,8 @@ class MockConfig:
     llm_embedding_timeout_sec: float = 10.0
     llm_chat_timeout_sec: float = 120.0
     agentic_max_turns: int = 8
+    planner_enabled: bool = True
+    planner_timeout_sec: float = 20.0
     memory_enrichment_max_results: int = 5
     active_profiles: List[str] = field(default_factory=lambda: ["developer", "business", "life"])
     location_enabled: bool = True
@@ -303,6 +289,37 @@ class MockConfig:
     dialogue_memory_timeout: int = 300
     mcps: Dict[str, Any] = field(default_factory=dict)
     use_stdin: bool = True
+
+    def __post_init__(self):
+        """Point every model-resolving field at the single eval knob.
+
+        ``JUDGE_MODEL`` is the one model the suite runs on: it is both the
+        model under test and the judge. ``resolve_model`` reads
+        ``llm_chat_model`` for ``Tier.CHAT`` and ``fast_model`` for
+        ``Tier.FAST`` regardless of provider, so both must be populated on
+        every path — an unset field resolves to the empty string, and the
+        contexts that guard on "no model configured" then skip their LLM
+        call and return a neutral result. That reads as a content failure
+        in the eval report when it is really an unconfigured harness.
+        """
+        import os as _os
+
+        judge_url = _os.environ.get("EVAL_JUDGE_BASE_URL", "").strip()
+        if judge_url and "11434" not in judge_url:
+            # Non-default judge URL (e.g. LM Studio) → OpenAI-compatible
+            # provider. The backend appends ``/chat/completions``, so the
+            # base URL must include ``/v1`` for servers that require the
+            # versioned path (LM Studio, oMLX, etc.).
+            self.llm_provider = "openai_compatible"
+            self.llm_base_url = judge_url.rstrip("/") + "/v1"
+        else:
+            self.llm_provider = "ollama"
+            if judge_url:
+                self.ollama_base_url = judge_url.rstrip("/")
+
+        self.llm_chat_model = JUDGE_MODEL
+        self.ollama_chat_model = JUDGE_MODEL
+        self.fast_model = JUDGE_MODEL
 
 
 @dataclass
@@ -415,6 +432,45 @@ class JudgeVerdict:
     score: float  # 0.0 to 1.0
     reasoning: str
     criteria_scores: Dict[str, float] = field(default_factory=dict)
+
+
+def is_model_available(model: str) -> bool:
+    """Return True when ``model`` is served by the configured endpoint.
+
+    Evals that parametrise over a fixed model roster must skip, not fail,
+    when a listed model is not installed locally. A missing model produces
+    a backend error that looks exactly like a content failure in the
+    report, which is the worst kind of false signal: it accuses the model
+    of getting the answer wrong when it was never asked.
+    """
+    import requests
+
+    base = JUDGE_BASE_URL.rstrip("/")
+    wanted = (model or "").strip()
+    if not wanted:
+        return False
+
+    try:
+        resp = requests.get(f"{base}/api/tags", timeout=2)
+        if resp.status_code == 200:
+            names = [m.get("name", "") for m in resp.json().get("models", [])]
+            # Ollama reports "name:tag"; an untagged request resolves to :latest.
+            return any(
+                n == wanted or n.split(":")[0] == wanted.split(":")[0]
+                for n in names
+            )
+    except Exception:
+        pass
+
+    try:
+        resp = requests.get(f"{base}/v1/models", timeout=2)
+        if resp.status_code == 200:
+            return any(
+                m.get("id", "") == wanted for m in resp.json().get("data", [])
+            )
+    except Exception:
+        pass
+    return False
 
 
 def is_judge_llm_available() -> bool:
@@ -624,33 +680,61 @@ Generated Search Query: "{search_query}"
 
 
 def _parse_judge_response(response: str) -> JudgeVerdict:
-    """Parse the structured judge response into a JudgeVerdict."""
-    lines = response.strip().split("\n")
-    criteria_scores = {}
+    """Parse the structured judge response into a JudgeVerdict.
+
+    Score lines are matched leniently. Models routinely echo the literal
+    placeholder from the prompt template (``RELEVANCE: [2]``), wrap the
+    label in markdown (``**RELEVANCE:** 2``), or write the denominator
+    (``2/10``). A strict parser drops every criterion on any of those,
+    and the resulting empty ``criteria_scores`` used to collapse to a
+    neutral 0.5 — the exact value callers compare against with
+    ``>= 0.5`` / ``< 0.5``, so an unparsed verdict silently decided the
+    test either way. When no criterion parses we now fall back to the
+    OVERALL verdict rather than to the threshold itself.
+    """
+    import re as _re
+
+    criteria_scores: Dict[str, float] = {}
     is_passed = False
+    overall_seen = False
     reasoning = ""
 
-    for line in lines:
-        line = line.strip()
-        if ":" in line:
-            key, value = line.split(":", 1)
-            key = key.strip().upper()
-            value = value.strip()
+    for line in response.strip().split("\n"):
+        line = line.strip().lstrip("-*• ").strip()
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip().strip("*_#[]() ").upper()
+        value = value.strip()
 
-            if key == "OVERALL":
-                is_passed = "PASS" in value.upper()
-            elif key == "REASONING":
-                reasoning = value
-            else:
-                # Try to parse as score
-                try:
-                    score = float(value.split()[0])
-                    criteria_scores[key.lower()] = score / 10.0  # Normalize to 0-1
-                except (ValueError, IndexError):
-                    pass
+        if key == "OVERALL":
+            upper = value.upper()
+            if "PASS" in upper or "FAIL" in upper:
+                is_passed = "PASS" in upper
+                overall_seen = True
+        elif key == "REASONING":
+            reasoning = value.strip("*_ ")
+        else:
+            # First number anywhere in the value: handles "[2]", "**2**",
+            # "2/10", "2 out of 10", "Score: 2".
+            match = _re.search(r"-?\d+(?:\.\d+)?", value)
+            if not match:
+                continue
+            score = float(match.group())
+            denominator = _re.search(r"/\s*(\d+(?:\.\d+)?)", value)
+            scale = float(denominator.group(1)) if denominator else 10.0
+            if scale <= 0:
+                continue
+            criteria_scores[key.lower()] = max(0.0, min(1.0, score / scale))
 
-    # Calculate average score
-    avg_score = sum(criteria_scores.values()) / len(criteria_scores) if criteria_scores else 0.5
+    if criteria_scores:
+        avg_score = sum(criteria_scores.values()) / len(criteria_scores)
+    elif overall_seen:
+        # No criterion parsed, but the verdict did. Sit clearly on the
+        # correct side of the 0.5 threshold instead of exactly on it.
+        avg_score = 1.0 if is_passed else 0.0
+    else:
+        avg_score = 0.5
 
     return JudgeVerdict(
         is_passed=is_passed,

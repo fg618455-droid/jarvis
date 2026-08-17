@@ -348,6 +348,9 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("telegram_api_base_url", "Telegram API Host",
       "Bot API server to call; point it at a self-hosted instance to keep confirmations local",
       "security", "str")
+    f("telegram_chat_enabled", "Telegram Conversation",
+      "Let the configured chat talk to Jarvis, not just approve actions; a message runs tools on this machine",
+      "security", "bool")
 
     # --- Location ---
     f("location_enabled", "Enable Location",

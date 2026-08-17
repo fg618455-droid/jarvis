@@ -953,3 +953,122 @@ class TestChatRewind:
         win._rewind_to_user(1, "question")
 
         assert rewinds == [], "rewind must be disabled while a query is in flight"
+
+
+@pytest.mark.integration
+class TestChatWindowJoinsTheSpokenConversation:
+    """The window against the real daemon entry point, not a stubbed one.
+
+    Every other test here replaces ``submit_text_query``, which proves the
+    window calls it but not that the two halves fit. These drive the real
+    function so the whole path is exercised: the window hands text to the
+    daemon, a worker thread runs the engine against the shared dialogue
+    memory, and the reply comes back through the Qt signals into the
+    transcript. Only the engine itself is stubbed, because a live model is
+    not what is under test.
+    """
+
+    @pytest.fixture
+    def daemon_running(self, monkeypatch):
+        """A booted-enough daemon: the globals ``submit_text_query`` reads."""
+        import jarvis.daemon as daemon
+        from jarvis.memory.conversation import DialogueMemory
+
+        memory = DialogueMemory(inactivity_timeout=300, max_interactions=20)
+        monkeypatch.setattr(daemon, "_global_dialogue_memory", memory, raising=False)
+        monkeypatch.setattr(daemon, "_global_cfg", object(), raising=False)
+        monkeypatch.setattr(daemon, "_global_db", object(), raising=False)
+        monkeypatch.setattr(daemon, "_global_stop_requested", False, raising=False)
+        return memory
+
+    @staticmethod
+    def _settle(qapp, window, timeout_sec=5.0):
+        """Pump the Qt loop until the worker thread's reply has landed."""
+        import time
+
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            qapp.processEvents()
+            if not window._query_in_flight:
+                break
+            time.sleep(0.02)
+        qapp.processEvents()
+
+    def test_typing_produces_a_reply_in_the_transcript(
+        self, qapp, monkeypatch, daemon_running,
+    ):
+        from desktop_app.chat_window import ChatWindow
+
+        monkeypatch.setattr(
+            "jarvis.reply.engine.run_reply_engine",
+            lambda **kw: "Dein Hund heißt Bello.",
+        )
+
+        win = ChatWindow(daemon_available=True)
+        win.input_widget.setPlainText("Wie heißt mein Hund?")
+        win._send()
+        self._settle(qapp, win)
+
+        transcript = win.transcript_text()
+        assert "Wie heißt mein Hund?" in transcript
+        assert "Dein Hund heißt Bello." in transcript
+
+    def test_the_window_runs_against_the_daemons_dialogue_memory(
+        self, qapp, monkeypatch, daemon_running,
+    ):
+        """The one-conversation invariant, from the window's side."""
+        from desktop_app.chat_window import ChatWindow
+
+        seen = {}
+
+        def _engine(**kw):
+            seen["dialogue_memory"] = kw["dialogue_memory"]
+            seen["tts"] = kw["tts"]
+            return "Notiert."
+
+        monkeypatch.setattr("jarvis.reply.engine.run_reply_engine", _engine)
+
+        win = ChatWindow(daemon_available=True)
+        win.input_widget.setPlainText("mein Hund heißt Bello")
+        win._send()
+        self._settle(qapp, win)
+
+        assert seen["dialogue_memory"] is daemon_running
+        assert seen["tts"] is None, "text chat must never speak"
+
+    def test_a_typed_turn_is_visible_to_the_voice_path_afterwards(
+        self, qapp, monkeypatch, daemon_running,
+    ):
+        """What was typed is in the memory the next spoken turn reads."""
+        from desktop_app.chat_window import ChatWindow
+
+        def _engine(**kw):
+            kw["dialogue_memory"].add_interaction(kw["text"], "Notiert: Bello.")
+            return "Notiert: Bello."
+
+        monkeypatch.setattr("jarvis.reply.engine.run_reply_engine", _engine)
+
+        win = ChatWindow(daemon_available=True)
+        win.input_widget.setPlainText("mein Hund heißt Bello")
+        win._send()
+        self._settle(qapp, win)
+
+        history = " ".join(m["content"] for m in daemon_running.get_recent_messages())
+        assert "Bello" in history
+
+    def test_a_spoken_turn_seeds_the_window_on_first_open(
+        self, qapp, monkeypatch, daemon_running,
+    ):
+        """Opening the window mid-conversation shows what was said aloud."""
+        from desktop_app.chat_window import ChatWindow
+
+        daemon_running.add_interaction(
+            "welches Fach mag ich am liebsten", "Sie sagten, Physik.",
+        )
+        monkeypatch.setattr("jarvis.daemon.submit_text_query", lambda text, **kw: None)
+
+        win = ChatWindow(daemon_available=True)
+        win.show()
+        qapp.processEvents()
+
+        assert "Physik" in win.transcript_text()

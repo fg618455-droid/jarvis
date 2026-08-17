@@ -20,7 +20,7 @@ import pytest
 from unittest.mock import patch
 
 from conftest import requires_judge_llm
-from helpers import ToolCallCapture, JUDGE_MODEL, JUDGE_BASE_URL
+from helpers import ToolCallCapture, JUDGE_MODEL
 
 
 # =============================================================================
@@ -29,8 +29,6 @@ from helpers import ToolCallCapture, JUDGE_MODEL, JUDGE_BASE_URL
 
 def _configure(mock_config):
     """Wire config to the eval judge model."""
-    mock_config.ollama_base_url = JUDGE_BASE_URL
-    mock_config.ollama_chat_model = JUDGE_MODEL
 
 
 def _run_engine(query, mock_config, eval_db, eval_dialogue_memory, mock_tool_run):

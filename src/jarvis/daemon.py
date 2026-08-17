@@ -990,6 +990,24 @@ def main(smoke_test: bool = False) -> None:
     print("✓ Voice listener thread started (loading Whisper model in background)", flush=True)
     set_phase(Phase.IDLE)
 
+    # Telegram as a conversation channel. The router polls for confirmations
+    # on its own whenever one is raised; a handler is what turns incoming
+    # messages into turns, so registering it is what switches chat on.
+    telegram_router = None
+    if bool(getattr(cfg, "telegram_chat_enabled", False)):
+        from .telegram.chat import TelegramChat
+        from .telegram.router import get_router
+
+        telegram_router = get_router(cfg)
+        if telegram_router.is_available:
+            chat_channel = TelegramChat(telegram_router, cfg.telegram_chat_id)
+            telegram_router.set_message_handler(chat_channel.handle_message)
+            telegram_router.start()
+            print("✓ Telegram conversation channel listening", flush=True)
+        else:
+            telegram_router = None
+            print("  Telegram chat enabled but no bot token or chat ID is set", flush=True)
+
     # Initialize dictation engine (hold-to-dictate)
     dictation = None
     if bool(getattr(cfg, "dictation_enabled", True)):
@@ -1204,6 +1222,14 @@ def main(smoke_test: bool = False) -> None:
         debug_log("daemon finally block starting - performing cleanup", "jarvis")
         from .security.voice_confirm import set_voice_confirmation_requester
         set_voice_confirmation_requester(None)
+
+        if telegram_router is not None:
+            debug_log("stopping telegram router...", "jarvis")
+            # Drop the handler first so a message arriving mid-shutdown cannot
+            # start a turn against a database that is about to close.
+            telegram_router.set_message_handler(None)
+            telegram_router.stop()
+            debug_log("telegram router stopped", "jarvis")
 
         # Clean shutdown - stop dictation first
         if dictation is not None:

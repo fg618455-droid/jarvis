@@ -61,8 +61,10 @@ The channel implementations use their native blocking boundaries:
 - Web confirmation raises a card in the control centre and blocks on a
   `threading.Event` until a button is pressed or the timeout lapses. Server
   and daemon share one process, so no transport sits between them.
-- Telegram uses the Bot API's blocking HTTPS requests and bounded long polling.
-  It does not own or create an asyncio event loop.
+- Telegram sends its prompt over a blocking HTTPS request and then blocks on a
+  `threading.Event`. It does not poll: one router owns the Bot API's update
+  stream for the whole process and resolves the request when the decision
+  arrives. It does not own or create an asyncio event loop.
 - Voice confirmation speaks a challenge, consumes the active listener's audio
   queue, and transcribes the bounded response with the loaded Whisper backend
   under the same language and voice-activity settings as normal transcription.
@@ -117,6 +119,13 @@ matches the pending request and whose chat ID matches the configured chat.
 Requests, transport errors, refusal, and timeout all fail safely. Tokens are
 not logged.
 
+The decision travels through the shared Telegram router rather than a poll of
+this channel's own, because the Bot API confirms updates by offset and a second
+poller would delete what the first has not read. The request ID is claimed
+before the prompt is sent, so an immediate tap still finds a pending request.
+The same chat can also hold a conversation when `telegram_chat_enabled` is set.
+See `../telegram/telegram.spec.md`.
+
 ## Voice and console channel
 
 The voice channel generates a four-digit random challenge. Jarvis speaks the
@@ -142,6 +151,7 @@ order when stronger user presence or possession evidence is required.
 | `telegram_bot_token` | empty | Telegram Bot API credential |
 | `telegram_chat_id` | empty | Sole chat authorised to decide requests |
 | `telegram_api_base_url` | `https://api.telegram.org` | Bot API server to call; a self-hosted instance keeps confirmations local |
+| `telegram_chat_enabled` | `false` | Whether the configured chat may also hold a conversation |
 
 All keys are fields on the frozen `Settings` dataclass, are parsed and passed by
 `load_settings()`, and are exposed on the Security page in the desktop settings

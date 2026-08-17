@@ -26,7 +26,7 @@ Run: EVAL_JUDGE_MODEL=gemma4:e2b pytest evals/test_memory_digest_preferences.py 
 import pytest
 
 from conftest import requires_judge_llm
-from helpers import JUDGE_BASE_URL, JUDGE_MODEL
+from helpers import JUDGE_MODEL
 
 
 @pytest.mark.eval
@@ -36,12 +36,13 @@ class TestMemoryDigestSurfacesPreferenceSignals:
 
     def _digest(self, query: str, diary_entries: list[str]) -> str:
         from jarvis.reply.enrichment import digest_memory_for_query
+        from helpers import MockConfig
         return digest_memory_for_query(
             query=query,
             diary_entries=diary_entries,
             graph_parts=[],
-            ollama_base_url=JUDGE_BASE_URL,
-            ollama_chat_model=JUDGE_MODEL,
+            cfg=MockConfig(),
+            chat_model=JUDGE_MODEL,
             timeout_sec=60.0,
         )
 

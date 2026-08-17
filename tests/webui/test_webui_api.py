@@ -229,6 +229,119 @@ class TestChat:
             pass
 
 
+class TestOneConversation:
+    """Typed turns join the spoken conversation rather than starting one.
+
+    This is the invariant the whole feature rests on: a question asked out
+    loud and a follow-up typed into the control centre are one exchange, so
+    the follow-up can say "and that one?" and be understood. It holds only
+    if the endpoint runs the engine against the daemon's own dialogue
+    memory, which is the object the voice path writes into.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _own_database(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(
+            json.dumps({"db_path": str(tmp_path / "chat.db")}), encoding="utf-8",
+        )
+        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
+
+    @pytest.fixture
+    def running_daemon(self, monkeypatch):
+        """A daemon whose dialogue memory the endpoint should find and use."""
+        import jarvis.daemon as daemon
+        from jarvis.memory.conversation import DialogueMemory
+
+        memory = DialogueMemory(inactivity_timeout=300, max_interactions=20)
+        monkeypatch.setattr(daemon, "_global_dialogue_memory", memory, raising=False)
+        return memory
+
+    def test_a_typed_turn_uses_the_daemons_dialogue_memory(
+        self, client, monkeypatch, running_daemon,
+    ):
+        seen = {}
+
+        def _engine(db, cfg, tts, text, dialogue_memory, language=None, **kwargs):
+            seen["dialogue_memory"] = dialogue_memory
+            return "Physik, sagten Sie."
+
+        monkeypatch.setattr("jarvis.reply.engine.run_reply_engine", _engine)
+
+        client.post(
+            "/api/chat", headers=WRITE_HEADERS, json={"text": "welches Fach war das"},
+        )
+
+        assert seen["dialogue_memory"] is running_daemon
+
+    def test_a_typed_follow_up_sees_what_was_said_aloud(
+        self, client, monkeypatch, running_daemon,
+    ):
+        """The spoken turn is in the history the typed turn is answered from."""
+        running_daemon.add_interaction(
+            "welches Fach mag ich am liebsten",
+            "Sie sagten, Physik.",
+        )
+        seen = {}
+
+        def _engine(db, cfg, tts, text, dialogue_memory, language=None, **kwargs):
+            seen["history"] = dialogue_memory.get_recent_messages()
+            return "Physik."
+
+        monkeypatch.setattr("jarvis.reply.engine.run_reply_engine", _engine)
+
+        client.post(
+            "/api/chat", headers=WRITE_HEADERS, json={"text": "und das nochmal?"},
+        )
+
+        spoken = " ".join(message["content"] for message in seen["history"])
+        assert "Physik" in spoken
+
+    def test_a_spoken_follow_up_sees_what_was_typed(
+        self, client, monkeypatch, running_daemon,
+    ):
+        """The other direction: typing leaves its turn where voice will read it."""
+        def _engine(db, cfg, tts, text, dialogue_memory, language=None, **kwargs):
+            dialogue_memory.add_interaction(text, "Notiert: Ihr Hund heißt Bello.")
+            return "Notiert: Ihr Hund heißt Bello."
+
+        monkeypatch.setattr("jarvis.reply.engine.run_reply_engine", _engine)
+
+        client.post(
+            "/api/chat",
+            headers=WRITE_HEADERS,
+            json={"text": "mein Hund heißt Bello"},
+        )
+
+        # What the voice path would read on its next turn.
+        typed = " ".join(
+            message["content"] for message in running_daemon.get_recent_messages()
+        )
+        assert "Bello" in typed
+
+    def test_without_a_daemon_the_control_centre_keeps_its_own_conversation(
+        self, client, monkeypatch,
+    ):
+        """Standalone there is no spoken conversation to join, but context still holds."""
+        import jarvis.daemon as daemon
+
+        monkeypatch.setattr(daemon, "_global_dialogue_memory", None, raising=False)
+        seen = []
+
+        def _engine(db, cfg, tts, text, dialogue_memory, language=None, **kwargs):
+            seen.append(dialogue_memory)
+            dialogue_memory.add_interaction(text, "Gut.")
+            return "Gut."
+
+        monkeypatch.setattr("jarvis.reply.engine.run_reply_engine", _engine)
+
+        client.post("/api/chat", headers=WRITE_HEADERS, json={"text": "erste Frage"})
+        client.post("/api/chat", headers=WRITE_HEADERS, json={"text": "zweite Frage"})
+
+        assert seen[0] is not None
+        assert seen[1] is seen[0], "both turns must share one standalone conversation"
+
+
 class TestTools:
     def test_every_builtin_tool_is_listed(self, client):
         from jarvis.tools.registry import BUILTIN_TOOLS
