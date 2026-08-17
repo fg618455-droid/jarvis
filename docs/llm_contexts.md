@@ -227,6 +227,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 | 12 | Planner (plan_query) | 1 | yes (planner_enabled) | LARGE/SMALL (tracks chat model) |
 | 13 | Plan step resolver | 0-N (SMALL only) | auto by size + plan | tracks chat model (CHAT tier; runs only when that model is SMALL) |
 | 14 | Tool-specific | per-tool | n/a | LARGE |
+| 16 | Ambient digest | 0-1 per configured interval | passive capture only | CHAT tier |
 | 17 | Canned fallback rendering | 0-1, once per message per language | only with a named voice language | SMALL (FAST tier) |
 
 ## Size-aware auto switches
@@ -238,7 +239,6 @@ Driven by `detect_model_size(model_name) → SMALL (≤7.5B) | LARGE (>7.5B)` �
 | Memory digest | ON | OFF |
 | Tool-result digest | ON | OFF |
 | Text-based tool calling | ON | OFF (native) |
-| 16 | Ambient digest | 0-1 per configured interval | passive capture only | CHAT tier |
 | Planner direct-exec | ON | OFF |
 
 ## Config keys
@@ -283,6 +283,8 @@ user input
                                       └─ if max turns → [6] Max-turn digest
                           └─▶ TTS / output
                           └─▶ background: [9] summariser → [10] graph extract → [11] best-child
+ambient transcript (passive switch on)
+  └─▶ [16] Ambient digest → [9] daily summary update → [10] graph extract → [11] best-child
 ```
 
 ## Optimisation ideas (seed list)
@@ -294,8 +296,6 @@ user input
 5. Give each digest its own timeout budget rather than sharing `llm_digest_timeout_sec` (today a slow memory digest can starve the max-turn digest).
 6. Consider single-model deployments: the FAST tier prefers a small dedicated model while the planner tracks `llm_chat_model`; loading a second model hurts cold-start latency on small hardware. (On an OpenAI-compatible chat provider an unset `fast_model` already resolves to the chat model, so every context rides the one served model.)
 7. Narrow `llm_thinking_enabled` to router/planner only, not every context.
-ambient transcript (passive switch on)
-  └─▶ [16] Ambient digest → [9] daily summary update → [10] graph extract → [11] best-child
 8. Keep contextual intent judging off the deterministic edge-wake path.
 
 ## 21. Model and reply-prefix warm-up
