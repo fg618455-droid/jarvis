@@ -77,7 +77,20 @@ export async function mount(root) {
   function control(field) {
     if (field.type === "bool") {
       const box = el("input", { type: "checkbox", checked: Boolean(field.value) });
-      box.addEventListener("change", () => record(field, box.checked, box));
+      box.addEventListener("change", () => {
+        if (
+          field.key === "passive_capture_enabled" &&
+          box.checked &&
+          !field.value
+        ) {
+          const provider = payload.fields.find((item) => item.key === "llm_provider")?.value || "";
+          if (!window.confirm(t("passive.enableConfirm", { provider }))) {
+            box.checked = false;
+            return;
+          }
+        }
+        record(field, box.checked, box);
+      });
       return el("label", { class: "check" }, [box, field.label]);
     }
 

@@ -10,7 +10,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from ..debug import debug_log
 
@@ -25,6 +25,8 @@ class TranscriptSegment:
     energy: float = 0.0                # Audio energy level
     is_during_tts: bool = False        # Whether TTS was playing during this segment
     processed: bool = False            # Whether a query was already extracted from this segment
+    echo: bool = False                 # Whether echo rejection found assistant speech
+    language: Optional[str] = None     # ISO-639-1 language reported by the recogniser
 
     def __post_init__(self):
         """Normalize text on creation."""
@@ -64,6 +66,19 @@ class TranscriptBuffer:
         self.max_duration_sec = max_duration_sec
         self._segments: List[TranscriptSegment] = []
         self._lock = threading.Lock()
+        self._eviction_sink: Optional[Callable[[TranscriptSegment], None]] = None
+
+    def set_eviction_sink(
+        self,
+        sink: Optional[Callable[[TranscriptSegment], None]],
+    ) -> None:
+        """Set the callback offered each segment as it leaves the buffer."""
+        with self._lock:
+            self._eviction_sink = sink
+        debug_log(
+            f"transcript buffer eviction sink {'registered' if sink else 'cleared'}",
+            "voice",
+        )
 
     def add(
         self,
@@ -72,6 +87,7 @@ class TranscriptBuffer:
         end_time: float,
         energy: float = 0.0,
         is_during_tts: bool = False,
+        language: Optional[str] = None,
     ) -> None:
         """Add a transcribed segment to the buffer.
 
@@ -81,6 +97,7 @@ class TranscriptBuffer:
             end_time: Unix timestamp when speech ended
             energy: Audio energy level of the segment
             is_during_tts: Whether TTS was playing during this segment
+            language: ISO-639-1 language reported by the recogniser
         """
         if not text or not text.strip():
             return
@@ -91,13 +108,15 @@ class TranscriptBuffer:
             end_time=end_time,
             energy=energy,
             is_during_tts=is_during_tts,
+            language=language,
         )
 
         with self._lock:
             self._segments.append(segment)
-            self._prune_locked()
+            evicted = self._prune_locked()
 
         debug_log(f"transcript buffer: added {segment}", "voice")
+        self._offer_evicted(evicted)
 
     def get_all(self) -> List[TranscriptSegment]:
         """Get all segments in the buffer.
@@ -313,11 +332,37 @@ class TranscriptBuffer:
 
         return True
 
+    def mark_last_segment_echo(self) -> bool:
+        """Mark the newest segment as containing the assistant's own voice."""
+        with self._lock:
+            if not self._segments:
+                return False
+            self._segments[-1].echo = True
+            text = self._segments[-1].text
+        debug_log(
+            f"transcript buffer: marked last segment as echo: '{text[:50]}...'",
+            "voice",
+        )
+        return True
+
     def clear(self) -> None:
-        """Clear all segments from the buffer."""
+        """Drop all segments without offering them to the eviction sink."""
         with self._lock:
             self._segments.clear()
         debug_log("transcript buffer cleared", "voice")
+
+    def flush(self) -> int:
+        """Offer every remaining segment to the sink, then empty the buffer."""
+        with self._lock:
+            evicted = list(self._segments)
+            self._segments.clear()
+        if evicted:
+            debug_log(
+                f"transcript buffer: flushing {len(evicted)} segments",
+                "voice",
+            )
+        self._offer_evicted(evicted)
+        return len(evicted)
 
     def prune(self) -> int:
         """Remove segments older than max_duration_sec.
@@ -326,27 +371,47 @@ class TranscriptBuffer:
             Number of segments removed
         """
         with self._lock:
-            return self._prune_locked()
+            evicted = self._prune_locked()
+        self._offer_evicted(evicted)
+        return len(evicted)
 
-    def _prune_locked(self) -> int:
+    def _prune_locked(self) -> List[TranscriptSegment]:
         """Remove old segments (must hold lock).
 
         Returns:
-            Number of segments removed
+            Segments removed, oldest first
         """
         if not self._segments:
-            return 0
+            return []
 
         cutoff = time.time() - self.max_duration_sec
-        original_count = len(self._segments)
+        evicted = [segment for segment in self._segments if segment.end_time < cutoff]
+        self._segments = [segment for segment in self._segments if segment.end_time >= cutoff]
 
-        self._segments = [s for s in self._segments if s.end_time >= cutoff]
+        if evicted:
+            debug_log(
+                f"transcript buffer: pruned {len(evicted)} old segments",
+                "voice",
+            )
 
-        removed = original_count - len(self._segments)
-        if removed > 0:
-            debug_log(f"transcript buffer: pruned {removed} old segments", "voice")
+        return evicted
 
-        return removed
+    def _offer_evicted(self, segments: List[TranscriptSegment]) -> None:
+        """Call the current sink without holding the buffer lock."""
+        if not segments:
+            return
+        with self._lock:
+            sink = self._eviction_sink
+        if sink is None:
+            return
+        for segment in segments:
+            try:
+                sink(segment)
+            except Exception as exc:
+                debug_log(
+                    f"transcript buffer eviction sink failed: {exc}",
+                    "voice",
+                )
 
     def __len__(self) -> int:
         """Return number of segments in buffer."""

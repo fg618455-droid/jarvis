@@ -9,18 +9,13 @@ This test suite ensures that:
 """
 
 import pytest
+from tests.conftest import MockConfig
 from jarvis.tools.registry import discover_mcp_tools, generate_tools_description, generate_tools_json_schema, run_tool_with_retries, ToolExecutionResult
 
 
-class DummyCfg:
-    def __init__(self):
-        self.mcps = {}
-        self.voice_debug = False
-        self.security_level = "off"
-        self.security_confirm_channels = []
-        self.security_confirmation_timeout_sec = 60
-        self.telegram_bot_token = ""
-        self.telegram_chat_id = ""
+def DummyCfg() -> MockConfig:
+    """The shared test config, tuned for the tool registry's needs."""
+    return MockConfig(voice_debug=False, security_confirm_channels=[])
 
 
 class DummyDB:

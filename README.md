@@ -1,6 +1,6 @@
 # Jarvis
 
-**A 100% private AI voice assistant that lives on your computer** (works offline). Talk naturally as if Jarvis is a third person in the room — say its name anywhere in your sentence and get conversational, context-aware responses. It remembers everything, always knows the current location and time, can search the web, read your screen, control Chrome, track nutrition, and much more with support for unlimited MCPs and tools without context rot. Sensitive info is automatically redacted before anything is saved to disk.
+**A 100% private AI voice assistant that lives on your computer** (works offline). Talk naturally as if Jarvis is a third person in the room — say its name anywhere in your sentence and get conversational, context-aware responses. It remembers everything, always knows the current location and time, can search the web, read your screen, control Chrome, track nutrition, and much more with support for unlimited MCPs and tools without context rot. Sensitive info is automatically redacted before it reaches ordinary conversation memory and model prompts.
 
 🔒 100% local processing. No subscriptions. No data harvesting. Automatic redaction of sensitive info. Free offline dictation included.
 
@@ -165,11 +165,13 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 - **Text Chat** - Type to Jarvis alongside voice. Voice and text share one conversation, so a follow-up typed in the chat window continues a voice discussion. Text never speaks. Open it from the tray menu (`💬 Chat…`) while Jarvis is listening. The window is styled like an SMS thread with a single contact: speech bubbles, timestamps, and an online/typing presence line. It shows a local status banner while Jarvis starts, stops, or needs to be restarted, and every message you send carries a rewind button that rolls the conversation back to that point and regenerates the reply.
 - **Unlimited Memory** - Never forgets. Searches across all your conversation history and can add bounded, attributable excerpts from a local Remio knowledge base. Browse and edit Jarvis memory in the Control Centre.
 - **Control Centre** - A local web interface the daemon serves at `http://127.0.0.1:5055`: live state, memory, conversation, tools, security, technical readings, and every setting. Offline, no build step, nothing leaves the machine.
+- **Passive Capture (opt-in)** - Keep a local, text-only record of speech the recogniser already transcribed, including ambient conversation not addressed to Jarvis. It is off by default, visibly indicated while active, and deletable by line, day, or in full. No audio is written to disk.
 - **Adaptive Tone** - Automatically surgical for code, pragmatic for business, encouraging for wellbeing — no manual mode switching
 - **Smart Tool Selection** - Embedding-based relevance filtering picks only the tools needed per query — add unlimited MCP tools without performance degradation
 - **Built-in Tools** - Screenshot OCR, web search (DuckDuckGo → Brave → Wikipedia fallback chain with auto-fetch), weather, current time in any city or timezone, file access, nutrition tracking, location awareness, plus a tool-discovery escape hatch the agent uses to widen its own toolset mid-reply
 - **Knowledge Graph Memory** - Self-organising memory that learns from conversations, auto-splits by topic, and surfaces relevant knowledge automatically
 - **Natural Voice** - Address Jarvis at either end of your sentence, then follow up without repeating the wake word after the reply finishes
+- **Conversation Mode** - Turn it on in the Control Centre's Conversation view and the follow-up window stays open: no question needs the wake word until you ask Jarvis to stop. The header says so on every view while it runs.
 - **Fast Stop** - Use the tray action `⚡ Stop Now (Skip Diary)` to release local model resources quickly when you need your machine back immediately.
 - **Dictation Mode** - Free, offline alternative to WisprFlow — hold a hotkey, speak, release to paste text into any app
 - **MCP Integration** - Connect to thousands of external tools (Home Assistant, GitHub, Slack, etc.)
@@ -195,6 +197,29 @@ Most users won't need to change anything. Open **⚙️ Settings** from the tray
   <img src="docs/img/settings-window.png" alt="Settings Window" width="500">
   <img src="docs/img/settings-mcp.png" alt="Settings - MCP Servers" width="500">
 </p>
+
+<details>
+<summary><strong>Passive Capture</strong></summary>
+
+Passive Capture is off by default. When enabled under **📝 Passive Capture**, it preserves text that speech recognition already produced as a readable room transcript. It does not add another microphone stream and never stores audio. The header shows **recording everything** on every Control Centre view while the switch is on.
+
+Transcript text is stored as heard in the local SQLite database. Before ambient lines reach the configured LLM backend, credentials are redacted and the text is fenced as untrusted data. Useful plans, decisions, appointments, and events can be folded into the diary as explicitly overheard information. Addressed speech is not digested again. If `llm_provider` points at a remote server, that server sees the redacted ambient text, so the interface names the configured backend before enabling capture.
+
+The Conversation view can delete one line, one UTC day, or the whole passive record. Whole-record deletion also clears the live rolling buffer. Deleting transcript lines does not remove content already folded into the diary or knowledge graph; those stores have separate delete controls in Memory.
+
+```json
+{
+  "passive_capture_enabled": false,
+  "passive_capture_retention_days": 30,
+  "passive_capture_min_words": 3,
+  "passive_digest_interval_min": 15,
+  "passive_digest_max_lines": 120
+}
+```
+
+Set retention to `0` to keep transcript lines until manual deletion.
+
+</details>
 
 <details>
 <summary><strong>Security confirmations</strong></summary>
@@ -676,7 +701,8 @@ Running from source enables Chatterbox TTS (AI voice with emotion/cloning). Pipe
   "mcps": {},
   "location_auto_detect": false,
   "location_cgnat_resolve_public_ip": false,
-  "location_enabled": false
+  "location_enabled": false,
+  "passive_capture_enabled": false
 }
 ```
 
@@ -710,6 +736,7 @@ provider can't run out the voice-assistant latency budget.
 - **100% offline** - No cloud services required
 - **Auto-redaction** - Emails, tokens, passwords automatically removed
 - **Local storage** - Everything in `~/.local/share/jarvis`
+- **Passive transcript privacy** - Off by default; text is stored as heard, audio is never stored, and ambient model input is redacted and fenced
 
 ## License
 

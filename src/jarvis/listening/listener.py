@@ -20,6 +20,10 @@ from rapidfuzz import fuzz
 from contextlib import contextmanager
 
 from .conversation_mode import register_conversation_controller
+from .passive_capture import (
+    capture_evicted_segment,
+    register_passive_buffer,
+)
 from .echo_detection import EchoDetector
 from .state_manager import StateManager
 from ..utils.audio_lock import portaudio_lock
@@ -484,6 +488,10 @@ class VoiceListener(threading.Thread):
         # Used for both retention and context passed to intent judge
         self._buffer_duration = float(getattr(self.cfg, "transcript_buffer_duration_sec", 120.0))
         self._transcript_buffer = TranscriptBuffer(max_duration_sec=self._buffer_duration)
+        self._transcript_buffer.set_eviction_sink(
+            lambda segment: capture_evicted_segment(self.db, self.cfg, segment)
+        )
+        register_passive_buffer(self._transcript_buffer)
         debug_log(f"transcript buffer initialised ({self._buffer_duration}s)", "voice")
 
         # Intent judge (full context, larger model) - always used when available
@@ -500,6 +508,9 @@ class VoiceListener(threading.Thread):
         """Stop the voice listener."""
         self._should_stop = True
         register_conversation_controller(None)
+        self._transcript_buffer.flush()
+        self._transcript_buffer.set_eviction_sink(None)
+        register_passive_buffer(None)
         self.state_manager.stop()
         self._stop_thinking_tune()
 
@@ -597,6 +608,7 @@ class VoiceListener(threading.Thread):
         # playback boundary. Follow-ups begin after TTS in the hot window.
         if received_during_tts:
             debug_log("discarding transcript captured during TTS playback", "voice")
+            self._transcript_buffer.mark_last_segment_echo()
             return
 
         in_hot_window = self.state_manager.was_speech_during_hot_window(
@@ -657,12 +669,14 @@ class VoiceListener(threading.Thread):
                                 flush=True,
                             )
                             self._transcript_buffer.update_last_segment_text(salvaged)
+                            self._transcript_buffer.mark_last_segment_echo()
                             # text_lower now carries the salvaged query — the rest
                             # of _process_transcript reads from this variable.
                             text_lower = salvaged
                         else:
                             debug_log(f"🔇 Early echo rejection (score={echo_score}): \"{text_lower}\"", "voice")
                             print(f"  🔇 Heard (echo): \"{text_lower[:50]}{'...' if len(text_lower) > 50 else ''}\"", flush=True)
+                            self._transcript_buffer.mark_last_segment_echo()
                             return
 
                 # Non-echo (or salvaged) in hot window — start beep
@@ -740,6 +754,7 @@ class VoiceListener(threading.Thread):
                     and len(salvaged.split()) >= min_words):
                 debug_log(f"salvaged user speech from merged echo+speech chunk: '{salvaged}'", "voice")
                 self._transcript_buffer.update_last_segment_text(salvaged)
+                self._transcript_buffer.mark_last_segment_echo()
                 text_lower = salvaged
 
         # Check hot window expiry
@@ -925,6 +940,7 @@ class VoiceListener(threading.Thread):
                                     debug_log(f"🔇 Echo in hot window (directed, score={echo_score}): \"{text_lower}\"", "voice")
                                     print(f"  🔇 Heard (echo): \"{text_lower[:50]}{'...' if len(text_lower) > 50 else ''}\"", flush=True)
                                     self._stop_thinking_tune()
+                                    self._transcript_buffer.mark_last_segment_echo()
                                     return
                                 else:
                                     debug_log(
@@ -998,6 +1014,7 @@ class VoiceListener(threading.Thread):
                                 debug_log(f"🔇 Echo in hot window (directed/no-query, score={echo_score}): \"{text_lower}\"", "voice")
                                 print(f"  🔇 Heard (echo): \"{text_lower[:50]}{'...' if len(text_lower) > 50 else ''}\"", flush=True)
                                 self._stop_thinking_tune()
+                                self._transcript_buffer.mark_last_segment_echo()
                                 return
 
                         debug_log(f"✅ Intent judge accepted (directed, high confidence, using actual text): \"{text_lower}\"", "voice")
@@ -1063,6 +1080,7 @@ class VoiceListener(threading.Thread):
                             if is_pure_echo:
                                 debug_log(f"🔇 Echo in hot window (echo reasoning confirmed, score={echo_score}): \"{text_lower}\"", "voice")
                                 self._stop_thinking_tune()
+                                self._transcript_buffer.mark_last_segment_echo()
                                 return
                             # Mixed echo+speech — override the echo reasoning
                             print(f"  🧠 Intent override: accepting hot window speech (mixed echo+speech)", flush=True)
@@ -1101,6 +1119,7 @@ class VoiceListener(threading.Thread):
                             # this, but handle as safety net.
                             debug_log(f"🔇 Echo in hot window (score={echo_score}): \"{text_lower}\"", "voice")
                             self._stop_thinking_tune()
+                            self._transcript_buffer.mark_last_segment_echo()
                             return
 
                         if could_be_hot_window:
@@ -2770,6 +2789,7 @@ class VoiceListener(threading.Thread):
             end_time=utterance_end_time,
             energy=utterance_energy,
             is_during_tts=False,
+            language=self._last_detected_language,
         )
 
         # Process the transcript with pre-calculated energy and utterance timing

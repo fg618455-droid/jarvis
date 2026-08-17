@@ -60,6 +60,20 @@ CREATE TRIGGER IF NOT EXISTS summaries_au AFTER UPDATE ON conversation_summaries
   INSERT INTO summaries_fts(summaries_fts, rowid, summary, topics) VALUES('delete', old.id, old.summary, old.topics);
   INSERT INTO summaries_fts(rowid, summary, topics) VALUES (new.id, new.summary, new.topics);
 END;
+
+-- Text-only record of speech already transcribed by the voice listener.
+CREATE TABLE IF NOT EXISTS passive_transcripts (
+  id           INTEGER PRIMARY KEY,
+  ts_utc       TEXT NOT NULL,
+  date_utc     TEXT NOT NULL,
+  duration_sec REAL,
+  text         TEXT NOT NULL,
+  language     TEXT,
+  addressed    INTEGER NOT NULL DEFAULT 0,
+  digested     INTEGER NOT NULL DEFAULT 0,
+  source_app   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS passive_by_date ON passive_transcripts(date_utc);
 """
 
 _VSS_SCHEMA_SQL = """
@@ -336,6 +350,161 @@ class Database:
             cur.execute("DELETE FROM meals WHERE id = ?", (meal_id,))
             self.conn.commit()
             return cur.rowcount > 0
+
+    # --- Passive Transcripts API ---
+    def insert_passive_transcript(
+        self,
+        *,
+        ts_utc: str,
+        date_utc: str,
+        duration_sec: Optional[float],
+        text: str,
+        language: Optional[str],
+        addressed: bool,
+        source_app: str,
+    ) -> int:
+        """Store one final text segment from the rolling transcript buffer."""
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO passive_transcripts(
+                  ts_utc, date_utc, duration_sec, text, language,
+                  addressed, source_app
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ts_utc,
+                    date_utc,
+                    duration_sec,
+                    text,
+                    language,
+                    int(addressed),
+                    source_app,
+                ),
+            )
+            self.conn.commit()
+            return int(cur.lastrowid)
+
+    def list_passive_transcripts(
+        self,
+        *,
+        date_utc: Optional[str] = None,
+        limit: int = 500,
+    ) -> list[sqlite3.Row]:
+        """List passive transcript lines newest first."""
+        safe_limit = max(1, min(int(limit), 1000))
+        with self._lock:
+            cur = self.conn.cursor()
+            if date_utc:
+                return cur.execute(
+                    """
+                    SELECT * FROM passive_transcripts
+                    WHERE date_utc = ?
+                    ORDER BY ts_utc DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (date_utc, safe_limit),
+                ).fetchall()
+            return cur.execute(
+                """
+                SELECT * FROM passive_transcripts
+                ORDER BY ts_utc DESC, id DESC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ).fetchall()
+
+    def list_undigested_passive_transcripts(
+        self,
+        *,
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        """Return one oldest UTC day's eligible lines in chronological order."""
+        safe_limit = max(1, min(int(limit), 1000))
+        with self._lock:
+            cur = self.conn.cursor()
+            return cur.execute(
+                """
+                SELECT * FROM passive_transcripts
+                WHERE digested = 0
+                  AND addressed = 0
+                  AND date_utc = (
+                    SELECT MIN(date_utc)
+                    FROM passive_transcripts
+                    WHERE digested = 0 AND addressed = 0
+                  )
+                ORDER BY ts_utc ASC, id ASC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ).fetchall()
+
+    def count_undigested_passive_transcripts(self) -> int:
+        """Count lines still eligible for an ambient digest."""
+        with self._lock:
+            row = self.conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM passive_transcripts
+                WHERE digested = 0 AND addressed = 0
+                """
+            ).fetchone()
+            return int(row["count"] if row else 0)
+
+    def mark_passive_transcripts_digested(self, ids: Sequence[int]) -> int:
+        """Mark existing lines digested after their pass has succeeded."""
+        normalised = [int(row_id) for row_id in ids]
+        if not normalised:
+            return 0
+        placeholders = ",".join("?" for _ in normalised)
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                f"UPDATE passive_transcripts SET digested = 1 WHERE id IN ({placeholders})",
+                normalised,
+            )
+            self.conn.commit()
+            return int(cur.rowcount)
+
+    def delete_passive_transcript(self, transcript_id: int) -> bool:
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                "DELETE FROM passive_transcripts WHERE id = ?",
+                (int(transcript_id),),
+            )
+            self.conn.commit()
+            return cur.rowcount > 0
+
+    def delete_passive_transcripts_by_date(self, date_utc: str) -> int:
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                "DELETE FROM passive_transcripts WHERE date_utc = ?",
+                (date_utc,),
+            )
+            self.conn.commit()
+            return int(cur.rowcount)
+
+    def delete_all_passive_transcripts(self) -> int:
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute("DELETE FROM passive_transcripts")
+            self.conn.commit()
+            return int(cur.rowcount)
+
+    def delete_passive_transcripts_before(self, date_utc: str) -> int:
+        """Delete lines whose UTC date is strictly older than ``date_utc``."""
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                "DELETE FROM passive_transcripts WHERE date_utc < ?",
+                (date_utc,),
+            )
+            self.conn.commit()
+            return int(cur.rowcount)
 
     # --- Conversation Summaries API ---
     def upsert_conversation_summary(

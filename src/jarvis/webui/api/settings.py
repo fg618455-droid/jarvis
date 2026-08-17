@@ -13,7 +13,12 @@ from typing import Any
 from flask import Blueprint, Response, jsonify, request
 
 from jarvis.config import _load_json, _save_json, get_default_config, resolve_config_path
-from jarvis.config_metadata import CATEGORIES, FIELD_METADATA, _is_default_value
+from jarvis.config_metadata import (
+    CATEGORIES,
+    FIELD_METADATA,
+    _is_default_value,
+    choices_for,
+)
 from jarvis.debug import debug_log
 
 
@@ -27,6 +32,7 @@ MASK = "•" * 8
 RESTART_REQUIRED_PREFIXES = (
     "whisper_", "vad_", "voice_", "sample_rate", "wake_", "tts_",
     "webui_", "dictation_", "llm_provider", "llm_routes", "ollama_", "embedding_",
+    "passive_",
 )
 
 
@@ -39,6 +45,8 @@ def _mask(value: Any) -> str:
 
 
 def _needs_restart(key: str) -> bool:
+    if key == "passive_capture_enabled":
+        return False
     return key.startswith(RESTART_REQUIRED_PREFIXES)
 
 
@@ -51,7 +59,8 @@ def _field_payload(meta, defaults: dict, config: dict) -> dict:
         "description": meta.description,
         "category": meta.category,
         "type": meta.field_type,
-        "choices": [{"value": v, "label": label} for v, label in (meta.choices or [])] or None,
+        "choices": [{"value": v, "label": label}
+                    for v, label in choices_for(meta, value)] or None,
         "min": meta.min_val,
         "max": meta.max_val,
         "step": meta.step,
@@ -113,6 +122,13 @@ def save() -> Response:
 
     if not _save_json(resolve_config_path(), config):
         return jsonify(error=f"could not write {resolve_config_path()}"), 500
+
+    if "passive_capture_enabled" in written:
+        from jarvis.listening.passive_capture import set_passive_capture_enabled
+
+        set_passive_capture_enabled(
+            bool(changes.get("passive_capture_enabled", False))
+        )
 
     debug_log(f"settings written from the control centre: {', '.join(written)}", "webui")
     return jsonify({"written": written, "restart_required": restart})

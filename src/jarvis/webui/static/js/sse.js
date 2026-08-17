@@ -49,12 +49,17 @@ export class LiveStream {
       this._scheduleRetry();
     };
 
+    // Every kind the runtime publishes has to be named here: EventSource
+    // hands a named event only to a listener registered for that name, so
+    // a missing name drops the event without any sign of it.
     for (const kind of [
       "status",
       "phase",
       "stage",
       "turn",
       "discarded",
+      "passive",
+      "conversation",
       "error",
       "confirmation",
       "confirmation_resolved",

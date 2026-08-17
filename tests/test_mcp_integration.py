@@ -8,6 +8,8 @@ They can be run locally or in development environments with git hooks.
 import pytest
 from unittest.mock import Mock, patch
 
+from tests.conftest import MockConfig
+
 
 @pytest.mark.integration
 def test_mcp_tools_integrated_with_reply_engine():
@@ -56,15 +58,12 @@ def test_mcp_tool_execution_in_context():
     class MockDB:
         pass
     
-    class MockConfig:
-        def __init__(self):
-            self.mcps = {"test-server": {"command": "fake"}}
-            self.voice_debug = False
-            self.security_level = "off"
-            self.security_confirm_channels = []
-            self.security_confirmation_timeout_sec = 60
-            self.telegram_bot_token = ""
-            self.telegram_chat_id = ""
+    def config() -> MockConfig:
+        return MockConfig(
+            mcps={"test-server": {"command": "fake"}},
+            voice_debug=False,
+            security_confirm_channels=[],
+        )
     
     # Mock successful execution
     class FakeMCPClient:
@@ -77,7 +76,7 @@ def test_mcp_tool_execution_in_context():
     with patch('jarvis.tools.registry.MCPClient', FakeMCPClient):
         result = run_tool_with_retries(
             db=MockDB(),
-            cfg=MockConfig(),
+            cfg=config(),
             tool_name="test-server__example_tool",
             tool_args={"param": "value"},
             system_prompt="test",
@@ -98,15 +97,12 @@ def test_mcp_error_handling_in_context():
     class MockDB:
         pass
     
-    class MockConfig:
-        def __init__(self):
-            self.mcps = {"test-server": {"command": "fake"}}
-            self.voice_debug = False
-            self.security_level = "off"
-            self.security_confirm_channels = []
-            self.security_confirmation_timeout_sec = 60
-            self.telegram_bot_token = ""
-            self.telegram_chat_id = ""
+    def config() -> MockConfig:
+        return MockConfig(
+            mcps={"test-server": {"command": "fake"}},
+            voice_debug=False,
+            security_confirm_channels=[],
+        )
     
     # Mock failing execution
     class FailingMCPClient:
@@ -119,7 +115,7 @@ def test_mcp_error_handling_in_context():
     with patch('jarvis.tools.registry.MCPClient', FailingMCPClient):
         result = run_tool_with_retries(
             db=MockDB(),
-            cfg=MockConfig(),
+            cfg=config(),
             tool_name="test-server__failing_tool",
             tool_args={},
             system_prompt="test",
@@ -144,15 +140,12 @@ def test_mcp_exception_with_empty_message_still_yields_diagnosable_error():
     class MockDB:
         pass
 
-    class MockConfig:
-        def __init__(self):
-            self.mcps = {"test-server": {"command": "fake"}}
-            self.voice_debug = False
-            self.security_level = "off"
-            self.security_confirm_channels = []
-            self.security_confirmation_timeout_sec = 60
-            self.telegram_bot_token = ""
-            self.telegram_chat_id = ""
+    def config() -> MockConfig:
+        return MockConfig(
+            mcps={"test-server": {"command": "fake"}},
+            voice_debug=False,
+            security_confirm_channels=[],
+        )
 
     class TimingOutMCPClient:
         def __init__(self, config):
@@ -164,7 +157,7 @@ def test_mcp_exception_with_empty_message_still_yields_diagnosable_error():
     with patch('jarvis.tools.registry.MCPClient', TimingOutMCPClient):
         result = run_tool_with_retries(
             db=MockDB(),
-            cfg=MockConfig(),
+            cfg=config(),
             tool_name="test-server__slow_tool",
             tool_args={},
             system_prompt="test",

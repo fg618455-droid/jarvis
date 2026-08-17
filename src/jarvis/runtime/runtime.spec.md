@@ -93,4 +93,22 @@ time and memory whatever the watcher does.
 | `stage` | A turn reaches a stage, for progress before it ends |
 | `turn` | A turn is filed |
 | `discarded` | An utterance is thrown away |
+| `passive` | The passive-capture switch flips, or a line is written down |
+| `conversation` | A wake-word-free conversation starts or ends |
 | `error` | An error is recorded |
+
+## Passive capture
+
+A `passive` block carries whether the record is being written, how many
+lines and digests this session produced, and when the last line was written,
+so the control centre's header can show at all times whether the room is
+being written down. See `../listening/passive_capture.spec.md`.
+
+## Conversation mode
+
+A `conversation` block carries whether a wake-word-free conversation is
+running. The listener's state manager owns it and publishes both
+transitions; the runtime holds the copy an interface reads. It is pushed
+rather than polled because the conversation also ends without anyone
+clicking, on the intent judge's `stop` decision. See
+`../listening/listening.spec.md`.

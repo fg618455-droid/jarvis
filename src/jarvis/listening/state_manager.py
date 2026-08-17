@@ -136,6 +136,7 @@ class StateManager:
             return
 
         self._set_face_state("LISTENING", "conversation started")
+        self._announce_conversation(True)
         debug_log("conversation mode started", "state")
         try:
             print("💬 Conversation mode on — no wake word needed", flush=True)
@@ -154,11 +155,25 @@ class StateManager:
         self._cancel_hot_window_expiry_timer()
         self._cancel_command_capture_expiry_timer()
         self._set_face_state("IDLE", "conversation ended")
+        self._announce_conversation(False)
         debug_log("conversation mode ended", "state")
         try:
             print("💤 Conversation mode off — wake word needed again\n", flush=True)
         except Exception:
             pass
+
+    def _announce_conversation(self, active: bool) -> None:
+        """Tell the runtime the conversation started or ended.
+
+        Watchers cannot ask the listener directly, and the conversation ends
+        on its own when the judge hears the user ask Jarvis to stop, so the
+        change has to be pushed rather than waited for.
+        """
+        try:
+            from ..runtime import get_runtime_state
+            get_runtime_state().set_conversation_active(active)
+        except Exception as exc:
+            debug_log(f"could not publish conversation state: {exc}", "state")
 
     def _set_face_state(self, state_name: str, reason: str) -> None:
         """Move the desktop face to a state, if a desktop app is running."""

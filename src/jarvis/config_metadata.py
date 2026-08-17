@@ -63,6 +63,7 @@ CATEGORIES = [
     ("vad", "📊 Voice Activity Detection"),
     ("timing", "⏱️ Timing & Windows"),
     ("memory", "🧠 Memory & Dialogue"),
+    ("passive", "📝 Passive Capture"),
     ("security", "🔐 Security"),
     ("location", "📍 Location"),
     ("features", "✨ Features"),
@@ -84,6 +85,31 @@ def _is_default_value(val: Any, default_val: Any) -> bool:
     if val == default_val:
         return True
     return val is None and default_val in (None, "")
+
+
+def choices_for(meta: FieldMeta, value: Any) -> List[tuple[str, str]]:
+    """The choices to offer for a field, given what is configured.
+
+    Curated lists such as the supported chat models are a shortlist, not the
+    set of values a local runtime can serve: a tag built from a custom
+    Modelfile, or a model pulled after this release, will never appear in
+    one. A select that cannot show the configured value displays a different
+    one instead, which misreports the running configuration and, in an
+    interface that reads every widget back on save, replaces it.
+
+    An unlisted value is therefore offered under its own name, at the top,
+    so the form can always show the truth.
+    """
+    choices = list(meta.choices or [])
+    # A field that offers nothing is not a select, and its value is not a
+    # choice: echoing it here would put values such as a credential into a
+    # payload that is otherwise careful never to carry one.
+    if not choices or value in (None, ""):
+        return choices
+    text = str(value)
+    if any(str(known) == text for known, _ in choices):
+        return choices
+    return [(text, text)] + choices
 
 
 def _dictation_hotkey_choices() -> list:
@@ -340,6 +366,23 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("agentic_max_turns", "Agentic Max Turns",
       "Maximum turns in agentic tool-use loops",
       "memory", "int", min_val=1, max_val=30)
+
+    # --- Passive Capture ---
+    f("passive_capture_enabled", "Enable Passive Capture",
+      "Keep a text-only record of speech already transcribed near the microphone. Off by default",
+      "passive", "bool")
+    f("passive_capture_retention_days", "Retention",
+      "Days to keep passive transcript lines. Zero keeps them until manual deletion",
+      "passive", "int", min_val=0, max_val=3650, suffix="days")
+    f("passive_capture_min_words", "Minimum Words",
+      "Utterances shorter than this are not written to the passive record",
+      "passive", "int", min_val=0, max_val=100)
+    f("passive_digest_interval_min", "Digest Interval",
+      "Minutes between passes that fold useful overheard speech into memory",
+      "passive", "float", min_val=0.01, max_val=1440, step=1, suffix="min")
+    f("passive_digest_max_lines", "Lines per Digest",
+      "Maximum passive transcript lines sent to one ambient digest pass",
+      "passive", "int", min_val=1, max_val=1000)
 
     # --- Security ---
     f("security_level", "Confirmation Level",

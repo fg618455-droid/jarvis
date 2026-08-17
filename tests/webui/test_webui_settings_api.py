@@ -58,6 +58,39 @@ class TestReading:
 
         assert _field(body, "whisper_language")["value"] == "de"
 
+    def test_a_model_the_registry_never_heard_of_is_still_offered(self, client):
+        """A choice field must be able to show what is actually configured.
+
+        The supported-model list is a curated shortlist, not the set of
+        models a local runtime can serve: a custom Modelfile or a tag built
+        on this machine will never appear in it. A select that cannot show
+        the running model reports the wrong one, which is the opposite of
+        what this page is for.
+        """
+        stored = _stored(client)
+        stored["ollama_chat_model"] = "qwen2.5:7b-ctx8k"
+        client.config_path.write_text(json.dumps(stored), encoding="utf-8")
+
+        field = _field(client.get("/api/settings", headers=HEADERS).get_json(),
+                       "ollama_chat_model")
+
+        assert field["value"] == "qwen2.5:7b-ctx8k"
+        assert "qwen2.5:7b-ctx8k" in [c["value"] for c in field["choices"]]
+
+    def test_a_known_model_is_offered_once(self, client):
+        """Showing the configured value must not duplicate a listed one."""
+        from jarvis.config_metadata import SUPPORTED_CHAT_MODELS
+
+        known = next(iter(SUPPORTED_CHAT_MODELS))
+        stored = _stored(client)
+        stored["ollama_chat_model"] = known
+        client.config_path.write_text(json.dumps(stored), encoding="utf-8")
+
+        field = _field(client.get("/api/settings", headers=HEADERS).get_json(),
+                       "ollama_chat_model")
+
+        assert [c["value"] for c in field["choices"]].count(known) == 1
+
     def test_an_unset_field_falls_back_to_its_default(self, client):
         body = client.get("/api/settings", headers=HEADERS).get_json()
 

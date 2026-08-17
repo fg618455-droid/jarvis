@@ -123,6 +123,56 @@ class TestConversation:
         assert len(body["turns"]) == 1
         assert body["discarded"] == {"vad": 1}
 
+    def test_the_switch_turns_the_conversation_on_and_reports_it(self, client):
+        """The button is the whole point: no wake word per question."""
+        from jarvis.listening.conversation_mode import register_conversation_controller
+        from jarvis.listening.state_manager import StateManager
+
+        manager = StateManager(hot_window_seconds=0.05, echo_tolerance=0.01)
+        register_conversation_controller(manager)
+        try:
+            response = client.post("/api/conversation/mode", headers=WRITE_HEADERS,
+                                   json={"enabled": True})
+
+            assert response.status_code == 200
+            assert response.get_json()["active"] is True
+            assert manager.is_conversation_active is True
+
+            client.post("/api/conversation/mode", headers=WRITE_HEADERS,
+                        json={"enabled": False})
+
+            assert manager.is_conversation_active is False
+        finally:
+            register_conversation_controller(None)
+            manager.stop()
+
+    def test_the_switch_says_so_when_nothing_is_listening(self, client):
+        """Standalone, there is no voice loop to hold a conversation open.
+
+        Reporting success would leave a page showing a mode that is not
+        running anywhere.
+        """
+        from jarvis.listening.conversation_mode import register_conversation_controller
+
+        register_conversation_controller(None)
+
+        response = client.post("/api/conversation/mode", headers=WRITE_HEADERS,
+                               json={"enabled": True})
+
+        assert response.status_code == 409
+        assert response.get_json()["active"] is False
+
+    def test_the_conversation_view_says_whether_the_mode_is_on(self, client):
+        body = client.get("/api/conversation", headers=HEADERS).get_json()
+
+        assert body["conversation_mode"] is False
+
+    def test_flipping_the_switch_needs_the_write_header(self, client):
+        response = client.post("/api/conversation/mode", headers=HEADERS,
+                               json={"enabled": True})
+
+        assert response.status_code == 403
+
 
 class TestChat:
     @pytest.fixture(autouse=True)
@@ -414,3 +464,43 @@ class TestSystem:
 
         config = next(entry for entry in body["paths"] if entry["label"] == "config")
         assert Path(config["path"]) == elsewhere
+
+
+class TestTheStreamCarriesEveryEvent:
+    """The browser subscribes to named events, one listener per kind.
+
+    `EventSource` delivers a named event only to a listener registered for
+    that name, so a kind the runtime publishes but the client never names is
+    dropped in silence: no error, no warning, just an indicator that never
+    lights up. The list is therefore a contract, and this test is what keeps
+    it in step with the publishers.
+    """
+
+    def _published_kinds(self):
+        import re
+        from pathlib import Path
+
+        source = Path(__file__).resolve().parents[2] / "src" / "jarvis"
+        kinds = set()
+        for path in source.rglob("*.py"):
+            kinds |= set(re.findall(r'publish\(\s*"([a-z_]+)"', path.read_text(encoding="utf-8")))
+        return kinds
+
+    def _subscribed_kinds(self):
+        import re
+        from pathlib import Path
+
+        client = (Path(__file__).resolve().parents[2]
+                  / "src" / "jarvis" / "webui" / "static" / "js" / "sse.js")
+        block = re.search(r"for \(const kind of \[(.*?)\]", client.read_text(encoding="utf-8"),
+                          re.DOTALL)
+        assert block, "sse.js no longer lists the kinds it subscribes to"
+        return set(re.findall(r'"([a-z_]+)"', block.group(1)))
+
+    def test_every_published_kind_is_subscribed(self):
+        missing = self._published_kinds() - self._subscribed_kinds()
+
+        assert not missing, (
+            f"the control centre never listens for {sorted(missing)}, so those "
+            "events are dropped in the browser without any sign of it"
+        )

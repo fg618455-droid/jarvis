@@ -56,6 +56,11 @@ class RuntimeState:
 
     models: dict[str, Any] = field(default_factory=dict)
     audio: dict[str, Any] = field(default_factory=dict)
+    passive_enabled: bool = False
+    passive_lines_written: int = 0
+    passive_digests_produced: int = 0
+    passive_last_line_at: Optional[float] = None
+    conversation_active: bool = False
 
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
@@ -123,6 +128,47 @@ class RuntimeState:
         with self._lock:
             self.audio.update({k: v for k, v in audio.items() if v is not None})
 
+    def set_passive_enabled(self, enabled: bool) -> None:
+        """Publish a change to the live passive-capture switch."""
+        enabled = bool(enabled)
+        with self._lock:
+            if self.passive_enabled == enabled:
+                return
+            self.passive_enabled = enabled
+            snapshot = self._passive_snapshot()
+        get_event_bus().publish("passive", snapshot)
+
+    def record_passive_line(self) -> None:
+        """Count a text line successfully written to the passive record."""
+        with self._lock:
+            self.passive_lines_written += 1
+            self.passive_last_line_at = time.time()
+            snapshot = self._passive_snapshot()
+        get_event_bus().publish("passive", snapshot)
+
+    def set_conversation_active(self, active: bool) -> None:
+        """Publish a change to the wake-word-free conversation.
+
+        The listener owns the conversation; this is the copy an interface
+        can watch. A conversation also ends on its own, when the intent
+        judge decides the user asked Jarvis to stop, so a page that only
+        knew what it had itself switched on would go stale.
+        """
+        active = bool(active)
+        with self._lock:
+            if self.conversation_active == active:
+                return
+            self.conversation_active = active
+            snapshot = self._conversation_snapshot()
+        get_event_bus().publish("conversation", snapshot)
+
+    def record_passive_digest(self) -> None:
+        """Count a non-empty ambient digest successfully written to memory."""
+        with self._lock:
+            self.passive_digests_produced += 1
+            snapshot = self._passive_snapshot()
+        get_event_bus().publish("passive", snapshot)
+
     def reset(self) -> None:
         """Return to a fresh session. Used when the daemon restarts in-process."""
         with self._lock:
@@ -139,6 +185,11 @@ class RuntimeState:
             self.last_turn = None
             self.models = {}
             self.audio = {}
+            self.passive_enabled = False
+            self.passive_lines_written = 0
+            self.passive_digests_produced = 0
+            self.passive_last_line_at = None
+            self.conversation_active = False
 
     # ── reads ───────────────────────────────────────────────────────────
 
@@ -148,6 +199,17 @@ class RuntimeState:
             "phase_since": self.phase_since,
             "phase_seconds": max(0.0, time.time() - self.phase_since),
         }
+
+    def _passive_snapshot(self) -> dict:
+        return {
+            "enabled": self.passive_enabled,
+            "lines_written": self.passive_lines_written,
+            "digests_produced": self.passive_digests_produced,
+            "last_line_at": self.passive_last_line_at,
+        }
+
+    def _conversation_snapshot(self) -> dict:
+        return {"active": self.conversation_active}
 
     def snapshot(self) -> dict:
         """A JSON-ready view of everything the interface shows."""
@@ -169,6 +231,8 @@ class RuntimeState:
                 "last_turn": self.last_turn,
                 "models": dict(self.models),
                 "audio": dict(self.audio),
+                "passive": self._passive_snapshot(),
+                "conversation": self._conversation_snapshot(),
             }
 
 
