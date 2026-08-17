@@ -1816,6 +1816,66 @@ class TestListeningWindowVisibility:
         monkeypatch.setattr(app_mod.time, "sleep", MagicMock())
         return tray, fake_dialog
 
+    def _patch_face_state(self, monkeypatch):
+        """Monkeypatch get_jarvis_state with a mock state manager.
+
+        The face reset goes through the module-level singleton factory
+        (not the tray's face_window widget), so tests assert on the state
+        manager that factory returns.
+        """
+        import desktop_app.face_widget as face_widget_mod
+        from desktop_app.face_widget import JarvisState
+
+        fake_state = MagicMock()
+        monkeypatch.setattr(
+            face_widget_mod,
+            "get_jarvis_state",
+            MagicMock(return_value=fake_state),
+        )
+        return fake_state, JarvisState
+
+    def test_stop_daemon_bundled_puts_face_asleep(self, qapp, monkeypatch):
+        """Stopping via the tray toggle puts the face back to sleep (bundled)."""
+        tray, fake_dialog = self._tray_for_stop_bundled(monkeypatch)
+        fake_state, JarvisState = self._patch_face_state(monkeypatch)
+        tray.stop_daemon(show_diary_dialog=True)
+        assert tray.is_listening is False
+        fake_state.set_state.assert_called_once_with(JarvisState.ASLEEP)
+
+    def test_stop_daemon_subprocess_puts_face_asleep(self, qapp, monkeypatch):
+        """Stopping via the tray toggle puts the face back to sleep (subprocess)."""
+        tray, fake_dialog = self._tray_for_stop_subprocess(monkeypatch)
+        fake_state, JarvisState = self._patch_face_state(monkeypatch)
+        tray.stop_daemon(show_diary_dialog=True)
+        assert tray.is_listening is False
+        fake_state.set_state.assert_called_once_with(JarvisState.ASLEEP)
+
+    def test_check_daemon_status_subprocess_crash_puts_face_asleep(self, qapp, monkeypatch):
+        """An unexpected subprocess exit also puts the face back to sleep."""
+        import desktop_app.app as app_mod
+
+        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray.is_bundled = False
+        tray.is_listening = True
+        tray.daemon_thread = None
+        fake_proc = MagicMock()
+        fake_proc.poll.return_value = 1  # process exited with an error
+        tray.daemon_process = fake_proc
+        tray.log_viewer = MagicMock()
+        tray.face_window = MagicMock()
+        tray.log_signals = MagicMock()
+        tray.tray_icon = MagicMock()
+        tray.toggle_action = MagicMock()
+        tray.status_action = MagicMock()
+        tray.update_icon = MagicMock()
+        tray._set_chat_daemon_status = MagicMock()
+        tray._chat_submit_fn = lambda text: None
+
+        fake_state, JarvisState = self._patch_face_state(monkeypatch)
+        tray.check_daemon_status()
+        assert tray.is_listening is False
+        fake_state.set_state.assert_called_once_with(JarvisState.ASLEEP)
+
     def test_stop_daemon_subprocess_does_not_hide_windows(self, qapp, monkeypatch):
         tray, fake_dialog = self._tray_for_stop_subprocess(monkeypatch)
         tray.stop_daemon(show_diary_dialog=True)

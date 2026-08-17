@@ -2046,11 +2046,7 @@ class JarvisSystemTray:
             self.stop_daemon()
 
         # Face should look asleep while wizard is open (daemon isn't running)
-        try:
-            from desktop_app.face_widget import JarvisState, get_jarvis_state
-            get_jarvis_state().set_state(JarvisState.ASLEEP)
-        except Exception:
-            pass
+        self._set_face_asleep()
 
         wizard = SetupWizard()
         result = wizard.exec()
@@ -2372,6 +2368,14 @@ class JarvisSystemTray:
 
         self.tray_icon.setIcon(icon)
 
+    def _set_face_asleep(self) -> None:
+        """Reset the face to asleep so it doesn't look ready while the daemon is down."""
+        try:
+            from desktop_app.face_widget import JarvisState, get_jarvis_state
+            get_jarvis_state().set_state(JarvisState.ASLEEP)
+        except Exception:
+            pass
+
     def toggle_listening(self) -> None:
         """Toggle the Jarvis daemon on/off."""
         if self.is_listening:
@@ -2553,11 +2557,7 @@ class JarvisSystemTray:
             self._set_chat_daemon_status(status)
             self._daemon_stop_expected = False
             # Reset face to asleep so it doesn't look ready while daemon is down
-            try:
-                from desktop_app.face_widget import JarvisState, get_jarvis_state
-                get_jarvis_state().set_state(JarvisState.ASLEEP)
-            except Exception:
-                pass
+            self._set_face_asleep()
 
     def _read_daemon_logs(self) -> None:
         """Read logs from daemon subprocess in a background thread."""
@@ -2833,6 +2833,8 @@ class JarvisSystemTray:
             self.status_action.setText("⚪ Status: Stopped")
             self.update_icon()
             self._set_chat_daemon_status("stopped")
+            # Reset face to asleep so it doesn't look ready while daemon is down
+            self._set_face_asleep()
 
             self.tray_icon.showMessage(
                 "Jarvis Stopped",
@@ -2880,6 +2882,8 @@ class JarvisSystemTray:
                     self.status_action.setText("⚪ Status: Stopped")
                     self.update_icon()
                     self._set_chat_daemon_status("crashed")
+                    # Reset face to asleep so it doesn't look ready while daemon is down
+                    self._set_face_asleep()
 
                     self.tray_icon.showMessage(
                         "Jarvis Stopped",
