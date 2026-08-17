@@ -2186,6 +2186,20 @@ class JarvisSystemTray:
             if show_no_update_dialog:
                 show_update_error_dialog(str(e))
 
+    def show_launch_windows(self) -> None:
+        """Open the log viewer and face window once at app launch.
+
+        Starting or stopping the assistant never changes window visibility
+        (start_daemon/stop_daemon leave it untouched), so the
+        launch windows are opened here explicitly instead of inside
+        start_daemon.
+        """
+        self.log_viewer.show()
+        self.log_viewer.raise_()
+        self.log_viewer.activateWindow()
+        self.face_window.show()
+        self.face_window.raise_()
+
     def show_log_viewer(self) -> None:
         """Show the log viewer window and bring it to front."""
         self.log_viewer.show()
@@ -2505,21 +2519,12 @@ class JarvisSystemTray:
             self.update_icon()
             self._set_chat_daemon_status("running")
 
-            # Show log viewer when starting listening
-            self.log_viewer.show()
-            self.log_viewer.raise_()
-            self.log_viewer.activateWindow()
-
             self.tray_icon.showMessage(
                 "Jarvis Started",
                 "Voice assistant is now listening",
                 QSystemTrayIcon.MessageIcon.Information,
                 2000
             )
-
-            # Show face window when starting
-            self.face_window.show()
-            self.face_window.raise_()
 
             debug_log("daemon started from desktop app", "desktop")
 
@@ -2655,12 +2660,6 @@ class JarvisSystemTray:
                         on_complete=on_complete,
                     )
 
-                    # Hide other windows while showing diary dialog
-                    if hasattr(self, 'face_window') and self.face_window and self.face_window.isVisible():
-                        self.face_window.hide()
-                    if hasattr(self, 'log_viewer') and self.log_viewer.isVisible():
-                        self.log_viewer.hide()
-
                     # Show dialog (non-modal so we can process events)
                     diary_dialog.show()
                     diary_dialog.raise_()
@@ -2733,12 +2732,6 @@ class JarvisSystemTray:
                     diary_dialog.raise_()
                     diary_dialog.activateWindow()
                     self.app.processEvents()
-
-                    # Hide other windows
-                    if hasattr(self, 'face_window') and self.face_window and self.face_window.isVisible():
-                        self.face_window.hide()
-                    if hasattr(self, 'log_viewer') and self.log_viewer.isVisible():
-                        self.log_viewer.hide()
 
                 # Send signal for graceful shutdown. The daemon runs its
                 # final diary update in its shutdown block regardless.
@@ -3581,13 +3574,19 @@ def main() -> int:
         )
         print("JarvisSystemTray initialized successfully", flush=True)
 
-        # Always auto-start listening (logs will be shown via start_daemon)
+        # Always auto-start listening
         splash.set_status("Starting voice assistant...")
         print("🚀 Auto-starting Jarvis listener...", flush=True)
         tray_instance.start_daemon()
 
         # Close splash screen
         splash.close_splash()
+
+        # Open the log and face windows once at launch. start_daemon and
+        # stop_daemon never change window visibility (the tray menu's
+        # View Logs / Show Face actions are the only controls after this),
+        # so the launch windows are opened here explicitly.
+        tray_instance.show_launch_windows()
 
         if crash_log_file:
             # Show notification with log file location
