@@ -8,20 +8,27 @@ and text share one conversation (the daemon's global dialogue memory). See
 The window is created lazily by the system tray and kept alive for the
 session. Daemon callback signals are marshalled onto the Qt main thread via
 ``ChatSignals`` so UI updates never touch the worker thread directly.
+
+There is exactly one conversation, like a text-message thread with a single
+contact: no session list, no new-session button, nothing written to disk.
+Every sent message carries a subtle rewind button that rolls the
+conversation back to that message and regenerates a fresh reply.
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from datetime import datetime
+from typing import Callable, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal, QObject
-from PyQt6.QtGui import QCloseEvent, QShowEvent, QTextCursor
+from PyQt6.QtGui import QCloseEvent, QShowEvent
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -77,26 +84,20 @@ class ChatIpcSignals(QObject):
 # Window
 # ---------------------------------------------------------------------------
 
-
-_TRANSCRIPT_STYLE = f"""
-    QPlainTextEdit {{
-        background-color: {COLORS['bg_secondary']};
-        color: {COLORS['text_primary']};
-        border: 1px solid {COLORS['border']};
-        border-radius: 8px;
-        padding: 10px;
-        font-family: '.AppleSystemUIFont', 'Segoe UI', sans-serif;
-        font-size: 14px;
+_TRANSCRIPT_AREA_STYLE = f"""
+    QScrollArea {{
+        background-color: {COLORS['bg_primary']};
+        border: none;
     }}
 """
 
 _INPUT_STYLE = f"""
     QPlainTextEdit {{
-        background-color: {COLORS['bg_tertiary']};
+        background-color: {COLORS['bg_secondary']};
         color: {COLORS['text_primary']};
         border: 1px solid {COLORS['border']};
-        border-radius: 8px;
-        padding: 8px;
+        border-radius: 18px;
+        padding: 8px 14px;
         font-family: '.AppleSystemUIFont', 'Segoe UI', sans-serif;
         font-size: 14px;
     }}
@@ -110,8 +111,8 @@ _SEND_BTN_STYLE = f"""
         background-color: {COLORS['accent_primary']};
         color: #0a0b0f;
         border: none;
-        border-radius: 8px;
-        padding: 10px 18px;
+        border-radius: 18px;
+        padding: 8px 16px;
         font-weight: 600;
         font-size: 14px;
     }}
@@ -129,13 +130,33 @@ _STOP_BTN_STYLE = f"""
         background-color: {COLORS['error']};
         color: #ffffff;
         border: none;
-        border-radius: 8px;
-        padding: 10px 18px;
+        border-radius: 18px;
+        padding: 8px 16px;
         font-weight: 600;
         font-size: 14px;
     }}
     QPushButton:hover {{
         background-color: {COLORS['error_light']};
+    }}
+"""
+
+# A subtle ghost button: SMS threads don't advertise actions, but the rewind
+# affordance stays reachable next to each sent message.
+_REWIND_BTN_STYLE = f"""
+    QPushButton {{
+        background-color: transparent;
+        color: {COLORS['text_muted']};
+        border: none;
+        border-radius: 12px;
+        font-size: 13px;
+        padding: 2px;
+    }}
+    QPushButton:hover {{
+        background-color: {COLORS['bg_hover']};
+        color: {COLORS['accent_secondary']};
+    }}
+    QPushButton:disabled {{
+        color: {COLORS['border']};
     }}
 """
 
@@ -146,6 +167,51 @@ _STATUS_STYLE = f"""
         padding: 2px 4px;
     }}
 """
+
+_HEADER_STATUS_STYLE = f"""
+    QLabel {{
+        color: {COLORS['text_muted']};
+        font-size: 12px;
+    }}
+"""
+
+# SMS-style bubbles: the user's messages sit on the right in the accent
+# colour, Jarvis's replies on the left in a dark bubble. The corner nearest
+# the sender is squared off, like a speech bubble.
+_BUBBLE_STYLES = {
+    "user": f"""
+        QLabel {{
+            background-color: {COLORS['accent_primary']};
+            color: #0a0b0f;
+            border-radius: 14px;
+            border-bottom-right-radius: 4px;
+            padding: 9px 12px;
+            font-size: 14px;
+        }}
+    """,
+    "assistant": f"""
+        QLabel {{
+            background-color: {COLORS['bg_tertiary']};
+            color: {COLORS['text_primary']};
+            border: 1px solid {COLORS['border']};
+            border-radius: 14px;
+            border-bottom-left-radius: 4px;
+            padding: 9px 12px;
+            font-size: 14px;
+        }}
+    """,
+}
+
+_TIMESTAMP_STYLE = f"""
+    QLabel {{
+        color: {COLORS['text_muted']};
+        font-size: 11px;
+    }}
+"""
+
+_MESSAGE_TEXT_STYLES = {
+    "system": f"color: {COLORS['text_muted']}; font-size: 12px;",
+}
 
 _DAEMON_STATUS_MESSAGES = {
     "starting": "Starting Jarvis...",
@@ -162,35 +228,63 @@ _DAEMON_STATUS_PLACEHOLDERS = {
     "running": "Type a message to Jarvis... (Enter to send, Shift+Enter for newline)",
 }
 
+_HEADER_STATUS_TEXTS = {
+    "running": "Online",
+    "starting": "Starting…",
+    "stopping": "Stopping…",
+    "stopped": "Offline",
+    "crashed": "Offline",
+}
+
 
 class ChatWindow(QMainWindow):
     """Text chat window. Sends via ``jarvis.daemon.submit_text_query``.
 
     In subprocess mode the desktop app sets ``submit_fn`` to a callable that
-    writes a ``__CHAT_QUERY__:`` line to the daemon's stdin, and feeds
-    ``__CHAT__:`` events back into the window's signals. In bundled mode the
-    default path calls the daemon directly with the window's signal emitters
-    as callbacks.
+    writes a ``__CHAT_QUERY__:`` line to the daemon's stdin, ``cancel_fn`` to
+    the cancel line writer, and ``control_fn`` to a callable that writes the
+    rewind line. In bundled mode the window calls the daemon directly.
+
+    There is a single conversation, displayed like an SMS thread: no session
+    list, no new-session button. The transcript maps 1:1 to the daemon's
+    shared dialogue memory, so the voice path sees the same turns. Every
+    sent message carries a subtle rewind button that truncates the
+    conversation to before that message and regenerates a fresh reply.
     """
 
     def __init__(
-        self, submit_fn=None, daemon_available: bool = True, cancel_fn=None,
+        self,
+        submit_fn=None,
+        daemon_available: bool = True,
+        cancel_fn=None,
+        control_fn: Optional[Callable[[str, Optional[dict]], None]] = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("Jarvis Chat")
-        self.setMinimumSize(520, 560)
+        # A portrait, phone-like window reads as a message thread. The tray
+        # re-shows the same instance, so the size persists for the session.
+        self.setMinimumSize(440, 600)
+        self.resize(480, 720)
         self.setStyleSheet(JARVIS_THEME_STYLESHEET)
         self._submit_fn = submit_fn
         # Subprocess mode routes cancellation to the daemon the same way it
         # routes a submission. Without it, Stop sets a flag in this
         # process while the query runs in the other one.
         self._cancel_fn = cancel_fn
+        # Subprocess mode routes rewind to the daemon's stdin. Bundled mode
+        # calls the daemon module directly and leaves this None.
+        self._control_fn = control_fn
         # Set by Stop, cleared by the next send. The engine keeps running
         # after a cancel and its reply still arrives, so the window has to
         # decline the answer to an exchange the user walked away from.
         self._query_cancelled = False
         self._daemon_available = daemon_available
         self._daemon_status = "running" if daemon_available else "stopped"
+
+        # The single conversation's transcript. In-memory only; nothing is
+        # written to disk, and a fresh app run starts blank (the daemon's
+        # dialogue memory owns the durable record).
+        self._messages: list[dict] = []
 
         # Signal bridge: daemon worker -> Qt main thread.
         self.signals = ChatSignals()
@@ -201,21 +295,57 @@ class ChatWindow(QMainWindow):
         # --- Layout -----------------------------------------------------
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(12, 10, 12, 12)
+        root.setSpacing(8)
 
-        # Transcript (read-only)
-        self.transcript_widget = QPlainTextEdit()
-        self.transcript_widget.setReadOnly(True)
-        self.transcript_widget.setStyleSheet(_TRANSCRIPT_STYLE)
-        layout.addWidget(self.transcript_widget, stretch=1)
+        # Contact header, like the top of an SMS thread.
+        header = QHBoxLayout()
+        header.setSpacing(10)
+        avatar = QLabel("🤖")
+        avatar.setFixedSize(36, 36)
+        avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        avatar.setStyleSheet(
+            f"background-color: {COLORS['bg_tertiary']};"
+            f" border-radius: 18px; font-size: 18px;"
+        )
+        header.addWidget(avatar)
+        name_col = QVBoxLayout()
+        name_col.setSpacing(0)
+        name_label = QLabel("Jarvis")
+        name_label.setStyleSheet(
+            f"color: {COLORS['text_primary']}; font-size: 15px; font-weight: 700;"
+        )
+        name_col.addWidget(name_label)
+        self._header_status = QLabel("")
+        self._header_status.setStyleSheet(_HEADER_STATUS_STYLE)
+        name_col.addWidget(self._header_status)
+        header.addLayout(name_col)
+        header.addStretch(1)
+        root.addLayout(header)
+
+        # Transcript: a scroll area whose container holds one row widget per
+        # message, so sent messages can carry a rewind button. Rebuilt
+        # atomically on rewind (see _render_transcript).
+        self.transcript_widget = QScrollArea()
+        self.transcript_widget.setWidgetResizable(True)
+        self.transcript_widget.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.transcript_widget.setStyleSheet(_TRANSCRIPT_AREA_STYLE)
+        self._transcript_container = QWidget()
+        self._transcript_layout = QVBoxLayout(self._transcript_container)
+        self._transcript_layout.setContentsMargins(4, 4, 4, 4)
+        self._transcript_layout.setSpacing(8)
+        self._transcript_layout.addStretch(1)
+        self.transcript_widget.setWidget(self._transcript_container)
+        root.addWidget(self.transcript_widget, stretch=1)
 
         # Status indicator (display-only label)
         self._status_label = QLabel("")
         self._status_label.setStyleSheet(_STATUS_STYLE)
         self._status_label.setVisible(False)
-        layout.addWidget(self._status_label)
+        root.addWidget(self._status_label)
 
         # Input row: input box + send + stop
         row = QHBoxLayout()
@@ -223,7 +353,7 @@ class ChatWindow(QMainWindow):
 
         self.input_widget = QPlainTextEdit()
         self.input_widget.setPlaceholderText(_DAEMON_STATUS_PLACEHOLDERS["running"])
-        self.input_widget.setFixedHeight(64)
+        self.input_widget.setFixedHeight(52)
         self.input_widget.setStyleSheet(_INPUT_STYLE)
         self.input_widget.keyPressEvent = self._input_key_press  # type: ignore[method-assign]
         row.addWidget(self.input_widget, stretch=1)
@@ -239,7 +369,7 @@ class ChatWindow(QMainWindow):
         self.stop_button.setVisible(False)
         row.addWidget(self.stop_button)
 
-        layout.addLayout(row)
+        root.addLayout(row)
 
         self._query_in_flight = False
         # Whether the transcript has been seeded from the daemon's hot window.
@@ -299,6 +429,56 @@ class ChatWindow(QMainWindow):
         # feedback without waiting for the engine to finish.
         self._set_thinking(False)
 
+    def _rewind_to_user(self, user_index: int, text: str) -> None:
+        """Roll the conversation back to before ``user_index``-th user
+        message and regenerate a fresh reply to it.
+
+        The transcript is truncated to keep the message itself; the daemon
+        memory is rewound past it and the same text is re-submitted, so the
+        old reply (and everything after it) is replaced. Rewinding is
+        disabled while a query is in flight.
+        """
+        if self._query_in_flight or not self._daemon_available:
+            return
+        messages = self._messages
+        keep_until = None
+        for i, m in enumerate(messages):
+            if m.get("kind") == "user" and m.get("user_index") == user_index:
+                keep_until = i + 1
+                break
+        if keep_until is None:
+            return
+        # Ask the daemon first. Bundled mode: a refusal (query in flight)
+        # leaves both transcript and memory untouched. Subprocess mode is
+        # fire-and-forget; the daemon enforces its own lock guard.
+        if self._control_fn is not None:
+            self._control_fn("rewind", {"user_index": user_index})
+        else:
+            from jarvis import daemon
+            if not daemon.rewind_chat_to_user(user_index):
+                debug_log(
+                    f"chat rewind rejected for user message {user_index}", "chat"
+                )
+                return
+        self._messages = messages[:keep_until]
+        self._render_transcript(self._messages)
+
+        # Regenerate: re-submit the same message for a fresh reply. The
+        # message is already displayed, so no new echo is added.
+        self._query_cancelled = False
+        self._set_thinking(True)
+        if self._submit_fn is not None:
+            self._submit_fn(text)
+        else:
+            from jarvis import daemon
+
+            daemon.submit_text_query(
+                text,
+                on_start=self.signals.started.emit,
+                on_complete=self.signals.completed.emit,
+                on_busy=self.signals.busy.emit,
+            )
+
     def set_daemon_available(self, available: bool) -> None:
         """Enable or disable chat submission based on daemon availability."""
         self.set_daemon_status("running" if available else "stopped")
@@ -323,6 +503,7 @@ class ChatWindow(QMainWindow):
         )
         self._refresh_status_label()
         self._refresh_send_button()
+        self._refresh_header_status()
 
     # --- Daemon callback slots (run on the main thread via signals) -----
 
@@ -377,27 +558,159 @@ class ChatWindow(QMainWindow):
     # --- Rendering helpers ----------------------------------------------
 
     def _append_user(self, text: str) -> None:
-        self._append_line(f"👤 You: {text}")
+        user_index = 1 + sum(
+            1 for m in self._messages if m.get("kind") == "user"
+        )
+        self._append_message("user", text, user_index=user_index)
 
     def _append_assistant(self, text: str) -> None:
-        self._append_line(f"🤖 Jarvis: {text}")
+        self._append_message("assistant", text)
 
     def _append_system(self, text: str) -> None:
-        self._append_line(f"  ⏳ {text}")
+        self._append_message("system", text)
 
-    def _append_line(self, line: str) -> None:
-        cursor = self.transcript_widget.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        if self.transcript_widget.toPlainText():
-            cursor.insertText("\n")
-        cursor.insertText(line)
-        self.transcript_widget.setTextCursor(cursor)
+    def _append_message(self, kind: str, text: str, user_index: Optional[int] = None) -> None:
+        """Add one message row to the transcript."""
+        self._messages.append(
+            {
+                "kind": kind,
+                "text": text,
+                "user_index": user_index,
+                "time": datetime.now().strftime("%H:%M"),
+            }
+        )
+        # Append a single row (before the trailing stretch) instead of
+        # rebuilding the whole transcript, so long sessions stay O(n).
+        row = self._make_message_row(self._messages[-1])
+        self._transcript_layout.insertWidget(
+            self._transcript_layout.count() - 1, row
+        )
+        self._scroll_to_bottom()
+
+    def _render_transcript(self, messages: list) -> None:
+        """Rebuild the transcript rows atomically from ``messages``.
+
+        Rebuilding (instead of incrementally appending) keeps rewind
+        truncation trivially correct: the rendered rows always mirror the
+        message list.
+        """
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(8)
+        for m in messages:
+            layout.addWidget(self._make_message_row(m))
+        layout.addStretch(1)
+        old = self.transcript_widget.takeWidget()
+        self.transcript_widget.setWidget(container)
+        self._transcript_container = container
+        self._transcript_layout = layout
+        if old is not None:
+            old.hide()
+            old.deleteLater()
+        self._scroll_to_bottom()
+
+    def _make_message_row(self, m: dict) -> QWidget:
+        kind = m.get("kind", "system")
+        text = m.get("text", "")
+        row_widget = QWidget()
+        row = QHBoxLayout(row_widget)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        if kind in ("user", "assistant"):
+            # Bubble with a timestamp underneath, aligned to the sender's edge.
+            bubble = QLabel(text)
+            bubble.setObjectName("bubble")
+            bubble.setWordWrap(True)
+            bubble.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            bubble.setStyleSheet(_BUBBLE_STYLES[kind])
+            bubble.setMaximumWidth(max(280, int(self.width() * 0.72)))
+            column = QVBoxLayout()
+            column.setSpacing(2)
+            column.addWidget(bubble)
+            time_label = QLabel(m.get("time") or "")
+            time_label.setStyleSheet(_TIMESTAMP_STYLE)
+            column.addWidget(
+                time_label,
+                alignment=Qt.AlignmentFlag.AlignRight,
+            )
+            if kind == "user":
+                # SMS puts the sender's messages on the right; the rewind
+                # affordance sits quietly to the left of the bubble.
+                rewind_btn = QPushButton("⟲")
+                rewind_btn.setObjectName(f"rewind_{m.get('user_index')}")
+                rewind_btn.setToolTip("Rewind to this message and regenerate")
+                rewind_btn.setStyleSheet(_REWIND_BTN_STYLE)
+                rewind_btn.setFixedSize(26, 26)
+                rewind_btn.setEnabled(
+                    self._daemon_available and not self._query_in_flight
+                )
+                user_index = m.get("user_index")
+                if user_index is not None:
+                    rewind_btn.clicked.connect(
+                        lambda _checked=False, idx=user_index, txt=text:
+                        self._rewind_to_user(idx, txt)
+                    )
+                row.addWidget(
+                    rewind_btn, alignment=Qt.AlignmentFlag.AlignVCenter
+                )
+                row.addStretch(1)
+                row.addLayout(column)
+            else:
+                row.addLayout(column)
+                row.addStretch(1)
+        else:
+            label = QLabel(f"  ⏳ {text}")
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            label.setStyleSheet(_MESSAGE_TEXT_STYLES["system"])
+            row.addStretch(1)
+            row.addWidget(label)
+            row.addStretch(1)
+        return row_widget
+
+    def resizeEvent(self, event) -> None:
+        # Keep bubbles at a phone-like share of the window width, so the
+        # thread reads as SMS whether the window is narrow or maximised.
+        super().resizeEvent(event)
+        if not hasattr(self, "transcript_widget"):
+            return
+        max_w = max(280, int(self.width() * 0.72))
+        for label in self.transcript_widget.findChildren(QLabel):
+            if label.objectName() == "bubble":
+                label.setMaximumWidth(max_w)
+
+    def _scroll_to_bottom(self) -> None:
+        bar = self.transcript_widget.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def transcript_text(self) -> str:
+        """Plain-text rendering of the transcript (testing + copy).
+
+        The bubbles carry no role prefixes in the UI — position and colour
+        convey the sender — so the text dump is just the message bodies.
+        """
+        return "\n".join(m["text"] for m in self._messages)
 
     def _set_thinking(self, thinking: bool) -> None:
         self._query_in_flight = thinking and self._daemon_available
         self.stop_button.setVisible(self._query_in_flight)
         self._refresh_status_label()
         self._refresh_send_button()
+        self._refresh_rewind_buttons()
+        self._refresh_header_status()
+
+    def _refresh_rewind_buttons(self) -> None:
+        """Disable rewind while a query is in flight or the daemon is down."""
+        enabled = self._daemon_available and not self._query_in_flight
+        for btn in self.transcript_widget.findChildren(QPushButton):
+            if btn.objectName().startswith("rewind_"):
+                btn.setEnabled(enabled)
 
     def _refresh_send_button(self) -> None:
         self.send_button.setEnabled(self._daemon_available and not self._query_in_flight)
@@ -420,6 +733,15 @@ class ChatWindow(QMainWindow):
         self._status_label.setText(f"  {message}")
         self._status_label.setVisible(True)
 
+    def _refresh_header_status(self) -> None:
+        """Contact-style presence line, like the header of an SMS thread."""
+        if self._query_in_flight:
+            self._header_status.setText("Typing…")
+            return
+        self._header_status.setText(
+            _HEADER_STATUS_TEXTS.get(self._daemon_status, "Offline")
+        )
+
     # --- Input key handling ---------------------------------------------
 
     def _input_key_press(self, event) -> None:
@@ -440,12 +762,12 @@ class ChatWindow(QMainWindow):
     # --- Lifecycle ------------------------------------------------------
 
     def showEvent(self, event: QShowEvent) -> None:
-        # Seed the transcript from the daemon's hot window once, on first show,
+        # On first show we seed the transcript from the daemon's hot window,
         # so a user who has been talking by voice sees their recent turns
-        # instead of a blank panel. Runs only once per instance: re-showing
-        # (from the tray or after a hide) must never duplicate turns. Fails
-        # silently when the daemon accessor is unavailable (e.g. subprocess
-        # mode before the bridge is wired) — the window just opens blank.
+        # instead of a blank panel. Seeding runs only once per instance:
+        # re-showing (from the tray or after a hide) must never duplicate
+        # turns. Fails silently when the daemon accessor is unavailable
+        # (e.g. subprocess mode) — the window just opens blank.
         if not self._hot_window_seeded:
             self._hot_window_seeded = True
             try:

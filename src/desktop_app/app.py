@@ -200,8 +200,13 @@ def _collect_runtime_status_snapshot(
     )
 
 
-def _format_runtime_status(snapshot: RuntimeStatusSnapshot) -> str:
-    """Format a runtime status snapshot for the tray diagnostics dialog."""
+def _runtime_status_rows(snapshot: RuntimeStatusSnapshot) -> list[tuple[str, str, str]]:
+    """Return ``(section, key, value)`` rows for the runtime status dialog.
+
+    Sections keep the emoji headers of the original text format so the
+    dialog and the (test-pinned) ``_format_runtime_status`` text stay in
+    sync from one source of truth.
+    """
     pid = str(snapshot.daemon_pid) if snapshot.daemon_pid is not None else "n/a"
     ollama_running = (
         f"Yes ({snapshot.ollama_version})"
@@ -210,31 +215,97 @@ def _format_runtime_status(snapshot: RuntimeStatusSnapshot) -> str:
         if snapshot.ollama_running
         else "No"
     )
-    return "\n".join(
-        [
-            "🩺 Runtime Status",
-            "",
-            "🎙️ Assistant",
-            f"  State: {snapshot.daemon_state}",
-            f"  Mode: {snapshot.daemon_mode}",
-            f"  PID: {pid}",
-            f"  Low Power Mode: {'On' if snapshot.low_power_mode else 'Off'}",
-            "",
-            "🦙 Ollama",
-            f"  Needed: {'Yes' if snapshot.ollama_needed else 'No'}",
-            f"  Running: {ollama_running}",
-            f"  Owner: {snapshot.ollama_owner}",
-            f"  Launch method: {snapshot.ollama_launch_method}",
-            "",
+    return [
+        ("🎙️ Assistant", "State", snapshot.daemon_state),
+        ("🎙️ Assistant", "Mode", snapshot.daemon_mode),
+        ("🎙️ Assistant", "PID", pid),
+        ("🎙️ Assistant", "Low Power Mode", "On" if snapshot.low_power_mode else "Off"),
+        ("🦙 Ollama", "Needed", "Yes" if snapshot.ollama_needed else "No"),
+        ("🦙 Ollama", "Running", ollama_running),
+        ("🦙 Ollama", "Owner", snapshot.ollama_owner),
+        ("🦙 Ollama", "Launch method", snapshot.ollama_launch_method),
+        ("🧠 Models", "Provider", snapshot.llm_provider),
+        ("🧠 Models", "Chat", snapshot.chat_model),
+        (
             "🧠 Models",
-            f"  Provider: {snapshot.llm_provider}",
-            f"  Chat: {snapshot.chat_model}",
-            f"  Embeddings: {snapshot.embedding_provider} / {snapshot.embedding_model}",
-            "",
-            "🔌 MCP",
-            f"  Configured servers: {snapshot.mcp_count}",
-        ]
-    )
+            "Embeddings",
+            f"{snapshot.embedding_provider} / {snapshot.embedding_model}",
+        ),
+        ("🔌 MCP", "Configured servers", str(snapshot.mcp_count)),
+    ]
+
+
+def _format_runtime_status(snapshot: RuntimeStatusSnapshot) -> str:
+    """Format a runtime status snapshot for the tray diagnostics dialog."""
+    lines: list[str] = ["🩺 Runtime Status", ""]
+    current_section = None
+    for section, key, value in _runtime_status_rows(snapshot):
+        if section != current_section:
+            if current_section is not None:
+                lines.append("")
+            lines.append(section)
+            current_section = section
+        lines.append(f"  {key}: {value}")
+    return "\n".join(lines)
+
+
+class RuntimeStatusDialog(QDialog):
+    """Themed diagnostic summary of Jarvis' active runtime.
+
+    Renders the collected snapshot as a structured dialog: emoji section
+    headers, aligned key/value rows (secondary-colour keys, monospace
+    values), and a Close button. Snapshot collection stays on the worker
+    thread; this dialog only renders the data it is handed.
+    """
+
+    def __init__(self, snapshot: RuntimeStatusSnapshot, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Runtime Status")
+        self.setStyleSheet(JARVIS_THEME_STYLESHEET)
+        self.setMinimumWidth(380)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(4)
+
+        title = QLabel("🩺 Runtime Status")
+        title.setObjectName("title")
+        layout.addWidget(title)
+        layout.addSpacing(6)
+
+        current_section = None
+        for section, key, value in _runtime_status_rows(snapshot):
+            if section != current_section:
+                if current_section is not None:
+                    layout.addSpacing(8)
+                header = QLabel(section)
+                header.setStyleSheet(
+                    "color: #fbbf24; font-weight: bold; font-size: 13px;"
+                )
+                layout.addWidget(header)
+                current_section = section
+            row = QHBoxLayout()
+            key_label = QLabel(key)
+            key_label.setStyleSheet("color: #a1a1aa; font-size: 13px;")
+            value_label = QLabel(value)
+            value_label.setStyleSheet(
+                "color: #f4f4f5; font-size: 13px;"
+                " font-family: 'SF Mono', 'Menlo', monospace;"
+            )
+            value_label.setWordWrap(True)
+            row.addWidget(key_label)
+            row.addStretch(1)
+            row.addWidget(value_label)
+            layout.addLayout(row)
+
+        layout.addSpacing(12)
+        close_btn = QPushButton("Close")
+        close_btn.setDefault(True)
+        close_btn.clicked.connect(self.accept)
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        button_row.addWidget(close_btn)
+        layout.addLayout(button_row)
 
 
 def _stop_owned_ollama_runtime(
@@ -1600,6 +1671,7 @@ class JarvisSystemTray:
         # starts so the window can route queries in subprocess mode.
         self.chat_window = None
         self._chat_submit_fn = None
+        self._chat_control_fn = None
         self._daemon_stop_expected = False
 
         # Main-thread signal bridge for chat IPC. The log reader thread emits
@@ -1692,19 +1764,6 @@ class JarvisSystemTray:
         """Create the system tray context menu."""
         self.menu = QMenu()
 
-        # Toggle listening action
-        self.toggle_action = QAction("▶️ Start Listening")
-        self.toggle_action.triggered.connect(self.toggle_listening)
-        self.menu.addAction(self.toggle_action)
-
-        # Fast stop action
-        self.quick_stop_action = QAction("⚡ Stop Now (Skip Diary)")
-        self.quick_stop_action.setEnabled(False)
-        self.quick_stop_action.triggered.connect(self.quick_stop_daemon)
-        self.menu.addAction(self.quick_stop_action)
-
-        self.menu.addSeparator()
-
         # View logs action
         self.logs_action = QAction("📝 View Logs")
         self.logs_action.triggered.connect(self.show_log_viewer)
@@ -1721,7 +1780,7 @@ class JarvisSystemTray:
         self.menu.addAction(self.dictation_history_action)
 
         # Chat window action
-        self.chat_action = QAction("💬 Chat…")
+        self.chat_action = QAction("💬 Chat")
         self.chat_action.triggered.connect(self.show_chat)
         self.menu.addAction(self.chat_action)
 
@@ -1767,6 +1826,11 @@ class JarvisSystemTray:
         self.menu.addAction(self.open_data_action)
 
         self.menu.addSeparator()
+
+        # Toggle listening action
+        self.toggle_action = QAction("▶️ Start Listening")
+        self.toggle_action.triggered.connect(self.toggle_listening)
+        self.menu.addAction(self.toggle_action)
 
         # Status action (non-clickable)
         self.status_action = QAction("⚪ Status: Stopped")
@@ -1861,11 +1925,7 @@ class JarvisSystemTray:
             self.stop_daemon()
 
         # Face should look asleep while wizard is open (daemon isn't running)
-        try:
-            from desktop_app.face_widget import JarvisState, get_jarvis_state
-            get_jarvis_state().set_state(JarvisState.ASLEEP)
-        except Exception:
-            pass
+        self._set_face_asleep()
 
         wizard = SetupWizard()
         result = wizard.exec()
@@ -1933,15 +1993,7 @@ class JarvisSystemTray:
 
     def _show_runtime_status_dialog(self, snapshot) -> None:
         """Render the collected snapshot. Runs on the Qt main thread."""
-        from PyQt6.QtWidgets import QMessageBox
-
-        msg = QMessageBox()
-        msg.setIcon(QMessageBox.Icon.Information)
-        msg.setWindowTitle("Runtime Status")
-        msg.setText("🩺 Runtime Status")
-        msg.setInformativeText(_format_runtime_status(snapshot))
-        msg.setStyleSheet(JARVIS_THEME_STYLESHEET)
-        msg.exec()
+        RuntimeStatusDialog(snapshot).exec()
 
     def check_for_updates(self, show_no_update_dialog: bool = False) -> None:
         """Check for available updates.
@@ -2009,6 +2061,20 @@ class JarvisSystemTray:
             if show_no_update_dialog:
                 show_update_error_dialog(str(e))
 
+    def show_launch_windows(self) -> None:
+        """Open the log viewer and face window once at app launch.
+
+        Starting or stopping the assistant never changes window visibility
+        (start_daemon/stop_daemon leave it untouched), so the
+        launch windows are opened here explicitly instead of inside
+        start_daemon.
+        """
+        self.log_viewer.show()
+        self.log_viewer.raise_()
+        self.log_viewer.activateWindow()
+        self.face_window.show()
+        self.face_window.raise_()
+
     def show_log_viewer(self) -> None:
         """Show the log viewer window and bring it to front."""
         self.log_viewer.show()
@@ -2035,10 +2101,12 @@ class JarvisSystemTray:
                 submit_fn=self._chat_submit_fn,
                 daemon_available=self.is_listening,
                 cancel_fn=getattr(self, "_chat_cancel_fn", None),
+                control_fn=getattr(self, "_chat_control_fn", None),
             )
         else:
             self.chat_window._submit_fn = self._chat_submit_fn
             self.chat_window._cancel_fn = getattr(self, "_chat_cancel_fn", None)
+            self.chat_window._control_fn = getattr(self, "_chat_control_fn", None)
             self.chat_window.set_daemon_status(
                 "running" if self.is_listening else "stopped"
             )
@@ -2055,6 +2123,7 @@ class JarvisSystemTray:
         if self.chat_window is None:
             return
         self.chat_window._submit_fn = self._chat_submit_fn
+        self.chat_window._control_fn = getattr(self, "_chat_control_fn", None)
         self.chat_window.set_daemon_status(status)
 
     def _connect_dictation_history(self, retries_left: int = 3) -> None:
@@ -2178,19 +2247,20 @@ class JarvisSystemTray:
 
         self.tray_icon.setIcon(icon)
 
+    def _set_face_asleep(self) -> None:
+        """Reset the face to asleep so it doesn't look ready while the daemon is down."""
+        try:
+            from desktop_app.face_widget import JarvisState, get_jarvis_state
+            get_jarvis_state().set_state(JarvisState.ASLEEP)
+        except Exception:
+            pass
+
     def toggle_listening(self) -> None:
         """Toggle the Jarvis daemon on/off."""
         if self.is_listening:
             self.stop_daemon()
         else:
             self.start_daemon()
-
-    def quick_stop_daemon(self) -> None:
-        """Stop the daemon quickly without the final shutdown diary pass."""
-        if not self.is_listening:
-            return
-        debug_log("fast stop requested from tray", "desktop")
-        self.stop_daemon(show_diary_dialog=False, skip_diary_update=True)
 
     def start_daemon(self) -> None:
         """Start the Jarvis daemon."""
@@ -2286,8 +2356,30 @@ class JarvisSystemTray:
                     except Exception as exc:
                         debug_log(f"chat stdin cancel failed: {exc}", "desktop")
 
+                def _control_chat_subprocess(kind: str, payload: Optional[dict] = None) -> None:
+                    """Route a rewind command to the daemon's stdin.
+
+                    ``kind`` is ``rewind``; the matching IPC line carries the
+                    payload as prefix+JSON. A broken pipe is not worth
+                    surfacing: the window has already updated its own
+                    transcript, and a dead daemon has no memory to rewind.
+                    """
+                    import json as _json
+                    from jarvis.daemon import CHAT_REWIND_IPC_PREFIX
+                    if kind != "rewind":
+                        debug_log(f"unknown chat control command: {kind}", "desktop")
+                        return
+                    try:
+                        _proc.stdin.write(
+                            f"{CHAT_REWIND_IPC_PREFIX}{_json.dumps(payload)}\n"
+                        )
+                        _proc.stdin.flush()
+                    except Exception as exc:
+                        debug_log(f"chat stdin control failed: {exc}", "desktop")
+
                 self._chat_submit_fn = _submit_chat_subprocess
                 self._chat_cancel_fn = _cancel_chat_subprocess
+                self._chat_control_fn = _control_chat_subprocess
                 # If the chat window already exists (daemon restarted while
                 # the window was open), refresh its submit fn so it doesn't
                 # keep writing to the old (dead) subprocess stdin.
@@ -2307,16 +2399,9 @@ class JarvisSystemTray:
 
             self.is_listening = True
             self.toggle_action.setText("⏸️ Stop Listening")
-            if hasattr(self, "quick_stop_action"):
-                self.quick_stop_action.setEnabled(True)
             self.status_action.setText("🟢 Status: Listening")
             self.update_icon()
             self._set_chat_daemon_status("running")
-
-            # Show log viewer when starting listening
-            self.log_viewer.show()
-            self.log_viewer.raise_()
-            self.log_viewer.activateWindow()
 
             self.tray_icon.showMessage(
                 "Jarvis Started",
@@ -2324,10 +2409,6 @@ class JarvisSystemTray:
                 QSystemTrayIcon.MessageIcon.Information,
                 2000
             )
-
-            # Show face window when starting
-            self.face_window.show()
-            self.face_window.raise_()
 
             debug_log("daemon started from desktop app", "desktop")
 
@@ -2350,19 +2431,13 @@ class JarvisSystemTray:
             self.is_listening = False
             self._chat_submit_fn = None
             self.toggle_action.setText("▶️ Start Listening")
-            if hasattr(self, "quick_stop_action"):
-                self.quick_stop_action.setEnabled(False)
             self.status_action.setText("⚪ Status: Stopped")
             self.update_icon()
             self.daemon_thread = None
             self._set_chat_daemon_status(status)
             self._daemon_stop_expected = False
             # Reset face to asleep so it doesn't look ready while daemon is down
-            try:
-                from desktop_app.face_widget import JarvisState, get_jarvis_state
-                get_jarvis_state().set_state(JarvisState.ASLEEP)
-            except Exception:
-                pass
+            self._set_face_asleep()
 
     def _read_daemon_logs(self) -> None:
         """Read logs from daemon subprocess in a background thread."""
@@ -2439,13 +2514,11 @@ class JarvisSystemTray:
     def stop_daemon(
         self,
         show_diary_dialog: bool = True,
-        skip_diary_update: bool = False,
     ) -> None:
         """Stop the Jarvis daemon.
 
         Args:
             show_diary_dialog: If True (and bundled), shows a dialog with live diary update progress.
-            skip_diary_update: If True, skips the final shutdown diary LLM pass.
         """
         # Timeout must be longer than SHUTDOWN_DIARY_TIMEOUT_SEC (45s) in daemon.py
         # to allow the diary update LLM call to complete before force-killing
@@ -2455,8 +2528,7 @@ class JarvisSystemTray:
         debug_log(
             f"stop_daemon called: is_bundled={self.is_bundled}, "
             f"daemon_thread={self.daemon_thread}, "
-            f"show_diary_dialog={show_diary_dialog}, "
-            f"skip_diary_update={skip_diary_update}",
+            f"show_diary_dialog={show_diary_dialog}",
             "desktop",
         )
 
@@ -2496,12 +2568,6 @@ class JarvisSystemTray:
                         on_complete=on_complete,
                     )
 
-                    # Hide other windows while showing diary dialog
-                    if hasattr(self, 'face_window') and self.face_window and self.face_window.isVisible():
-                        self.face_window.hide()
-                    if hasattr(self, 'log_viewer') and self.log_viewer.isVisible():
-                        self.log_viewer.hide()
-
                     # Show dialog (non-modal so we can process events)
                     diary_dialog.show()
                     diary_dialog.raise_()
@@ -2509,7 +2575,7 @@ class JarvisSystemTray:
                     self.app.processEvents()
 
                     # Request graceful stop
-                    request_stop(skip_diary_update=skip_diary_update)
+                    request_stop()
 
                     # Process events while waiting for thread to finish
                     # Note: We avoid QThread.terminate() as it can corrupt state
@@ -2542,7 +2608,7 @@ class JarvisSystemTray:
                     # No dialog - simple wait
                     # Note: We avoid QThread.terminate() as it can corrupt state
                     from jarvis.daemon import request_stop
-                    request_stop(skip_diary_update=skip_diary_update)
+                    request_stop()
 
                     if not self.daemon_thread.wait(shutdown_wait_timeout_sec * 1000):
                         self.log_signals.new_log.emit("⚠️ Daemon taking longer than expected...\n")
@@ -2575,27 +2641,9 @@ class JarvisSystemTray:
                     diary_dialog.activateWindow()
                     self.app.processEvents()
 
-                    # Hide other windows
-                    if hasattr(self, 'face_window') and self.face_window and self.face_window.isVisible():
-                        self.face_window.hide()
-                    if hasattr(self, 'log_viewer') and self.log_viewer.isVisible():
-                        self.log_viewer.hide()
-
-                # Send signal for graceful shutdown. Fast stop goes through
-                # stdin so the subprocess receives the skip-diary flag before
-                # entering its shutdown block.
-                if skip_diary_update:
-                    try:
-                        from jarvis.daemon import SHUTDOWN_SKIP_DIARY_COMMAND
-                        if self.daemon_process.stdin:
-                            self.daemon_process.stdin.write(
-                                f"{SHUTDOWN_SKIP_DIARY_COMMAND}\n"
-                            )
-                            self.daemon_process.stdin.flush()
-                    except Exception as exc:
-                        debug_log(f"fast stop stdin command failed: {exc}", "desktop")
-                        self.daemon_process.send_signal(signal.SIGINT)
-                elif sys.platform == "win32":
+                # Send signal for graceful shutdown. The daemon runs its
+                # final diary update in its shutdown block regardless.
+                if sys.platform == "win32":
                     # On Windows, signals don't work reliably with CREATE_NO_WINDOW
                     # Close stdin to trigger graceful shutdown in daemon
                     try:
@@ -2690,11 +2738,11 @@ class JarvisSystemTray:
             self._daemon_stop_expected = False
             self.is_listening = False
             self.toggle_action.setText("▶️ Start Listening")
-            if hasattr(self, "quick_stop_action"):
-                self.quick_stop_action.setEnabled(False)
             self.status_action.setText("⚪ Status: Stopped")
             self.update_icon()
             self._set_chat_daemon_status("stopped")
+            # Reset face to asleep so it doesn't look ready while daemon is down
+            self._set_face_asleep()
 
             self.tray_icon.showMessage(
                 "Jarvis Stopped",
@@ -2739,11 +2787,11 @@ class JarvisSystemTray:
                 if self.is_listening:
                     self.is_listening = False
                     self.toggle_action.setText("▶️ Start Listening")
-                    if hasattr(self, "quick_stop_action"):
-                        self.quick_stop_action.setEnabled(False)
                     self.status_action.setText("⚪ Status: Stopped")
                     self.update_icon()
                     self._set_chat_daemon_status("crashed")
+                    # Reset face to asleep so it doesn't look ready while daemon is down
+                    self._set_face_asleep()
 
                     self.tray_icon.showMessage(
                         "Jarvis Stopped",
@@ -3438,13 +3486,19 @@ def main() -> int:
         )
         print("JarvisSystemTray initialized successfully", flush=True)
 
-        # Always auto-start listening (logs will be shown via start_daemon)
+        # Always auto-start listening
         splash.set_status("Starting voice assistant...")
         print("🚀 Auto-starting Jarvis listener...", flush=True)
         tray_instance.start_daemon()
 
         # Close splash screen
         splash.close_splash()
+
+        # Open the log and face windows once at launch. start_daemon and
+        # stop_daemon never change window visibility (the tray menu's
+        # View Logs / Show Face actions are the only controls after this),
+        # so the launch windows are opened here explicitly.
+        tray_instance.show_launch_windows()
 
         if crash_log_file:
             # Show notification with log file location

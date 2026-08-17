@@ -366,35 +366,6 @@ class TestRuntimeStatusSnapshot:
         assert "\n🔌 MCP\n  Configured servers: 2" in text
 
 
-class TestQuickStopAction:
-    """The tray exposes a fast stop path that skips the final diary LLM pass."""
-
-    def test_quick_stop_noops_when_already_stopped(self):
-        from desktop_app.app import JarvisSystemTray
-
-        tray = JarvisSystemTray.__new__(JarvisSystemTray)
-        tray.is_listening = False
-        tray.stop_daemon = MagicMock()
-
-        tray.quick_stop_daemon()
-
-        tray.stop_daemon.assert_not_called()
-
-    def test_quick_stop_skips_diary_update_when_listening(self):
-        from desktop_app.app import JarvisSystemTray
-
-        tray = JarvisSystemTray.__new__(JarvisSystemTray)
-        tray.is_listening = True
-        tray.stop_daemon = MagicMock()
-
-        tray.quick_stop_daemon()
-
-        tray.stop_daemon.assert_called_once_with(
-            show_diary_dialog=False,
-            skip_diary_update=True,
-        )
-
-
 class TestGetCrashPaths:
     """Tests for get_crash_paths() function."""
 
@@ -1603,3 +1574,343 @@ class TestDesktopSmokeTest:
 
             mock_smoke.assert_called_once()
             assert result == 42  # return value propagated from _smoke_test_main
+
+
+@pytest.mark.unit
+class TestRuntimeStatusDialog:
+    """The runtime-status dialog renders the snapshot as a structured,
+    themed dialog rather than a plain text blob."""
+
+    def _snapshot(self):
+        from desktop_app.app import RuntimeStatusSnapshot
+
+        return RuntimeStatusSnapshot(
+            daemon_state="Listening",
+            daemon_mode="subprocess",
+            daemon_pid=12345,
+            ollama_needed=True,
+            ollama_running=True,
+            ollama_version="0.9.1",
+            ollama_owner="Jarvis",
+            ollama_launch_method="serve",
+            low_power_mode=True,
+            llm_provider="ollama",
+            chat_model="gemma4:e2b",
+            embedding_provider="ollama",
+            embedding_model="nomic-embed-text",
+            mcp_count=2,
+        )
+
+    def test_rows_cover_every_snapshot_field(self):
+        from desktop_app.app import _runtime_status_rows
+
+        snapshot = self._snapshot()
+        rows = _runtime_status_rows(snapshot)
+
+        by_key = {key: value for _section, key, value in rows}
+        assert by_key["State"] == "Listening"
+        assert by_key["Mode"] == "subprocess"
+        assert by_key["PID"] == "12345"
+        assert by_key["Low Power Mode"] == "On"
+        assert by_key["Running"] == "Yes (0.9.1)"
+        assert by_key["Owner"] == "Jarvis"
+        assert by_key["Chat"] == "gemma4:e2b"
+        assert by_key["Embeddings"] == "ollama / nomic-embed-text"
+        assert by_key["Configured servers"] == "2"
+        sections = [section for section, _key, _value in rows]
+        assert sections == ["🎙️ Assistant"] * 4 + ["🦙 Ollama"] * 4 + ["🧠 Models"] * 3 + ["🔌 MCP"] * 1
+
+    def test_format_still_matches_legacy_text_layout(self):
+        """The text formatter (used by tests and any terminal path) must
+        keep producing the exact scannable layout it always did."""
+        from desktop_app.app import _format_runtime_status
+
+        text = _format_runtime_status(self._snapshot())
+        assert text.startswith("🩺 Runtime Status")
+        assert "\n🎙️ Assistant\n  State: Listening" in text
+        assert "  Low Power Mode: On" in text
+        assert "\n🦙 Ollama\n  Needed: Yes\n  Running: Yes (0.9.1)" in text
+        assert "\n🔌 MCP\n  Configured servers: 2" in text
+
+    def test_dialog_renders_sections_and_values(self, qapp):
+        from desktop_app.app import RuntimeStatusDialog
+        from PyQt6.QtWidgets import QLabel, QPushButton
+
+        dialog = RuntimeStatusDialog(self._snapshot())
+
+        texts = [lbl.text() for lbl in dialog.findChildren(QLabel)]
+        assert "🩺 Runtime Status" in texts
+        assert "🎙️ Assistant" in texts
+        assert "🦙 Ollama" in texts
+        assert "🧠 Models" in texts
+        assert "🔌 MCP" in texts
+        assert "gemma4:e2b" in texts
+        assert "Yes (0.9.1)" in texts
+
+        # The dialog must be closable via its Close button.
+        close_btn = [
+            b for b in dialog.findChildren(QPushButton) if b.text() == "Close"
+        ]
+        assert close_btn, "dialog must expose a Close button"
+
+
+class TestTrayMenuLayout:
+    """The tray menu groups the listening controls together: the
+    Start/Stop Listening toggle sits directly above the listening Status
+    line in the same section of the menu."""
+
+    def _tray_menu(self, qapp):
+        from desktop_app.app import JarvisSystemTray
+        from PyQt6.QtWidgets import QSystemTrayIcon
+
+        tray = JarvisSystemTray.__new__(JarvisSystemTray)
+        tray.tray_icon = QSystemTrayIcon()
+        tray.create_menu()
+        return tray.menu
+
+    def test_listening_toggle_is_above_status_in_same_section(self, qapp):
+        menu = self._tray_menu(qapp)
+        actions = list(menu.actions())
+
+        toggle_idx = next(
+            i for i, a in enumerate(actions) if "Listening" in a.text()
+        )
+        status_idx = next(
+            i for i, a in enumerate(actions) if "Status:" in a.text()
+        )
+
+        assert toggle_idx < status_idx
+        between = actions[toggle_idx + 1 : status_idx]
+        assert not any(a.isSeparator() for a in between), (
+            "Start/Stop Listening and the Status line must share one menu section"
+        )
+
+class TestListeningWindowVisibility:
+    """Starting or stopping the assistant must never change the visibility
+    of the log viewer or the face window.
+
+    The windows open automatically once at app launch; after that the tray
+    menu's "View Logs" / "Show Face" actions are the only controls:
+    start_daemon must not force them open and stop_daemon must not hide
+    them (even when the diary dialog appears).
+    """
+
+    def _tray_for_start(self, monkeypatch):
+        import desktop_app.app as app_mod
+
+        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray.is_bundled = False
+        tray.daemon_process = None
+        tray.daemon_thread = None
+        tray.is_listening = False
+        tray.log_viewer = MagicMock()
+        tray.face_window = MagicMock()
+        tray.memory_viewer = MagicMock()
+        tray.chat_window = None
+        tray._chat_submit_fn = None
+        tray._chat_cancel_fn = None
+        tray._chat_control_fn = None
+        tray.log_reader_threads = []
+        tray.log_signals = MagicMock()
+        tray.tray_icon = MagicMock()
+        tray.toggle_action = MagicMock()
+        tray.status_action = MagicMock()
+        tray.app = MagicMock()
+        tray.update_icon = MagicMock()
+        tray._set_chat_daemon_status = MagicMock()
+        tray._daemon_stop_expected = False
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 4242
+        fake_proc.stdout = MagicMock()
+        fake_proc.stdin = MagicMock()
+        monkeypatch.setattr(
+            app_mod.subprocess, "Popen", MagicMock(return_value=fake_proc)
+        )
+        # No real reader thread in a unit test.
+        monkeypatch.setattr(app_mod.threading, "Thread", MagicMock())
+        return tray
+
+    def test_start_daemon_does_not_show_log_viewer(self, qapp, monkeypatch):
+        tray = self._tray_for_start(monkeypatch)
+        tray.start_daemon()
+        assert tray.is_listening is True
+        tray.log_viewer.show.assert_not_called()
+        tray.log_viewer.raise_.assert_not_called()
+        tray.log_viewer.activateWindow.assert_not_called()
+
+    def test_start_daemon_does_not_show_face_window(self, qapp, monkeypatch):
+        tray = self._tray_for_start(monkeypatch)
+        tray.start_daemon()
+        assert tray.is_listening is True
+        tray.face_window.show.assert_not_called()
+        tray.face_window.raise_.assert_not_called()
+
+    def _tray_for_stop_bundled(self, monkeypatch):
+        import desktop_app.app as app_mod
+
+        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray.is_bundled = True
+        tray.is_listening = True
+        tray.daemon_process = None
+        tray.daemon_thread = MagicMock()
+        tray.daemon_thread.isFinished.return_value = True
+        tray.log_viewer = MagicMock()
+        tray.face_window = MagicMock()
+        tray.log_signals = MagicMock()
+        tray.tray_icon = MagicMock()
+        tray.toggle_action = MagicMock()
+        tray.status_action = MagicMock()
+        tray.app = MagicMock()
+        tray.update_icon = MagicMock()
+        tray._set_chat_daemon_status = MagicMock()
+        tray._daemon_stop_expected = False
+        tray.chat_window = None
+        tray._chat_submit_fn = None
+
+        fake_dialog = MagicMock()
+        monkeypatch.setattr(app_mod, "DiaryUpdateDialog", MagicMock(return_value=fake_dialog))
+        monkeypatch.setattr("jarvis.daemon.set_diary_update_callbacks", MagicMock())
+        monkeypatch.setattr("jarvis.daemon.request_stop", MagicMock())
+        monkeypatch.setattr(app_mod.time, "sleep", MagicMock())
+        return tray, fake_dialog
+
+    def test_stop_daemon_bundled_does_not_hide_windows(self, qapp, monkeypatch):
+        tray, fake_dialog = self._tray_for_stop_bundled(monkeypatch)
+        tray.stop_daemon(show_diary_dialog=True)
+        assert tray.is_listening is False
+        # The diary dialog still appears...
+        fake_dialog.show.assert_called_once()
+        # ...but the log/face windows keep their current visibility.
+        tray.face_window.hide.assert_not_called()
+        tray.log_viewer.hide.assert_not_called()
+
+    def _tray_for_stop_subprocess(self, monkeypatch):
+        import desktop_app.app as app_mod
+
+        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray.is_bundled = False
+        tray.is_listening = True
+        tray.daemon_thread = None
+        tray.log_viewer = MagicMock()
+        tray.face_window = MagicMock()
+        tray.log_signals = MagicMock()
+        tray.tray_icon = MagicMock()
+        tray.toggle_action = MagicMock()
+        tray.status_action = MagicMock()
+        tray.app = MagicMock()
+        tray.update_icon = MagicMock()
+        tray._set_chat_daemon_status = MagicMock()
+        tray._daemon_stop_expected = False
+        tray._chat_submit_fn = lambda text: None
+
+        fake_proc = MagicMock()
+        fake_proc.poll.return_value = 0  # process already exited
+        fake_proc.stdin = MagicMock()
+        tray.daemon_process = fake_proc
+
+        fake_dialog = MagicMock()
+        monkeypatch.setattr(app_mod, "DiaryUpdateDialog", MagicMock(return_value=fake_dialog))
+        monkeypatch.setattr(app_mod.time, "sleep", MagicMock())
+        return tray, fake_dialog
+
+    def _patch_face_state(self, monkeypatch):
+        """Monkeypatch get_jarvis_state with a mock state manager.
+
+        The face reset goes through the module-level singleton factory
+        (not the tray's face_window widget), so tests assert on the state
+        manager that factory returns.
+        """
+        import desktop_app.face_widget as face_widget_mod
+        from desktop_app.face_widget import JarvisState
+
+        fake_state = MagicMock()
+        monkeypatch.setattr(
+            face_widget_mod,
+            "get_jarvis_state",
+            MagicMock(return_value=fake_state),
+        )
+        return fake_state, JarvisState
+
+    def test_stop_daemon_bundled_puts_face_asleep(self, qapp, monkeypatch):
+        """Stopping via the tray toggle puts the face back to sleep (bundled)."""
+        tray, fake_dialog = self._tray_for_stop_bundled(monkeypatch)
+        fake_state, JarvisState = self._patch_face_state(monkeypatch)
+        tray.stop_daemon(show_diary_dialog=True)
+        assert tray.is_listening is False
+        fake_state.set_state.assert_called_once_with(JarvisState.ASLEEP)
+
+    def test_stop_daemon_subprocess_puts_face_asleep(self, qapp, monkeypatch):
+        """Stopping via the tray toggle puts the face back to sleep (subprocess)."""
+        tray, fake_dialog = self._tray_for_stop_subprocess(monkeypatch)
+        fake_state, JarvisState = self._patch_face_state(monkeypatch)
+        tray.stop_daemon(show_diary_dialog=True)
+        assert tray.is_listening is False
+        fake_state.set_state.assert_called_once_with(JarvisState.ASLEEP)
+
+    def test_check_daemon_status_subprocess_crash_puts_face_asleep(self, qapp, monkeypatch):
+        """An unexpected subprocess exit also puts the face back to sleep."""
+        import desktop_app.app as app_mod
+
+        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray.is_bundled = False
+        tray.is_listening = True
+        tray.daemon_thread = None
+        fake_proc = MagicMock()
+        fake_proc.poll.return_value = 1  # process exited with an error
+        tray.daemon_process = fake_proc
+        tray.log_viewer = MagicMock()
+        tray.face_window = MagicMock()
+        tray.log_signals = MagicMock()
+        tray.tray_icon = MagicMock()
+        tray.toggle_action = MagicMock()
+        tray.status_action = MagicMock()
+        tray.update_icon = MagicMock()
+        tray._set_chat_daemon_status = MagicMock()
+        tray._chat_submit_fn = lambda text: None
+
+        fake_state, JarvisState = self._patch_face_state(monkeypatch)
+        tray.check_daemon_status()
+        assert tray.is_listening is False
+        fake_state.set_state.assert_called_once_with(JarvisState.ASLEEP)
+
+    def test_stop_daemon_subprocess_does_not_hide_windows(self, qapp, monkeypatch):
+        tray, fake_dialog = self._tray_for_stop_subprocess(monkeypatch)
+        tray.stop_daemon(show_diary_dialog=True)
+        assert tray.is_listening is False
+        # The diary dialog still appears...
+        fake_dialog.show.assert_called_once()
+        # ...but the log/face windows keep their current visibility.
+        tray.face_window.hide.assert_not_called()
+        tray.log_viewer.hide.assert_not_called()
+
+    def test_show_launch_windows_opens_log_and_face_windows(self, qapp):
+        """The launch hook opens the log and face windows once at startup."""
+        import desktop_app.app as app_mod
+
+        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray.log_viewer = MagicMock()
+        tray.face_window = MagicMock()
+
+        tray.show_launch_windows()
+
+        tray.log_viewer.show.assert_called_once()
+        tray.log_viewer.raise_.assert_called_once()
+        tray.log_viewer.activateWindow.assert_called_once()
+        tray.face_window.show.assert_called_once()
+        tray.face_window.raise_.assert_called_once()
+
+    def test_launch_flow_wires_launch_windows_after_daemon_start(self):
+        """main() still auto-opens the windows on launch, but through the
+        launch hook rather than inside start_daemon (which stays
+        visibility-neutral)."""
+        import inspect
+        from desktop_app.app import main
+
+        source = inspect.getsource(main)
+        show_idx = source.index("show_launch_windows")
+        start_idx = source.index("start_daemon")
+        assert show_idx > start_idx, (
+            "the launch windows must open after the daemon auto-start"
+        )
+
