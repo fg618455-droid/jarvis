@@ -408,6 +408,25 @@ a:hover {
   margin-right: var(--s1);
 }
 
+/* ── Heatmap ─────────────────────────────────────────────────────────── */
+
+.heatgrid {
+  display: flex;
+  gap: var(--s1);
+}
+
+.heatcell {
+  flex: 1;
+  height: 20px;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  transition: opacity var(--t-fast);
+}
+
+.heatcell:hover {
+  opacity: 1 !important;
+}
+
 /* ── Tables ──────────────────────────────────────────────────────────── */
 
 table {

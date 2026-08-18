@@ -8,6 +8,7 @@ silently otherwise.
 """
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import requests
@@ -39,7 +40,9 @@ class TestUnconfigured:
 
         body = client.get("/api/crew", headers=HEADERS).get_json()
 
-        assert body == {"configured": False, "reachable": False, "entries": [], "agents": []}
+        assert body == {
+            "configured": False, "reachable": False, "entries": [], "agents": [], "daily": [],
+        }
 
     def test_an_unconfigured_endpoint_never_makes_a_request(
         self, client, tmp_path, monkeypatch,
@@ -68,7 +71,7 @@ class TestUnreachable:
 
         assert response.status_code == 200
         assert response.get_json() == {
-            "configured": True, "reachable": False, "entries": [], "agents": [],
+            "configured": True, "reachable": False, "entries": [], "agents": [], "daily": [],
         }
 
     def test_a_timeout_is_reported_without_a_500(self, client, tmp_path, monkeypatch):
@@ -173,3 +176,56 @@ class TestReachable:
         client.get("/api/crew?limit=50", headers=HEADERS)
 
         assert "limit=50" in seen["url"]
+
+
+class TestDailyActivity:
+    def test_entries_are_bucketed_by_calendar_day_over_a_fixed_window(
+        self, client, tmp_path, monkeypatch,
+    ):
+        _configure(tmp_path, monkeypatch)
+        today = datetime.now(timezone.utc).date()
+        yesterday = today - timedelta(days=1)
+        entries = [
+            {"id": 1, "agent_name": "DEV", "task_description": "a", "model_used": "m",
+             "status": "success", "created_at": f"{today.isoformat()}T09:00:00+00:00"},
+            {"id": 2, "agent_name": "DEV", "task_description": "b", "model_used": "m",
+             "status": "success", "created_at": f"{today.isoformat()}T10:00:00+00:00"},
+            {"id": 3, "agent_name": "RESEARCH", "task_description": "c", "model_used": "m",
+             "status": "failure", "created_at": f"{yesterday.isoformat()}T10:00:00+00:00"},
+        ]
+        monkeypatch.setattr(
+            requests, "get", lambda *a, **k: TestReachable._OkResponse(entries),
+        )
+
+        body = client.get("/api/crew", headers=HEADERS).get_json()
+        daily = body["daily"]
+        by_date = {day["date"]: day["count"] for day in daily}
+
+        assert len(daily) == 14
+        assert daily[-1]["date"] == today.isoformat()
+        assert by_date[today.isoformat()] == 2
+        assert by_date[yesterday.isoformat()] == 1
+
+    def test_days_without_entries_are_zero_filled(self, client, tmp_path, monkeypatch):
+        _configure(tmp_path, monkeypatch)
+        monkeypatch.setattr(requests, "get", lambda *a, **k: TestReachable._OkResponse([]))
+
+        body = client.get("/api/crew", headers=HEADERS).get_json()
+
+        assert len(body["daily"]) == 14
+        assert all(day["count"] == 0 for day in body["daily"])
+
+    def test_entries_outside_the_window_are_dropped(self, client, tmp_path, monkeypatch):
+        _configure(tmp_path, monkeypatch)
+        long_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        entries = [
+            {"id": 1, "agent_name": "DEV", "task_description": "old", "model_used": "m",
+             "status": "success", "created_at": long_ago},
+        ]
+        monkeypatch.setattr(
+            requests, "get", lambda *a, **k: TestReachable._OkResponse(entries),
+        )
+
+        body = client.get("/api/crew", headers=HEADERS).get_json()
+
+        assert sum(day["count"] for day in body["daily"]) == 0

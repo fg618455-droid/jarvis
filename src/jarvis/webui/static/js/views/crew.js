@@ -31,7 +31,9 @@ export async function mount(root) {
     paint(body, payload);
   }
 
-  await refresh().catch(() => paint(body, { configured: false, reachable: false, entries: [], agents: [] }));
+  await refresh().catch(() =>
+    paint(body, { configured: false, reachable: false, entries: [], agents: [], daily: [] }),
+  );
   const timer = setInterval(() => refresh().catch(() => {}), POLL_MS);
   return () => clearInterval(timer);
 }
@@ -49,12 +51,38 @@ function paint(container, payload) {
     return;
   }
 
+  const heatmapCard = el("section", { class: "card" });
   const agentsRow = el("div", { class: "grid" });
   const activityCard = el("section", { class: "card" });
-  container.append(agentsRow, activityCard);
+  container.append(heatmapCard, agentsRow, activityCard);
 
+  paintHeatmap(heatmapCard, payload.daily || []);
   paintAgents(agentsRow, payload.agents || []);
   paintActivity(activityCard, payload.entries || []);
+}
+
+function paintHeatmap(container, daily) {
+  container.append(el("header", {}, [el("h2", { text: t("crew.dailyActivity") })]));
+
+  if (!daily.length) {
+    container.append(empty(t("crew.empty")));
+    return;
+  }
+
+  const max = Math.max(...daily.map((day) => day.count), 1);
+  container.append(
+    el(
+      "div",
+      { class: "heatgrid" },
+      daily.map((day) =>
+        el("span", {
+          class: "heatcell",
+          style: `opacity: ${day.count ? Math.max(0.18, day.count / max) : 0.06}`,
+          title: `${day.date}: ${day.count}`,
+        }),
+      ),
+    ),
+  );
 }
 
 function paintAgents(container, agents) {
