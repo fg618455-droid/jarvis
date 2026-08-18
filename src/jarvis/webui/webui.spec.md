@@ -98,6 +98,7 @@ allowed; reading one back is not.
 | `POST /api/llm/routes/probe` | User-triggered model catalogue and credential probe |
 | `POST /api/llm/routes/reset` | Clear persisted cooldowns and process-local invalid-key marks |
 | `PUT /api/llm/routes` | Validate and replace generic route configuration while preserving unchanged masked credentials |
+| `GET /api/crew` | Recent activity from a NAS-hosted agent crew, and a per-agent success/failure/partial tally |
 
 `POST /api/chat` runs one turn at a time, and the turn it waits for may not
 be its own. Voice, the desktop chat window and this endpoint all reach the
@@ -195,6 +196,28 @@ live progress bar, and a result summary using the endpoint's action-specific
 completion fields. Network failures and streamed `error` events remain visible
 in the same status area. The memory data is re-read after a completed action.
 
+## Mission Control view
+
+Mission Control reads the activity log of an agent crew that runs outside
+this daemon entirely, on a separate machine (a NAS), unrelated to the
+security gate and to every other view here. The daemon holds no direct
+route to that machine's database; it calls a small read-only HTTP endpoint
+the NAS exposes for this purpose, guarded by a shared key sent as
+`X-Crew-Key`. Nothing in this codebase writes to that endpoint.
+
+The NAS is not always on. `GET /api/crew` distinguishes three states rather
+than collapsing them into one empty view:
+
+| State | Reported as | Shown as |
+|---|---|---|
+| No endpoint configured | `configured: false` | A message pointing at Settings |
+| Endpoint configured, no answer within the request timeout | `configured: true, reachable: false` | A message saying the NAS is not answering |
+| Endpoint answered | `configured: true, reachable: true`, plus `entries` and `agents` | Agent cards with per-status tallies, and a table of recent activity |
+
+A connection failure, a timeout, and a reply that fails to parse as JSON are
+all treated the same: `reachable: false`. The view never fabricates a
+reading it does not have.
+
 ## Configuration
 
 | Key | Type | Default | Meaning |
@@ -204,3 +227,5 @@ in the same status area. The memory data is re-read after a completed action.
 | `webui_bind_host` | str | `"127.0.0.1"` | `0.0.0.0` reaches it from the same network and turns the token on |
 | `webui_token` | str | `""` | Empty mints one per start when off loopback |
 | `webui_open_browser` | bool | `false` | Open the interface at daemon start |
+| `crew_api_url` | str | `""` | Base URL of the NAS crew endpoint. Empty hides the Mission Control view |
+| `crew_api_key` | str | `""` | Shared key sent as `X-Crew-Key` |

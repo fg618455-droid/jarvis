@@ -17,6 +17,7 @@ const STRINGS = {
     "nav.system": "System",
     "nav.logs": "Logs",
     "nav.llm": "LLM routes",
+    "nav.crew": "Mission Control",
     "nav.settings": "Settings",
 
     "phase.starting": "starting up",
@@ -254,6 +255,22 @@ const STRINGS = {
     "llm.hits": "Hits",
     "llm.failures": "Failures",
     "llm.lastError": "Last error",
+
+    "crew.title": "Mission Control",
+    "crew.lead": "What the agent crew on the NAS has been doing.",
+    "crew.notConfigured": "No crew endpoint is configured. Set one under Settings → Mission Control.",
+    "crew.unreachable": "The NAS is not answering right now.",
+    "crew.agents": "Agents",
+    "crew.activity": "Recent activity",
+    "crew.empty": "No activity logged yet.",
+    "crew.status.success": "success",
+    "crew.status.failure": "failure",
+    "crew.status.partial": "partial",
+    "crew.column.when": "When",
+    "crew.column.agent": "Agent",
+    "crew.column.status": "Status",
+    "crew.column.model": "Model",
+    "crew.column.task": "Task",
   },
 
   de: {
@@ -268,6 +285,7 @@ const STRINGS = {
     "nav.system": "System",
     "nav.logs": "Protokoll",
     "nav.llm": "LLM-Routen",
+    "nav.crew": "Mission Control",
     "nav.settings": "Einstellungen",
 
     "phase.starting": "startet",
@@ -505,6 +523,22 @@ const STRINGS = {
     "llm.hits": "Treffer",
     "llm.failures": "Fehler",
     "llm.lastError": "Letzter Fehler",
+
+    "crew.title": "Mission Control",
+    "crew.lead": "Was die Agenten-Crew auf der NAS getan hat.",
+    "crew.notConfigured": "Kein Crew-Endpunkt eingerichtet. Unter Einstellungen → Mission Control eintragen.",
+    "crew.unreachable": "Die NAS antwortet gerade nicht.",
+    "crew.agents": "Agenten",
+    "crew.activity": "Letzte Aktivität",
+    "crew.empty": "Noch keine Aktivität protokolliert.",
+    "crew.status.success": "erfolgreich",
+    "crew.status.failure": "fehlgeschlagen",
+    "crew.status.partial": "teilweise",
+    "crew.column.when": "Wann",
+    "crew.column.agent": "Agent",
+    "crew.column.status": "Status",
+    "crew.column.model": "Modell",
+    "crew.column.task": "Aufgabe",
   },
 };
 

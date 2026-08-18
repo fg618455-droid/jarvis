@@ -68,6 +68,7 @@ CATEGORIES = [
     ("location", "📍 Location"),
     ("features", "✨ Features"),
     ("webui", "🖥️ Control Centre"),
+    ("crew", "👥 Mission Control"),
     ("mcps", "🔌 MCP Servers"),
     ("advanced", "🔧 Advanced"),
 ]
@@ -480,6 +481,15 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("webui_open_browser", "Open on Start",
       "Open the control centre in your browser when the daemon starts",
       "webui", "bool")
+
+    # --- Mission Control ---
+    f("crew_api_url", "Crew API URL",
+      "Base URL of the NAS-hosted crew activity endpoint, e.g. "
+      "http://192.168.178.113:8643. Empty hides the Mission Control view",
+      "crew", "str", nullable=True)
+    f("crew_api_key", "Crew API Key",
+      "Shared key the NAS endpoint expects in its X-Crew-Key header",
+      "crew", "password", nullable=True)
 
     # --- Advanced ---
     f("echo_tolerance", "Echo Tolerance",

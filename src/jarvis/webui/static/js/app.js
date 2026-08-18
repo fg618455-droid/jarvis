@@ -16,6 +16,7 @@ const VIEWS = [
   { name: "system", icon: ICONS.system },
   { name: "logs", icon: ICONS.logs },
   { name: "llm", icon: ICONS.llm },
+  { name: "crew", icon: ICONS.crew },
   { name: "settings", icon: ICONS.settings },
 ];
 
@@ -28,6 +29,7 @@ const ROUTES = {
   system: () => import("./views/system.js"),
   logs: () => import("./views/logs.js"),
   llm: () => import("./views/llm.js"),
+  crew: () => import("./views/crew.js"),
   settings: () => import("./views/settings.js"),
 };
 

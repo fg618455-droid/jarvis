@@ -122,6 +122,8 @@ export const api = {
   system: () => request("/api/system"),
   logs: (limit = 200) => request(`/api/logs?limit=${limit}`),
 
+  crew: (limit = 200) => request(`/api/crew?limit=${limit}`),
+
   llmRoutes: () => request("/api/llm/routes"),
   saveLlmRoutes: (routes) => request("/api/llm/routes", { method: "PUT", body: { routes } }),
   probeLlmRoutes: () => request("/api/llm/routes/probe", { method: "POST" }),
