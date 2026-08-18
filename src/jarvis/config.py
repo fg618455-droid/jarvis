@@ -141,6 +141,10 @@ class Settings:
     webui_token: str
     webui_open_browser: bool
 
+    # Mission Control (read-only view of a NAS-hosted agent crew)
+    crew_api_url: str
+    crew_api_key: str
+
     # Screen Capture
     allowlist_bundles: list[str]
 
@@ -732,6 +736,12 @@ def get_default_config() -> Dict[str, Any]:
         "webui_token": "",
         "webui_open_browser": False,
 
+        # Mission Control — a Hermes crew running on Felix' NAS, outside the
+        # daemon's own security gate. Empty leaves the view showing nothing
+        # rather than reaching for a host that was never configured.
+        "crew_api_url": "",
+        "crew_api_key": "",
+
         # Screen Capture
         "allowlist_bundles": [
             "com.apple.Terminal",
@@ -1258,6 +1268,9 @@ def load_settings() -> Settings:
     webui_token = str(merged.get("webui_token", "") or "").strip()
     webui_open_browser = bool(merged.get("webui_open_browser", False))
 
+    crew_api_url = str(merged.get("crew_api_url", "") or "").strip().rstrip("/")
+    crew_api_key = str(merged.get("crew_api_key", "") or "").strip()
+
     return Settings(
         # Database & Storage
         db_path=db_path,
@@ -1304,6 +1317,10 @@ def load_settings() -> Settings:
         webui_bind_host=webui_bind_host,
         webui_token=webui_token,
         webui_open_browser=webui_open_browser,
+
+        # Mission Control
+        crew_api_url=crew_api_url,
+        crew_api_key=crew_api_key,
 
         # Screen Capture
         allowlist_bundles=allowlist_bundles,
