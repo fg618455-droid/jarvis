@@ -98,7 +98,7 @@ allowed; reading one back is not.
 | `POST /api/llm/routes/probe` | User-triggered model catalogue and credential probe |
 | `POST /api/llm/routes/reset` | Clear persisted cooldowns and process-local invalid-key marks |
 | `PUT /api/llm/routes` | Validate and replace generic route configuration while preserving unchanged masked credentials |
-| `GET /api/crew` | Recent activity from a NAS-hosted agent crew, and a per-agent success/failure/partial tally |
+| `GET /api/crew` | Recent activity from a NAS-hosted agent crew, a per-agent success/failure/partial tally, and a 14-day daily activity count |
 
 `POST /api/chat` runs one turn at a time, and the turn it waits for may not
 be its own. Voice, the desktop chat window and this endpoint all reach the
@@ -212,11 +212,16 @@ than collapsing them into one empty view:
 |---|---|---|
 | No endpoint configured | `configured: false` | A message pointing at Settings |
 | Endpoint configured, no answer within the request timeout | `configured: true, reachable: false` | A message saying the NAS is not answering |
-| Endpoint answered | `configured: true, reachable: true`, plus `entries` and `agents` | Agent cards with per-status tallies, and a table of recent activity |
+| Endpoint answered | `configured: true, reachable: true`, plus `entries`, `agents` and `daily` | A 14-day activity heatmap, agent cards with per-status tallies, and a table of recent activity |
 
 A connection failure, a timeout, and a reply that fails to parse as JSON are
 all treated the same: `reachable: false`. The view never fabricates a
 reading it does not have.
+
+`daily` buckets `entries` by calendar day in UTC over a fixed trailing
+14-day window, zero-filled for days with no activity, oldest first. The
+window stays a fixed width regardless of how busy or quiet the crew has
+been, so the heatmap never resizes on its own.
 
 ## Configuration
 

@@ -10,6 +10,7 @@ the view to "nothing to show" instead of a broken page.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -25,10 +26,13 @@ REQUEST_TIMEOUT_SEC = 3.0
 DEFAULT_LIMIT = 200
 MAX_LIMIT = 500
 STATUSES = ("success", "failure", "partial")
+DAILY_WINDOW_DAYS = 14
 
 
 def _empty_reply(configured: bool) -> dict[str, Any]:
-    return {"configured": configured, "reachable": False, "entries": [], "agents": []}
+    return {
+        "configured": configured, "reachable": False, "entries": [], "agents": [], "daily": [],
+    }
 
 
 def _tally(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -41,6 +45,37 @@ def _tally(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if status in STATUSES:
             counts[status] += 1
     return [{"name": name, **counts} for name, counts in tallies.items()]
+
+
+def _daily_activity(
+    entries: list[dict[str, Any]], days: int = DAILY_WINDOW_DAYS,
+) -> list[dict[str, Any]]:
+    """Entry counts per calendar day (UTC) over a fixed trailing window, oldest first.
+
+    A fixed window rather than "however many days the entries span" keeps the
+    heatmap a stable width regardless of how quiet or busy the crew has been.
+    """
+    counts: dict[str, int] = {}
+    for entry in entries:
+        raw = entry.get("created_at")
+        if not raw:
+            continue
+        try:
+            when = datetime.fromisoformat(raw)
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        day = when.astimezone(timezone.utc).date().isoformat()
+        counts[day] = counts.get(day, 0) + 1
+
+    today = datetime.now(timezone.utc).date()
+    return [
+        {"date": day, "count": counts.get(day, 0)}
+        for day in (
+            (today - timedelta(days=offset)).isoformat() for offset in range(days - 1, -1, -1)
+        )
+    ]
 
 
 @bp.route("/crew")
@@ -74,4 +109,5 @@ def crew() -> Response:
         "reachable": True,
         "entries": entries,
         "agents": _tally(entries),
+        "daily": _daily_activity(entries),
     })
