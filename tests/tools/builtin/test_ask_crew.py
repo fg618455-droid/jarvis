@@ -111,6 +111,19 @@ class TestAskCrewTool:
         assert result.error_code == ToolErrorCode.UNAVAILABLE.value
         assert result.retryable is True
 
+    def test_a_rejected_request_is_reported_as_retryable(self):
+        transport = Mock()
+        transport.post.side_effect = RuntimeError("Telegram Bot API rejected the request")
+        with patch(
+            "src.jarvis.tools.builtin.ask_crew.RequestsTelegramTransport",
+            return_value=transport,
+        ):
+            result = self.tool.run({"agent": "dev", "task": "x"}, self.context)
+
+        assert result.success is False
+        assert result.error_code == ToolErrorCode.UNAVAILABLE.value
+        assert result.retryable is True
+
     def test_agent_name_is_case_and_whitespace_insensitive(self):
         transport = Mock()
         with patch(

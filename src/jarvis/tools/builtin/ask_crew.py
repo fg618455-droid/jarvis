@@ -98,10 +98,8 @@ class AskCrewTool(Tool):
                 "in Settings under Mission Control.",
             )
 
-        base_url = getattr(cfg, "telegram_api_base_url", "") or None
         transport = RequestsTelegramTransport(
-            bot_token,
-            **({"base_url": base_url} if base_url else {}),
+            bot_token, base_url=getattr(cfg, "telegram_api_base_url", ""),
         )
 
         payload: Dict[str, Any] = {"chat_id": chat_id, "text": task}
