@@ -12,7 +12,7 @@ An unavailable confirmation path never permits execution.
 | Level | Behaviour |
 |-------|-----------|
 | `off` | Valid tools execute without confirmation. This level is intended for controlled development only. |
-| `critical` | Every MCP tool, `deleteMeal`, and `localFiles` write, append, or delete operations require confirmation. |
+| `critical` | Every MCP tool, `deleteMeal`, `askCrew`, and `localFiles` write, append, or delete operations require confirmation. |
 | `paranoid` | Every valid built-in and MCP tool requires confirmation. |
 
 The default level is `critical`. An unknown level is treated as `critical`.

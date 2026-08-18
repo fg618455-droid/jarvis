@@ -490,6 +490,11 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("crew_api_key", "Crew API Key",
       "Shared key the NAS endpoint expects in its X-Crew-Key header",
       "crew", "password", nullable=True)
+    f("crew_telegram_chat_id", "Crew Telegram Chat ID",
+      "Chat ID of the crew's Telegram group, used by askCrew to delegate a "
+      "task. Sent with the bot configured under Security → Telegram, which "
+      "must also be a member of that group. Empty disables askCrew",
+      "crew", "str", nullable=True)
 
     # --- Advanced ---
     f("echo_tolerance", "Echo Tolerance",

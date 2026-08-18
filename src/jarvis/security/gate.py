@@ -14,7 +14,7 @@ LEVEL_CRITICAL = "critical"
 LEVEL_PARANOID = "paranoid"
 VALID_LEVELS = frozenset({LEVEL_OFF, LEVEL_CRITICAL, LEVEL_PARANOID})
 
-_CRITICAL_BUILTINS = frozenset({"deleteMeal"})
+_CRITICAL_BUILTINS = frozenset({"deleteMeal", "askCrew"})
 _LOCAL_FILE_MUTATIONS = frozenset({"write", "append", "delete"})
 
 
