@@ -144,6 +144,7 @@ class Settings:
     # Mission Control (read-only view of a NAS-hosted agent crew)
     crew_api_url: str
     crew_api_key: str
+    crew_telegram_chat_id: str
 
     # Screen Capture
     allowlist_bundles: list[str]
@@ -741,6 +742,7 @@ def get_default_config() -> Dict[str, Any]:
         # rather than reaching for a host that was never configured.
         "crew_api_url": "",
         "crew_api_key": "",
+        "crew_telegram_chat_id": "",
 
         # Screen Capture
         "allowlist_bundles": [
@@ -1270,6 +1272,7 @@ def load_settings() -> Settings:
 
     crew_api_url = str(merged.get("crew_api_url", "") or "").strip().rstrip("/")
     crew_api_key = str(merged.get("crew_api_key", "") or "").strip()
+    crew_telegram_chat_id = str(merged.get("crew_telegram_chat_id", "") or "").strip()
 
     return Settings(
         # Database & Storage
@@ -1321,6 +1324,7 @@ def load_settings() -> Settings:
         # Mission Control
         crew_api_url=crew_api_url,
         crew_api_key=crew_api_key,
+        crew_telegram_chat_id=crew_telegram_chat_id,
 
         # Screen Capture
         allowlist_bundles=allowlist_bundles,

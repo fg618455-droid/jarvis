@@ -169,6 +169,14 @@ def test_off_level_allows_critical_tool_without_confirmation() -> None:
     assert rejecting.requests == []
 
 
+def test_ask_crew_is_critical_and_requires_confirmation() -> None:
+    rejecting = DecisionChannel(False)
+    gate = SecurityGate(level="critical", channels={"desktop": rejecting}, confirm_channels=["desktop"])
+
+    assert gate.confirm("askCrew", {"agent": "dev", "task": "x"}) is False
+    assert rejecting.requests == [("askCrew", {"agent": "dev", "task": "x"})]
+
+
 def test_all_mcp_tools_are_critical_and_fail_closed(mock_config) -> None:
     SecurityGate(level="critical", channels={}, confirm_channels=["desktop", "telegram", "voice"])
     cfg = replace(
