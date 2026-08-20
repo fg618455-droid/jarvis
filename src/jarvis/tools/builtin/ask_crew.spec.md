@@ -10,9 +10,9 @@ The reasoning backend defaults to local for simple, fast turns — that keeps ev
 
 ### Design
 
-Jarvis has no direct API into Hermes and does not run it. The one channel Hermes already watches and answers through is its own Telegram group ("Mission Control"), with one topic per agent. `askCrew` posts the task into the target agent's topic and returns immediately — it never waits for or reads back Hermes' reply. The result surfaces to the user later, in that Telegram channel or the shared vault, on Hermes' own schedule, not inline in the calling conversation.
+Jarvis has no direct API into Hermes and does not run it. The one channel Hermes already watches and answers through is its own Telegram group ("Mission Control"), with one topic per agent. `askCrew` posts the task into the target agent's topic and returns immediately — it never waits for Hermes' reply itself. The result surfaces in that Telegram channel or the shared vault on Hermes' own schedule, not inline in the calling conversation; `checkCrewReplies` (`check_crew_replies.spec.md`) is the explicit, separate way to look for it afterwards.
 
-This keeps the tool a thin, stateless HTTP call (`sendMessage` via `RequestsTelegramTransport`), with no polling loop, no cross-bot reply correlation, and no new privileged surface on the NAS.
+This keeps the tool itself a thin, stateless HTTP call (`sendMessage` via `RequestsTelegramTransport`), with no cross-bot reply correlation and no new privileged surface on the NAS. The polling that makes replies visible later lives entirely in `TelegramRouter` (`../../telegram/telegram.spec.md`'s "Crew topic watch"), not in this tool.
 
 ### Contract
 
@@ -37,7 +37,7 @@ The agent → Telegram topic mapping (`AGENT_THREADS` in `ask_crew.py`) mirrors 
 
 ### What askCrew is NOT
 
-- Not a synchronous request/response bridge: the caller does not get the crew's answer back in this tool call or this conversation turn.
+- Not a synchronous request/response bridge: the caller does not get the crew's answer back in this tool call or this conversation turn, and no timeout ever makes it wait for one. `checkCrewReplies` is a separate, explicit call for that.
 - Not a way to reach Hermes outside the crew's own Telegram group — no direct NAS API call, no new NAS-side privileged endpoint.
 - Not the default reasoning path — see the offline-first note in the project's `CLAUDE.md` for the boundary between "local by default" and "delegated on purpose".
 

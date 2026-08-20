@@ -23,6 +23,7 @@ from .builtin.time_tool import TimeTool
 from .builtin.stop import StopTool
 from .builtin.tool_search import ToolSearchTool
 from .builtin.ask_crew import AskCrewTool
+from .builtin.check_crew_replies import CheckCrewRepliesTool
 from .types import ToolExecutionResult
 from ..config import Settings
 from .external.mcp_client import MCPClient
@@ -46,6 +47,7 @@ BUILTIN_TOOLS = {
     "stop": StopTool(),
     "toolSearchTool": ToolSearchTool(),
     "askCrew": AskCrewTool(),
+    "checkCrewReplies": CheckCrewRepliesTool(),
 }
 
 # Global MCP tools cache

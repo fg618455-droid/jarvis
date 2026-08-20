@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from typing import Any
 
@@ -28,6 +29,7 @@ from .transport import RequestsTelegramTransport, TelegramTransport
 DEFAULT_POLL_TIMEOUT_SEC = 25
 ERROR_BACKOFF_SEC = 3.0
 SEND_TIMEOUT_SEC = 10.0
+TOPIC_BUFFER_MAXLEN = 10
 
 APPROVE_PREFIX = "approve:"
 DENY_PREFIX = "deny:"
@@ -74,6 +76,7 @@ class TelegramRouter:
         self._offset: int | None = None
         self._message_handler: Callable[[dict[str, Any]], None] | None = None
         self._pending: dict[str, PendingConfirmation] = {}
+        self._watched_topics: dict[tuple[str, int | None], deque] = {}
         self._lock = threading.Lock()
         self._lifecycle_lock = threading.RLock()
         self._stop = threading.Event()
@@ -203,6 +206,45 @@ class TelegramRouter:
         with self._lock:
             return bool(self._pending)
 
+    # ── crew topic watch ────────────────────────────────────────────────
+
+    def watch_topic(self, chat_id: str, thread_id: int | None) -> None:
+        """Start buffering messages from a chat/topic pair, idempotently.
+
+        Additive and independent of ``self.chat_id``: it never changes what
+        the confirmation and chat channel treat as authorised, it only opts
+        one more scope into being remembered for later read-back.
+        """
+        key = (str(chat_id or "").strip(), thread_id)
+        with self._lock:
+            self._watched_topics.setdefault(key, deque(maxlen=TOPIC_BUFFER_MAXLEN))
+
+    def get_topic_messages(self, chat_id: str, thread_id: int | None) -> list[dict[str, Any]]:
+        """A snapshot of the most recent buffered messages, oldest first.
+
+        Only ever reflects what arrived while this router was polling — the
+        Bot API has no way to fetch what came before that.
+        """
+        key = (str(chat_id or "").strip(), thread_id)
+        with self._lock:
+            buffer = self._watched_topics.get(key)
+            return list(buffer) if buffer is not None else []
+
+    def _buffer_topic_message(self, message: dict[str, Any]) -> None:
+        chat_id = str((message.get("chat") or {}).get("id", ""))
+        thread_id = message.get("message_thread_id")
+        key = (chat_id, thread_id)
+        with self._lock:
+            buffer = self._watched_topics.get(key)
+            if buffer is None:
+                return
+            sender = message.get("from") or {}
+            buffer.append({
+                "from": sender.get("username") or sender.get("first_name") or "unknown",
+                "text": message.get("text"),
+                "date": message.get("date"),
+            })
+
     # ── polling ─────────────────────────────────────────────────────────
 
     def poll_once(self) -> None:
@@ -251,6 +293,7 @@ class TelegramRouter:
             return
         message = update.get("message")
         if isinstance(message, dict):
+            self._buffer_topic_message(message)
             self._dispatch_message(message)
 
     def _dispatch_callback(self, callback: dict[str, Any]) -> None:

@@ -1015,20 +1015,38 @@ def main(smoke_test: bool = False) -> None:
     # Telegram as a conversation channel. The router polls for confirmations
     # on its own whenever one is raised; a handler is what turns incoming
     # messages into turns, so registering it is what switches chat on.
+    #
+    # The crew channel rides the same router: there is no Bot API endpoint to
+    # fetch message history, so checkCrewReplies can only ever show what the
+    # router captured while polling. Watching every crew topic here, whenever
+    # a crew chat id is configured, is what makes a reply visible even if
+    # nobody calls checkCrewReplies until well after it arrived.
     telegram_router = None
-    if bool(getattr(cfg, "telegram_chat_enabled", False)):
-        from .telegram.chat import TelegramChat
+    chat_enabled = bool(getattr(cfg, "telegram_chat_enabled", False))
+    crew_chat_id = str(getattr(cfg, "crew_telegram_chat_id", "") or "").strip()
+    if chat_enabled or crew_chat_id:
         from .telegram.router import get_router
 
         telegram_router = get_router(cfg)
         if telegram_router.is_available:
-            chat_channel = TelegramChat(telegram_router, cfg.telegram_chat_id)
-            telegram_router.set_message_handler(chat_channel.handle_message)
+            if chat_enabled:
+                from .telegram.chat import TelegramChat
+
+                chat_channel = TelegramChat(telegram_router, cfg.telegram_chat_id)
+                telegram_router.set_message_handler(chat_channel.handle_message)
+            if crew_chat_id:
+                from .tools.builtin.ask_crew import AGENT_THREADS
+
+                for thread_id in set(AGENT_THREADS.values()):
+                    telegram_router.watch_topic(crew_chat_id, thread_id)
             telegram_router.start()
-            print("✓ Telegram conversation channel listening", flush=True)
+            if chat_enabled:
+                print("✓ Telegram conversation channel listening", flush=True)
+            if crew_chat_id:
+                print("✓ Telegram crew channel watching", flush=True)
         else:
             telegram_router = None
-            print("  Telegram chat enabled but no bot token or chat ID is set", flush=True)
+            print("  Telegram enabled but no bot token or chat ID is set", flush=True)
 
     # Initialize dictation engine (hold-to-dictate)
     dictation = None
