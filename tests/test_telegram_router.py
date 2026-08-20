@@ -20,15 +20,24 @@ CHAT_ID = "4242"
 OTHER_CHAT_ID = "9999"
 
 
-def _message_update(update_id: int, text: str, chat_id: str = CHAT_ID) -> dict:
-    return {
-        "update_id": update_id,
-        "message": {
-            "message_id": update_id,
-            "chat": {"id": int(chat_id)},
-            "text": text,
-        },
+def _message_update(
+    update_id: int,
+    text: str,
+    chat_id: str = CHAT_ID,
+    *,
+    thread_id: int | None = None,
+    from_username: str | None = None,
+) -> dict:
+    message: dict = {
+        "message_id": update_id,
+        "chat": {"id": int(chat_id)},
+        "text": text,
     }
+    if thread_id is not None:
+        message["message_thread_id"] = thread_id
+    if from_username is not None:
+        message["from"] = {"username": from_username}
+    return {"update_id": update_id, "message": message}
 
 
 def _callback_update(update_id: int, data: str, chat_id: str = CHAT_ID) -> dict:
@@ -275,3 +284,110 @@ def test_router_reports_unavailable_without_credentials():
     assert TelegramRouter("", "", transport=FakeBotApi()).is_available is False
     assert TelegramRouter(BOT_TOKEN, "", transport=FakeBotApi()).is_available is False
     assert TelegramRouter(BOT_TOKEN, CHAT_ID, transport=FakeBotApi()).is_available is True
+
+
+# ── crew topic watching ────────────────────────────────────────────────
+
+CREW_CHAT_ID = "-1004343606702"
+
+
+def test_a_watched_topic_buffers_its_messages():
+    api = FakeBotApi()
+    router = _router(api)
+    router.drop_backlog()
+    router.watch_topic(CREW_CHAT_ID, 2)
+
+    api.add(_message_update(20, "gesundheitscheck ok", CREW_CHAT_ID, thread_id=2, from_username="dev_bot"))
+    router.poll_once()
+
+    messages = router.get_topic_messages(CREW_CHAT_ID, 2)
+    assert [m["text"] for m in messages] == ["gesundheitscheck ok"]
+    assert messages[0]["from"] == "dev_bot"
+
+
+def test_an_unwatched_topic_is_not_buffered():
+    api = FakeBotApi()
+    router = _router(api)
+    router.drop_backlog()
+    # Nothing is watched.
+
+    api.add(_message_update(21, "should be dropped", CREW_CHAT_ID, thread_id=2))
+    router.poll_once()
+
+    assert router.get_topic_messages(CREW_CHAT_ID, 2) == []
+
+
+def test_a_different_thread_in_the_same_chat_is_not_buffered():
+    api = FakeBotApi()
+    router = _router(api)
+    router.drop_backlog()
+    router.watch_topic(CREW_CHAT_ID, 2)
+
+    api.add(_message_update(22, "wrong topic", CREW_CHAT_ID, thread_id=5))
+    router.poll_once()
+
+    assert router.get_topic_messages(CREW_CHAT_ID, 2) == []
+    assert router.get_topic_messages(CREW_CHAT_ID, 5) == []
+
+
+def test_the_general_topic_has_no_thread_id():
+    """AGENT_THREADS maps the "jarvis" agent's General topic to None."""
+    api = FakeBotApi()
+    router = _router(api)
+    router.drop_backlog()
+    router.watch_topic(CREW_CHAT_ID, None)
+
+    api.add(_message_update(23, "general topic reply", CREW_CHAT_ID))
+    router.poll_once()
+
+    assert [m["text"] for m in router.get_topic_messages(CREW_CHAT_ID, None)] == [
+        "general topic reply"
+    ]
+
+
+def test_topic_buffer_keeps_only_the_most_recent_messages():
+    api = FakeBotApi()
+    router = _router(api)
+    router.drop_backlog()
+    router.watch_topic(CREW_CHAT_ID, 2)
+
+    for i in range(15):
+        api.add(_message_update(30 + i, f"msg {i}", CREW_CHAT_ID, thread_id=2))
+    router.poll_once()
+
+    messages = router.get_topic_messages(CREW_CHAT_ID, 2)
+    assert len(messages) <= 10
+    assert messages[-1]["text"] == "msg 14"
+
+
+def test_watching_a_crew_topic_does_not_affect_chat_authorisation():
+    """Crew buffering is additive: it never makes an unrelated chat "authorised"."""
+    api = FakeBotApi()
+    seen: list[dict] = []
+    router = _router(api)
+    router.set_message_handler(seen.append)
+    router.drop_backlog()
+    router.watch_topic(CREW_CHAT_ID, None)
+
+    api.add(_message_update(24, "crew message", CREW_CHAT_ID))
+    router.poll_once()
+
+    # Buffered for checkCrewReplies...
+    assert [m["text"] for m in router.get_topic_messages(CREW_CHAT_ID, None)] == [
+        "crew message"
+    ]
+    # ...but never reaches the chat/confirmation handler, which only knows
+    # about the router's own configured chat id.
+    assert seen == []
+
+
+def test_watch_topic_is_idempotent():
+    api = FakeBotApi()
+    router = _router(api)
+    router.watch_topic(CREW_CHAT_ID, 2)
+    router.watch_topic(CREW_CHAT_ID, 2)
+
+    api.add(_message_update(25, "one", CREW_CHAT_ID, thread_id=2))
+    router.poll_once()
+
+    assert len(router.get_topic_messages(CREW_CHAT_ID, 2)) == 1

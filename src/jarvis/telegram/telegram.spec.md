@@ -39,7 +39,7 @@ an update, and the short Bot API calls that send a message or a typing hint.
 | Availability | A bot token and a chat id, both non-empty |
 | Backlog | Discarded on start: the offset jumps past the newest queued update |
 | Offset | Advanced past every update, including ignored ones |
-| Authorisation | Only the configured chat id is read; anything else is dropped |
+| Authorisation | Only the configured chat id reaches the confirmation/chat handler; anything else is dropped there |
 | Errors | A failed poll is logged and retried; the loop does not die |
 | Start | Idempotent and serialised; a running router is never doubled |
 | Stop | Bounded join. A thread still inside a long poll keeps its slot until it returns, so nothing starts a second poller beside it |
@@ -48,8 +48,9 @@ Discarding the backlog is what keeps an instruction sent last night from
 running at breakfast because the daemon happened to come back up.
 
 The router polls whenever it is needed: the daemon starts it when the chat
-channel is on, and a confirmation starts it on demand in a process where
-nothing else has, such as a standalone control centre.
+channel is on or a crew chat id is configured, and a confirmation starts it on
+demand in a process where nothing else has, such as a standalone control
+centre.
 
 ## Confirmations
 
@@ -85,6 +86,22 @@ happens inside the reply engine, as it does for every other entry point.
 | A message that is not text | A note that only text is read; no turn runs |
 | Longer than 4000 characters | Refused with the limit named; no turn runs |
 | A reply over 4096 characters | Split into whole messages, losing nothing |
+
+## Crew topic watch
+
+The Bot API has no endpoint to fetch message history — a bot only ever sees a
+message via `getUpdates` while it is polling. `watch_topic(chat_id,
+thread_id)` opts one more `(chat_id, thread_id)` pair into an in-memory,
+per-scope buffer (bounded to the most recent messages); `get_topic_messages`
+reads a snapshot back. This is additive and independent of `self.chat_id`: it
+never changes what the confirmation and chat channel treat as authorised, and
+watching a scope that is never granted a matching message simply buffers
+nothing. See `../tools/builtin/check_crew_replies.spec.md` for the tool built
+on top of it.
+
+The buffer is process memory only — it does not survive a restart, and
+`thread_id=None` matches a forum's General topic the same way `AGENT_THREADS`
+in `ask_crew.py` already represents it.
 
 ## Configuration
 
