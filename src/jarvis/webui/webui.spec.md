@@ -99,6 +99,7 @@ allowed; reading one back is not.
 | `POST /api/llm/routes/reset` | Clear persisted cooldowns and process-local invalid-key marks |
 | `PUT /api/llm/routes` | Validate and replace generic route configuration while preserving unchanged masked credentials |
 | `GET /api/crew` | Recent activity from a NAS-hosted agent crew, a per-agent success/failure/partial tally, and a 14-day daily activity count |
+| `POST /api/crew/chat` | Relay one message to one crew agent and return its reply |
 
 `POST /api/chat` runs one turn at a time, and the turn it waits for may not
 be its own. Voice, the desktop chat window and this endpoint all reach the
@@ -198,12 +199,12 @@ in the same status area. The memory data is re-read after a completed action.
 
 ## Mission Control view
 
-Mission Control reads the activity log of an agent crew that runs outside
-this daemon entirely, on a separate machine (a NAS), unrelated to the
-security gate and to every other view here. The daemon holds no direct
-route to that machine's database; it calls a small read-only HTTP endpoint
-the NAS exposes for this purpose, guarded by a shared key sent as
-`X-Crew-Key`. Nothing in this codebase writes to that endpoint.
+Mission Control reads the activity log of, and can relay a chat message to,
+an agent crew that runs outside this daemon entirely, on a separate machine
+(a NAS), unrelated to the security gate and to every other view here. The
+daemon holds no direct route to that machine's database or its chat engine;
+it calls a small NAS-side HTTP endpoint for both, guarded by a shared key
+sent as `X-Crew-Key`.
 
 The NAS is not always on. `GET /api/crew` distinguishes three states rather
 than collapsing them into one empty view:
@@ -222,6 +223,25 @@ reading it does not have.
 14-day window, zero-filled for days with no activity, oldest first. The
 window stays a fixed width regardless of how busy or quiet the crew has
 been, so the heatmap never resizes on its own.
+
+### Chat relay
+
+`POST /api/crew/chat` takes `{"agent": ..., "message": ...}` — `agent` is one
+of the roster `askCrew`/`checkCrewReplies` already use
+(`AGENT_THREADS` in `../tools/builtin/ask_crew.py`), reused here rather than
+duplicated. The daemon validates the agent name and that a message was
+given, then forwards both to the NAS's own `/chat` endpoint with the same
+`X-Crew-Key` header the read path already sends, and relays back whatever
+that endpoint returns.
+
+This module never talks to the crew's chat engine directly and never
+persists anything about the exchange — the NAS-side endpoint is the one
+thing that proxies on to it. A connection failure, a timeout, or the NAS
+reporting its own upstream error all collapse to the same shape the read
+path already uses (`reachable: false` plus a plain-language `error`),
+never a 500 to the browser. The chat panel keeps its own client-side log of
+what was sent and received for the session; nothing about a conversation is
+written to this daemon's own storage.
 
 ## Configuration
 
