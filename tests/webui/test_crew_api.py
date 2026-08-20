@@ -16,7 +16,7 @@ import requests
 from jarvis.webui.server import WebUIConfig, create_app
 
 
-HEADERS = {"Host": "127.0.0.1:5055"}
+HEADERS = {"Host": "127.0.0.1:5055", "X-Jarvis-UI": "1"}
 
 
 @pytest.fixture
@@ -229,3 +229,132 @@ class TestDailyActivity:
         body = client.get("/api/crew", headers=HEADERS).get_json()
 
         assert sum(day["count"] for day in body["daily"]) == 0
+
+
+class _OkPostResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+class TestChat:
+    def test_an_unconfigured_endpoint_never_makes_a_request(
+        self, client, tmp_path, monkeypatch,
+    ):
+        _configure(tmp_path, monkeypatch, url="")
+        calls = []
+        monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1))
+
+        response = client.post(
+            "/api/crew/chat", json={"agent": "dev", "message": "status?"}, headers=HEADERS,
+        )
+
+        assert calls == []
+        assert response.status_code == 200
+        assert response.get_json()["reachable"] is False
+
+    def test_an_unknown_agent_is_rejected_without_a_request(
+        self, client, tmp_path, monkeypatch,
+    ):
+        _configure(tmp_path, monkeypatch)
+        calls = []
+        monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1))
+
+        response = client.post(
+            "/api/crew/chat", json={"agent": "nobody", "message": "hi"}, headers=HEADERS,
+        )
+
+        assert response.status_code == 400
+        assert calls == []
+
+    def test_an_empty_message_is_rejected_without_a_request(
+        self, client, tmp_path, monkeypatch,
+    ):
+        _configure(tmp_path, monkeypatch)
+        calls = []
+        monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1))
+
+        response = client.post(
+            "/api/crew/chat", json={"agent": "dev", "message": "   "}, headers=HEADERS,
+        )
+
+        assert response.status_code == 400
+        assert calls == []
+
+    def test_a_reply_is_forwarded(self, client, tmp_path, monkeypatch):
+        _configure(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            requests, "post",
+            lambda *a, **k: _OkPostResponse({"reply": "on it"}),
+        )
+
+        response = client.post(
+            "/api/crew/chat", json={"agent": "dev", "message": "status?"}, headers=HEADERS,
+        )
+
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["reachable"] is True
+        assert body["reply"] == "on it"
+
+    def test_the_agent_message_and_key_ride_along(self, client, tmp_path, monkeypatch):
+        _configure(tmp_path, monkeypatch, key="topsecret")
+        seen = {}
+
+        def _post(url, headers=None, json=None, timeout=None):
+            seen["url"] = url
+            seen["headers"] = headers
+            seen["json"] = json
+            return _OkPostResponse({"reply": "ok"})
+
+        monkeypatch.setattr(requests, "post", _post)
+
+        client.post(
+            "/api/crew/chat", json={"agent": "research", "message": "check timetable"},
+            headers=HEADERS,
+        )
+
+        assert seen["url"] == "http://192.168.178.113:8643/chat"
+        assert seen["headers"]["X-Crew-Key"] == "topsecret"
+        assert seen["json"] == {"agent": "research", "message": "check timetable"}
+
+    def test_a_connection_failure_is_reported_without_a_500(
+        self, client, tmp_path, monkeypatch,
+    ):
+        _configure(tmp_path, monkeypatch)
+
+        def _boom(*args, **kwargs):
+            raise requests.exceptions.ConnectionError("no route to host")
+
+        monkeypatch.setattr(requests, "post", _boom)
+
+        response = client.post(
+            "/api/crew/chat", json={"agent": "dev", "message": "hi"}, headers=HEADERS,
+        )
+
+        assert response.status_code == 200
+        assert response.get_json()["reachable"] is False
+
+    def test_an_upstream_error_is_reported_without_a_500(
+        self, client, tmp_path, monkeypatch,
+    ):
+        _configure(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            requests, "post",
+            lambda *a, **k: _OkPostResponse({"error": "chat disabled"}, status_code=503),
+        )
+
+        response = client.post(
+            "/api/crew/chat", json={"agent": "dev", "message": "hi"}, headers=HEADERS,
+        )
+
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["reachable"] is False

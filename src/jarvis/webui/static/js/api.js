@@ -123,6 +123,7 @@ export const api = {
   logs: (limit = 200) => request(`/api/logs?limit=${limit}`),
 
   crew: (limit = 200) => request(`/api/crew?limit=${limit}`),
+  crewChat: (agent, message) => request("/api/crew/chat", { method: "POST", body: { agent, message } }),
 
   llmRoutes: () => request("/api/llm/routes"),
   saveLlmRoutes: (routes) => request("/api/llm/routes", { method: "PUT", body: { routes } }),

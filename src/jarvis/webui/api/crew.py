@@ -1,11 +1,17 @@
-"""Mission Control: what a NAS-hosted agent crew has been doing.
+"""Mission Control: what a NAS-hosted agent crew has been doing, and a chat.
 
 The crew (Hermes, on Felix' Synology) runs independently of this daemon and
 its security gate, on a machine that is not always reachable from here. The
-daemon reads a small read-only endpoint the NAS exposes rather than opening
-the crew's own database directly, so this module is purely a client: it
-never writes anything back, and a NAS that is off or unreachable degrades
-the view to "nothing to show" instead of a broken page.
+daemon talks to a small NAS-side endpoint rather than opening the crew's own
+database directly, so this module is purely a client of that endpoint: a NAS
+that is off or unreachable degrades the view to "nothing to show" instead of
+a broken page.
+
+The activity feed (``GET /api/crew``) only ever reads. The chat relay
+(``POST /api/crew/chat``) forwards one message to one agent and relays the
+reply — the NAS-side endpoint proxies it on to the crew's own chat engine,
+this module never talks to that engine directly and never persists anything
+about the exchange itself.
 """
 
 from __future__ import annotations
@@ -18,11 +24,13 @@ from flask import Blueprint, Response, jsonify, request
 
 from jarvis.config import load_settings
 from jarvis.debug import debug_log
+from jarvis.tools.builtin.ask_crew import AGENT_THREADS
 
 
 bp = Blueprint("crew", __name__, url_prefix="/api")
 
 REQUEST_TIMEOUT_SEC = 3.0
+CHAT_TIMEOUT_SEC = 35.0
 DEFAULT_LIMIT = 200
 MAX_LIMIT = 500
 STATUSES = ("success", "failure", "partial")
@@ -111,3 +119,40 @@ def crew() -> Response:
         "agents": _tally(entries),
         "daily": _daily_activity(entries),
     })
+
+
+@bp.route("/crew/chat", methods=["POST"])
+def crew_chat() -> Response:
+    """Relay one message to one crew agent and return its reply, or say why not."""
+    cfg = load_settings()
+    base_url = cfg.crew_api_url
+    if not base_url:
+        return jsonify({"reachable": False, "error": "not configured"})
+
+    body = request.get_json(silent=True) or {}
+    agent = str(body.get("agent", "")).strip().lower()
+    message = str(body.get("message", "")).strip()
+
+    if agent not in AGENT_THREADS:
+        return jsonify({
+            "error": f"Unknown crew agent '{agent}'. Choose one of: "
+                     f"{', '.join(sorted(AGENT_THREADS))}.",
+        }), 400
+    if not message:
+        return jsonify({"error": "No message given."}), 400
+
+    headers = {"X-Crew-Key": cfg.crew_api_key} if cfg.crew_api_key else {}
+    try:
+        response = requests.post(
+            f"{base_url}/chat",
+            headers=headers,
+            json={"agent": agent, "message": message},
+            timeout=CHAT_TIMEOUT_SEC,
+        )
+        response.raise_for_status()
+        reply = response.json().get("reply", "")
+    except (requests.exceptions.RequestException, ValueError) as error:
+        debug_log(f"the crew chat endpoint did not answer: {error}", "webui")
+        return jsonify({"reachable": False, "error": "The crew channel isn't reachable right now."})
+
+    return jsonify({"reachable": True, "reply": reply})

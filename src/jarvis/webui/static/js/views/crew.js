@@ -8,11 +8,15 @@
 import { api } from "../api.js";
 import * as fmt from "../fmt.js";
 import { t } from "../i18n.js";
-import { chip, clear, el, empty, table } from "../ui.js";
+import { chip, clear, el, empty, table, toast } from "../ui.js";
 
 const POLL_MS = 10000;
 
 const STATUS_TONE = { success: "ok", failure: "bad", partial: "warn" };
+
+// Must match AGENT_THREADS in ask_crew.py — the roster the Telegram bridge
+// and this chat panel both delegate to.
+const CREW_AGENTS = ["jarvis", "dev", "research", "assistant", "schule", "scribe", "reach"];
 
 function statusChip(status) {
   return chip(t(`crew.status.${status}`) || status, STATUS_TONE[status]);
@@ -23,11 +27,18 @@ export async function mount(root) {
     el("h1", { text: t("crew.title") }),
     el("p", { text: t("crew.lead") }),
   ]);
+  // The chat panel is built once and left alone by the periodic refresh
+  // below — clearing and rebuilding it every POLL_MS would drop whatever
+  // the user was mid-typing and wipe the conversation so far.
+  const chatCard = el("section", { class: "card" });
   const body = el("div");
-  root.append(head, body);
+  root.append(head, chatCard, body);
+
+  const chat = buildChatPanel(chatCard);
 
   async function refresh() {
     const payload = await api.crew();
+    chat.setAvailable(Boolean(payload.configured && payload.reachable));
     paint(body, payload);
   }
 
@@ -36,6 +47,72 @@ export async function mount(root) {
   );
   const timer = setInterval(() => refresh().catch(() => {}), POLL_MS);
   return () => clearInterval(timer);
+}
+
+function buildChatPanel(container) {
+  container.append(el("header", {}, [el("h2", { text: t("crew.chatTitle") })]));
+
+  const agentSelect = el(
+    "select",
+    {},
+    CREW_AGENTS.map((agent) => el("option", { value: agent, text: agent })),
+  );
+  const input = el("input", { type: "text", placeholder: t("crew.chatPlaceholder") });
+  const send = el("button", { class: "btn primary", type: "button", text: t("crew.chatSend") });
+  const log = el("div", { class: "rows crew-chat-log" });
+
+  function appendLine(agent, speaker, text) {
+    log.append(
+      el("div", { class: "row" }, [
+        el("span", { class: "key", text: `${agent} · ${speaker}` }),
+        el("span", { class: "val", text }),
+      ]),
+    );
+    log.scrollTop = log.scrollHeight;
+  }
+
+  async function submit() {
+    const message = input.value.trim();
+    if (!message || send.disabled) return;
+    const agent = agentSelect.value;
+
+    appendLine(agent, t("crew.chatYou"), message);
+    input.value = "";
+    send.disabled = true;
+    const previous = send.textContent;
+    send.textContent = t("crew.chatSending");
+    try {
+      const result = await api.crewChat(agent, message);
+      appendLine(
+        agent, agent,
+        result.reachable === false ? (result.error || t("crew.unreachable")) : (result.reply || "—"),
+      );
+    } catch (error) {
+      toast(error.message, "bad");
+    } finally {
+      send.disabled = false;
+      send.textContent = previous;
+      input.focus();
+    }
+  }
+
+  send.addEventListener("click", submit);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submit();
+    }
+  });
+
+  container.append(el("div", { class: "composer-row" }, [agentSelect, input, send]), log);
+
+  return {
+    setAvailable(available) {
+      agentSelect.disabled = !available;
+      input.disabled = !available;
+      send.disabled = !available;
+    },
+  };
 }
 
 function paint(container, payload) {

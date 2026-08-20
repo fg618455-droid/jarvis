@@ -272,6 +272,11 @@ const STRINGS = {
     "crew.column.status": "Status",
     "crew.column.model": "Model",
     "crew.column.task": "Task",
+    "crew.chatTitle": "Chat with the crew",
+    "crew.chatPlaceholder": "Message the selected agent…",
+    "crew.chatSend": "Send",
+    "crew.chatSending": "Sending…",
+    "crew.chatYou": "you",
   },
 
   de: {
@@ -541,6 +546,11 @@ const STRINGS = {
     "crew.column.status": "Status",
     "crew.column.model": "Modell",
     "crew.column.task": "Aufgabe",
+    "crew.chatTitle": "Mit der Crew chatten",
+    "crew.chatPlaceholder": "Nachricht an den gewählten Agenten…",
+    "crew.chatSend": "Senden",
+    "crew.chatSending": "Wird gesendet…",
+    "crew.chatYou": "du",
   },
 };
 
