@@ -3,6 +3,7 @@
 import { api } from "../api.js";
 import * as fmt from "../fmt.js";
 import { t } from "../i18n.js";
+import { createMic } from "../mic.js";
 import { live } from "../sse.js";
 import { chip, clear, el, empty, stageBar, toast } from "../ui.js";
 
@@ -23,10 +24,14 @@ export async function mount(root) {
   });
   const speak = el("input", { type: "checkbox" });
   const send = el("button", { class: "btn primary", type: "button", text: t("conversation.send") });
+  const mic = el("button", { class: "btn", type: "button", text: t("conversation.mic.start") });
+  const micState = el("span", { class: "muted" });
   const composer = el("div", { class: "composer" }, [
     input,
     el("div", { class: "composer-row" }, [
       el("label", { class: "check" }, [speak, t("conversation.speak")]),
+      mic,
+      micState,
       el("span", { class: "muted", style: "margin-left:auto" }),
       send,
     ]),
@@ -65,6 +70,28 @@ export async function mount(root) {
     }
   }
 
+  const capture = createMic({
+    onState: (state) => {
+      mic.textContent = state === "idle" ? t("conversation.mic.start") : t("conversation.mic.stop");
+      mic.classList.toggle("primary", state !== "idle");
+      micState.textContent = state === "starting" ? t("conversation.mic.starting") : "";
+    },
+    onError: (err) => toast(`${t("conversation.mic.failed")}: ${err.message}`),
+  });
+
+  mic.addEventListener("click", async () => {
+    // A daemon that is not listening has nowhere to put the audio, so say
+    // that instead of opening the microphone and dropping every frame.
+    if (!capture.running) {
+      const status = await api.voiceStatus().catch(() => null);
+      if (!status?.ingress) {
+        toast(t("conversation.mic.noListener"));
+        return;
+      }
+    }
+    capture.toggle().catch(() => {});
+  });
+
   send.addEventListener("click", submit);
   input.addEventListener("keydown", (event) => {
     // Enter sends, Shift+Enter breaks the line: this is a message box, not
@@ -89,6 +116,9 @@ export async function mount(root) {
     offDiscard();
     offPassive();
     offMode();
+    // Leaving the view releases the microphone. A capture the user cannot
+    // see is a capture they cannot stop.
+    capture.stop().catch(() => {});
   };
 }
 
