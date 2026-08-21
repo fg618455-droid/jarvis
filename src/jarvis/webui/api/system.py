@@ -138,6 +138,40 @@ def read_ollama_environment() -> dict[str, str]:
     return {key: os.environ.get(key, "") for key in keys}
 
 
+def _speech_model_reading(name: Optional[str], cache_root: Optional[Path] = None) -> dict:
+    """Report the Whisper model by name, not as a path.
+
+    The setting normally holds a model name ("base", "large-v3-turbo") that
+    faster-whisper downloads into the Hugging Face cache. Treating it as a
+    filesystem path marks every healthy install as missing while it is busy
+    transcribing. A setting that does name a real directory is still honoured,
+    because some setups point straight at a converted model.
+    """
+    reading: dict[str, Any] = {"label": "speech model", "name": str(name or ""), "exists": False}
+    if not name:
+        return reading
+
+    as_path = Path(name)
+    if as_path.exists():
+        reading["exists"] = True
+        reading["path"] = str(as_path)
+        return reading
+
+    root = cache_root or (Path.home() / ".cache" / "huggingface" / "hub")
+    try:
+        # Repositories are named models--<owner>--faster-whisper-<model>. Match
+        # the tail exactly so "base" cannot answer for "base.en".
+        suffix = f"faster-whisper-{name}"
+        for entry in root.iterdir():
+            if entry.is_dir() and entry.name.endswith(suffix):
+                reading["exists"] = True
+                reading["path"] = str(entry)
+                return reading
+    except OSError:
+        pass
+    return reading
+
+
 def _path_reading(label: str, path: Optional[str]) -> dict:
     reading: dict[str, Any] = {"label": label, "path": str(path or ""), "exists": False}
     if not path:
@@ -211,7 +245,7 @@ def system() -> Response:
             _path_reading("config", str(resolve_config_path())),
             _path_reading("database", cfg.db_path),
             _path_reading("turn journal", str(Path(cfg.db_path).parent / "turns.jsonl")),
-            _path_reading("speech model", cfg.whisper_model),
+            _speech_model_reading(cfg.whisper_model),
             _path_reading("voice model", piper_model),
         ],
         "process": read_process(),
