@@ -471,6 +471,19 @@ Only `sounddevice` requires PortAudio. `numpy` and `webrtcvad` are imported
 independently of it, so a machine with no usable audio device still runs the
 full pipeline on posted audio.
 
+Capturing the local microphone is therefore optional. A device that is
+absent, blocked or busy downgrades the listener to browser-only capture: the
+reason is printed, `_local_capture` goes false, and the loop comes up
+anyway. It has to, because the audio it serves may arrive over the network
+minutes later. Warnings that only make sense for a local device (the "no
+audio received" health check) are silent in that mode, so a working
+browser-only setup does not report itself as broken.
+
+The listener publishes its ingress through `listening.audio_ingress` on
+start and clears it on stop, the same shape the conversation-mode switch
+uses. Callers reach the audio path through that registry rather than holding
+a listener reference.
+
 ## Fallback Behaviour
 
 When components are unavailable, the system degrades gracefully:

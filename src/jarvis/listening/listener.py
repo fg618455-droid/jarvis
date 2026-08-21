@@ -19,6 +19,7 @@ from datetime import datetime
 from rapidfuzz import fuzz
 from contextlib import contextmanager
 
+from .audio_ingress import register_audio_sink
 from .conversation_mode import register_conversation_controller
 from .passive_capture import (
     capture_evicted_segment,
@@ -400,7 +401,13 @@ def _serialised_stream(stream):
     sounddevice's context manager calls start() on enter and stop()/close()
     on exit; those are the thread-unsafe PortAudio lifecycle operations that
     must be serialised process-wide (see jarvis.utils.audio_lock).
+
+    ``None`` means there is no local device to serialise, which is the normal
+    shape when the microphone lives in the browser. The block still runs.
     """
+    if stream is None:
+        yield None
+        return
     with portaudio_lock:
         stream.start()
     try:
@@ -439,6 +446,9 @@ class VoiceListener(threading.Thread):
         self.dialogue_memory = dialogue_memory
         self._should_stop = False
         self._dictation_active = False  # Pause flag set by dictation engine
+        # Whether the local microphone is being captured. Decided in run();
+        # False means every frame arrives from the control centre instead.
+        self._local_capture = False
         self._first_utterance = True  # Suppress turn separator before the very first transcription
         # ISO-639-1 code Whisper detected for the most recent utterance.
         # Updated at every successful transcription site (MLX + faster-
@@ -517,6 +527,7 @@ class VoiceListener(threading.Thread):
         """Stop the voice listener."""
         self._should_stop = True
         register_conversation_controller(None)
+        register_audio_sink(None)
         self._transcript_buffer.flush()
         self._transcript_buffer.set_eviction_sink(None)
         register_passive_buffer(None)
@@ -1912,32 +1923,163 @@ class VoiceListener(threading.Thread):
             return f"\"How's the weather, {wake_title}?\""
         return f"\"How's the weather in [your city], {wake_title}?\""
 
+    def _open_local_stream(self):
+        """Open the local microphone, or return None when it cannot be had.
+
+        A device that is missing, blocked or busy is not fatal: the loop
+        still serves audio posted by the control centre. The reasons are
+        printed either way, because a silent downgrade to browser-only
+        capture would look like a broken microphone.
+        """
+        # Audio device setup
+        stream_kwargs = {}
+        device_env = (self.cfg.voice_device or '').strip().lower()
+
+        if self.cfg.voice_debug:
+            debug_log("available input devices:", "voice")
+            try:
+                for idx, dev in enumerate(sd.query_devices()):
+                    try:
+                        max_in = int(dev.get("max_input_channels", 0))
+                    except Exception:
+                        max_in = 0
+                    if max_in > 0:
+                        name = dev.get("name")
+                        rate = dev.get("default_samplerate")
+                        debug_log(f"  [{idx}] {name} (channels={max_in}, default_sr={rate})", "voice")
+            except Exception:
+                pass
+
+        # Configure audio device
+        if device_env and device_env not in ("default", "system"):
+            try:
+                device_index = int(self.cfg.voice_device)
+            except ValueError:
+                device_index = None
+                try:
+                    for idx, dev in enumerate(sd.query_devices()):
+                        if isinstance(dev.get("name"), str) and (self.cfg.voice_device or '').lower() in dev.get("name").lower():
+                            device_index = idx
+                            break
+                except Exception:
+                    device_index = None
+            if device_index is not None:
+                stream_kwargs["device"] = device_index
+
+        # Log which device will be used
+        try:
+            if "device" in stream_kwargs:
+                dev = sd.query_devices(stream_kwargs["device"])
+                device_name = dev.get('name', 'Unknown')
+                debug_log(f"using input device: {device_name} (index {stream_kwargs['device']})", "voice")
+                print(f"  🎤 Using audio device: {device_name}", flush=True)
+            else:
+                debug_log("using system default input device", "voice")
+                try:
+                    default_dev = sd.query_devices(sd.default.device[0])
+                    print(f"  🎤 Using default device: {default_dev.get('name', 'Unknown')}", flush=True)
+                except Exception:
+                    print("  🎤 Using system default input device", flush=True)
+        except Exception:
+            pass
+
+        # Open audio stream — try configured rate first, fall back to device
+        # native rate when the hardware rejects 16 kHz (common on Linux ALSA).
+        self._stream_samplerate = self._samplerate
+        open_error = None
+        try:
+            with portaudio_lock:
+                stream = sd.InputStream(
+                    samplerate=self._samplerate,
+                    channels=1,
+                    dtype="float32",
+                    blocksize=self._frame_samples,
+                    callback=self._on_audio,
+                    **stream_kwargs,
+                )
+        except Exception as e:
+            error_msg = str(e).lower()
+            is_rate_error = "sample rate" in error_msg or "9987" in error_msg
+            if is_rate_error:
+                debug_log(f"device rejected {self._samplerate} Hz, querying native rate", "voice")
+                try:
+                    if "device" in stream_kwargs:
+                        dev_info = sd.query_devices(stream_kwargs["device"])
+                    else:
+                        dev_info = sd.query_devices(kind="input")
+                    native_rate = int(dev_info.get("default_samplerate", self._samplerate))
+                    if native_rate != self._samplerate:
+                        self._stream_samplerate = native_rate
+                        native_frame_samples = max(1, int(native_rate * 30 / 1000))
+                        print(f"  ⚠️  Device doesn't support {self._samplerate} Hz — using {native_rate} Hz with resampling", flush=True)
+                        debug_log(f"retrying stream at native {native_rate} Hz", "voice")
+                        with portaudio_lock:
+                            stream = sd.InputStream(
+                                samplerate=native_rate,
+                                channels=1,
+                                dtype="float32",
+                                blocksize=native_frame_samples,
+                                callback=self._on_audio,
+                                **stream_kwargs,
+                            )
+                    else:
+                        open_error = e
+                except Exception:
+                    open_error = e
+            else:
+                open_error = e
+
+        if open_error is not None:
+            error_msg = str(open_error).lower()
+            debug_log(f"failed to open input stream: {open_error}", "voice")
+
+            # Provide helpful error messages for common issues
+            if "access" in error_msg or "permission" in error_msg:
+                print(f"  ❌ Microphone access denied. Please check: {_get_mic_permission_hint()}", flush=True)
+            elif "device" in error_msg and ("use" in error_msg or "busy" in error_msg):
+                print("  ❌ Microphone is being used by another application", flush=True)
+            elif "device" in error_msg:
+                print(f"  ❌ Failed to open microphone: {open_error}", flush=True)
+                print("     Try selecting a different audio device in settings", flush=True)
+            else:
+                print(f"  ❌ Failed to start audio recording: {open_error}", flush=True)
+            return None
+        return stream
+
     def run(self) -> None:
         """Main voice listening loop."""
         # Publish the conversation switch so interfaces outside the voice
         # loop can turn it on without reaching into the listener.
         register_conversation_controller(self.state_manager)
+        # Publish the audio ingress so the control centre can post the
+        # browser's microphone into this loop.
+        register_audio_sink(self)
 
-        if sd is None:
+        # Capturing the local microphone is optional. Without it this loop
+        # still transcribes and answers audio posted by the control centre,
+        # so a missing or busy device downgrades the listener rather than
+        # ending it. Everything below that touches `sd` is gated on this.
+        self._local_capture = sd is not None
+        if not self._local_capture:
             debug_log("sounddevice not available", "voice")
-            print("  ❌ Audio system not available - sounddevice failed to load", flush=True)
-            return
+            print("  🔇 No local audio device - listening only to the control centre", flush=True)
 
         # Verify PortAudio is working by querying devices (catches Windows DLL issues)
-        try:
-            devices = sd.query_devices()
-            input_devices = [d for d in devices if d.get('max_input_channels', 0) > 0]
-            debug_log(f"PortAudio initialised: {len(input_devices)} input device(s) found", "voice")
-            if not input_devices:
-                print("  ❌ No microphone found. Please connect a microphone.", flush=True)
-                return
-        except Exception as e:
-            debug_log(f"PortAudio device query failed: {e}", "voice")
-            print(f"  ❌ Audio system error: {e}", flush=True)
-            print("     PortAudio may not be properly installed", flush=True)
-            if sys.platform == 'linux':
-                print("     On Linux, ensure PortAudio is installed: sudo apt install libportaudio2", flush=True)
-            return
+        if self._local_capture:
+            try:
+                devices = sd.query_devices()
+                input_devices = [d for d in devices if d.get('max_input_channels', 0) > 0]
+                debug_log(f"PortAudio initialised: {len(input_devices)} input device(s) found", "voice")
+                if not input_devices:
+                    print("  🔇 No microphone found - listening only to the control centre", flush=True)
+                    self._local_capture = False
+            except Exception as e:
+                debug_log(f"PortAudio device query failed: {e}", "voice")
+                print(f"  ⚠️  Audio system error: {e}", flush=True)
+                print("     PortAudio may not be properly installed", flush=True)
+                if sys.platform == 'linux':
+                    print("     On Linux, ensure PortAudio is installed: sudo apt install libportaudio2", flush=True)
+                self._local_capture = False
 
         # Windows 11: Test microphone permission by attempting a brief recording
         # This catches privacy settings that silently block audio access.
@@ -1945,7 +2087,7 @@ class VoiceListener(threading.Thread):
         # the audio device at the system level without raising an error.
         # Uses InputStream (not sd.rec) so the stream can be explicitly closed
         # on timeout, avoiding resource leaks that could block later audio init.
-        if sys.platform == 'win32':
+        if sys.platform == 'win32' and self._local_capture:
             try:
                 print("  🔐 Checking microphone permission...", flush=True)
                 mic_ok = threading.Event()
@@ -2337,124 +2479,16 @@ class VoiceListener(threading.Thread):
         debug_log(f"audio params: sample_rate={self._samplerate}, frame_ms={frame_ms}, frame_samples={self._frame_samples}", "voice")
         debug_log(f"VAD: enabled={bool(self._vad is not None)}, aggressiveness={getattr(self.cfg, 'vad_aggressiveness', 2)}", "voice")
 
-        # Audio device setup
-        stream_kwargs = {}
-        device_env = (self.cfg.voice_device or '').strip().lower()
-
-        if self.cfg.voice_debug:
-            debug_log("available input devices:", "voice")
-            try:
-                for idx, dev in enumerate(sd.query_devices()):
-                    try:
-                        max_in = int(dev.get("max_input_channels", 0))
-                    except Exception:
-                        max_in = 0
-                    if max_in > 0:
-                        name = dev.get("name")
-                        rate = dev.get("default_samplerate")
-                        debug_log(f"  [{idx}] {name} (channels={max_in}, default_sr={rate})", "voice")
-            except Exception:
-                pass
-
-        # Configure audio device
-        if device_env and device_env not in ("default", "system"):
-            try:
-                device_index = int(self.cfg.voice_device)
-            except ValueError:
-                device_index = None
-                try:
-                    for idx, dev in enumerate(sd.query_devices()):
-                        if isinstance(dev.get("name"), str) and (self.cfg.voice_device or '').lower() in dev.get("name").lower():
-                            device_index = idx
-                            break
-                except Exception:
-                    device_index = None
-            if device_index is not None:
-                stream_kwargs["device"] = device_index
-
-        # Log which device will be used
-        try:
-            if "device" in stream_kwargs:
-                dev = sd.query_devices(stream_kwargs["device"])
-                device_name = dev.get('name', 'Unknown')
-                debug_log(f"using input device: {device_name} (index {stream_kwargs['device']})", "voice")
-                print(f"  🎤 Using audio device: {device_name}", flush=True)
-            else:
-                debug_log("using system default input device", "voice")
-                try:
-                    default_dev = sd.query_devices(sd.default.device[0])
-                    print(f"  🎤 Using default device: {default_dev.get('name', 'Unknown')}", flush=True)
-                except Exception:
-                    print("  🎤 Using system default input device", flush=True)
-        except Exception:
-            pass
-
-        # Open audio stream — try configured rate first, fall back to device
-        # native rate when the hardware rejects 16 kHz (common on Linux ALSA).
+        # Audio device setup. Browser-only capture leaves this None.
         self._stream_samplerate = self._samplerate
-        open_error = None
-        try:
-            with portaudio_lock:
-                stream = sd.InputStream(
-                    samplerate=self._samplerate,
-                    channels=1,
-                    dtype="float32",
-                    blocksize=self._frame_samples,
-                    callback=self._on_audio,
-                    **stream_kwargs,
-                )
-        except Exception as e:
-            error_msg = str(e).lower()
-            is_rate_error = "sample rate" in error_msg or "9987" in error_msg
-            if is_rate_error:
-                debug_log(f"device rejected {self._samplerate} Hz, querying native rate", "voice")
-                try:
-                    if "device" in stream_kwargs:
-                        dev_info = sd.query_devices(stream_kwargs["device"])
-                    else:
-                        dev_info = sd.query_devices(kind="input")
-                    native_rate = int(dev_info.get("default_samplerate", self._samplerate))
-                    if native_rate != self._samplerate:
-                        self._stream_samplerate = native_rate
-                        native_frame_samples = max(1, int(native_rate * 30 / 1000))
-                        print(f"  ⚠️  Device doesn't support {self._samplerate} Hz — using {native_rate} Hz with resampling", flush=True)
-                        debug_log(f"retrying stream at native {native_rate} Hz", "voice")
-                        with portaudio_lock:
-                            stream = sd.InputStream(
-                                samplerate=native_rate,
-                                channels=1,
-                                dtype="float32",
-                                blocksize=native_frame_samples,
-                                callback=self._on_audio,
-                                **stream_kwargs,
-                            )
-                    else:
-                        open_error = e
-                except Exception:
-                    open_error = e
-            else:
-                open_error = e
-
-        if open_error is not None:
-            error_msg = str(open_error).lower()
-            debug_log(f"failed to open input stream: {open_error}", "voice")
-
-            # Provide helpful error messages for common issues
-            if "access" in error_msg or "permission" in error_msg:
-                print(f"  ❌ Microphone access denied. Please check: {_get_mic_permission_hint()}", flush=True)
-            elif "device" in error_msg and ("use" in error_msg or "busy" in error_msg):
-                print("  ❌ Microphone is being used by another application", flush=True)
-            elif "device" in error_msg:
-                print(f"  ❌ Failed to open microphone: {open_error}", flush=True)
-                print("     Try selecting a different audio device in settings", flush=True)
-            else:
-                print(f"  ❌ Failed to start audio recording: {open_error}", flush=True)
-            return
+        stream = self._open_local_stream() if self._local_capture else None
+        if stream is None:
+            self._local_capture = False
 
         # Main audio processing loop
         with _serialised_stream(stream):
             # Verify stream is actually recording (helps catch permission issues)
-            if not stream.active:
+            if stream is not None and not stream.active:
                 try:
                     with portaudio_lock:
                         stream.start()
@@ -2527,7 +2561,7 @@ class VoiceListener(threading.Thread):
 
             while not self._should_stop:
                 # One-time audio health check after 5 seconds
-                if not _audio_health_logged and time.time() - _audio_start_time > 5:
+                if self._local_capture and not _audio_health_logged and time.time() - _audio_start_time > 5:
                     _audio_health_logged = True
                     if self._callback_count == 0:
                         print("  ⚠️  No audio received after 5 seconds!", flush=True)

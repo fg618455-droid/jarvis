@@ -11,10 +11,14 @@ what is refused. Everything downstream is already covered elsewhere.
 """
 
 import queue
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+
+from jarvis.listening.audio_ingress import audio_ingress_available, register_audio_sink
 
 
 def _make_listener(tts_speaking: bool = False):
@@ -91,6 +95,37 @@ class TestBrowserAudioIngress:
         assert listener.feed_external_audio(b"") is False
         assert listener.feed_external_audio(b"\x01") is False  # odd byte count
         assert listener._audio_q.empty()
+
+    def test_the_local_microphone_is_not_required(self):
+        """No audio device is a downgrade, not the end of the listening loop.
+
+        With the microphone in the browser there may be no local device at
+        all, or a blocked one. The loop still has to come up and stay up,
+        because the audio it serves arrives over the network.
+        """
+        listener, _ = _make_listener()
+        listener._transcript_buffer = MagicMock()
+        listener.state_manager = MagicMock()
+
+        with patch("jarvis.listening.listener.sd", None), \
+             patch.object(listener, "_start_llm_warmup", return_value=[]), \
+             patch.object(listener, "_load_whisper_model", create=True):
+            thread = threading.Thread(target=listener.run, daemon=True)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline and not audio_ingress_available():
+                    time.sleep(0.02)
+                # The loop is up and reachable even though no device exists.
+                assert audio_ingress_available() is True
+                assert listener._local_capture is False
+                assert thread.is_alive()
+            finally:
+                listener._should_stop = True
+                thread.join(timeout=5.0)
+                register_audio_sink(None)
+
+        assert not thread.is_alive()
 
     def test_a_full_queue_drops_the_frame_instead_of_blocking(self):
         """A slow consumer must not stall the socket thread."""
