@@ -325,6 +325,74 @@ class TestOllamaBackendPromptCaching:
         assert sent["cache_prompt"] is True
 
 
+class TestOllamaBackendModelResidency:
+    """A warmup that is never renewed is a warmup that expires mid-session.
+
+    Ollama resets a model's unload timer from the ``keep_alive`` of each
+    request, falling back to its own short default when the field is absent.
+    A voice assistant that idles between conversations then pays a cold
+    page-in — many seconds for a 7B weight set — on the next thing the user
+    says, however recently the model was warmed."""
+
+    @patch("jarvis.llm.requests.post")
+    def test_direct_renews_model_residency(self, mock_post):
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(json_data={"message": {"content": "ok"}})
+        backend = OllamaBackend("http://localhost:11434", keep_alive="30m")
+
+        backend.direct("gemma4:e2b", "sys", "user")
+
+        assert mock_post.call_args.kwargs["json"]["keep_alive"] == "30m"
+
+    @patch("jarvis.llm.requests.post")
+    def test_chat_renews_model_residency(self, mock_post):
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(json_data={"message": {"content": "ok"}})
+        backend = OllamaBackend("http://localhost:11434", keep_alive="30m")
+
+        backend.chat("any", [{"role": "user", "content": "hi"}])
+
+        assert mock_post.call_args.kwargs["json"]["keep_alive"] == "30m"
+
+    @patch("jarvis.llm.requests.post")
+    def test_streaming_renews_model_residency(self, mock_post):
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(
+            iter_lines=[b'{"message": {"content": "hi"}}']
+        )
+        backend = OllamaBackend("http://localhost:11434", keep_alive="30m")
+
+        backend.streaming("gemma4:e2b", "sys", "user")
+
+        assert mock_post.call_args.kwargs["json"]["keep_alive"] == "30m"
+
+    @patch("jarvis.llm.requests.post")
+    def test_a_caller_can_still_override_residency(self, mock_post):
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(json_data={"message": {"content": "ok"}})
+        backend = OllamaBackend("http://localhost:11434", keep_alive="30m")
+
+        backend.chat("any", [{"role": "user", "content": "hi"}],
+                     extra_options={"keep_alive": "1m"})
+
+        assert mock_post.call_args.kwargs["json"]["keep_alive"] == "1m"
+
+    @patch("jarvis.llm.requests.post")
+    def test_residency_is_left_to_the_server_when_unset(self, mock_post):
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(json_data={"message": {"content": "ok"}})
+        backend = OllamaBackend("http://localhost:11434")
+
+        backend.chat("any", [{"role": "user", "content": "hi"}])
+
+        assert "keep_alive" not in mock_post.call_args.kwargs["json"]
+
+
 # ---------------------------------------------------------------------------
 # OllamaBackend — warmup
 # ---------------------------------------------------------------------------

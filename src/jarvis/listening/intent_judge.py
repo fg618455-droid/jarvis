@@ -13,26 +13,24 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, List
 
 from ..debug import debug_log
-from ..llm import get_llm_backend, resolve_model, Tier
+from ..llm import (
+    LOW_POWER_OLLAMA_KEEP_ALIVE,
+    OLLAMA_KEEP_ALIVE,
+    get_llm_backend,
+    is_low_power_mode,
+    ollama_keep_alive,
+    resolve_model,
+    Tier,
+)
 from .transcript_buffer import TranscriptSegment
 
 
-DEFAULT_OLLAMA_KEEP_ALIVE = "30m"
-LOW_POWER_OLLAMA_KEEP_ALIVE = "1m"
-
-
-def _is_low_power_mode_enabled(cfg: Any) -> bool:
-    """Return True only when Settings.low_power_mode is explicitly enabled."""
-    if cfg is None:
-        return False
-    return getattr(cfg, "low_power_mode", False) is True
-
-
-def _ollama_keep_alive_for_power_mode(cfg: Any) -> str:
-    """Return the Ollama residency duration for the active power mode."""
-    if _is_low_power_mode_enabled(cfg):
-        return LOW_POWER_OLLAMA_KEEP_ALIVE
-    return DEFAULT_OLLAMA_KEEP_ALIVE
+# Model residency is owned by the LLM layer, which applies it to every request
+# rather than only to the warmup. These names keep the listening code reading
+# in its own vocabulary while pointing at that single source of truth.
+DEFAULT_OLLAMA_KEEP_ALIVE = OLLAMA_KEEP_ALIVE
+_is_low_power_mode_enabled = is_low_power_mode
+_ollama_keep_alive_for_power_mode = ollama_keep_alive
 
 
 def warm_up_chat_model(cfg, model: str, timeout: float) -> bool:

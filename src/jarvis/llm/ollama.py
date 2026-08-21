@@ -78,12 +78,25 @@ def extract_text_from_response(data: Dict[str, Any]) -> Optional[str]:
 class OllamaBackend(LLMBackend):
     """:class:`LLMBackend` implementation that talks to a local Ollama server."""
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, keep_alive: Optional[str] = None) -> None:
         self._base_url = base_url.rstrip("/")
+        # How long Ollama should hold this backend's models in memory after a
+        # request. Ollama resets the unload timer from every request's own
+        # ``keep_alive`` and applies its short default when the field is
+        # absent, so warming a model once is not enough: each call has to
+        # renew the residency or an idle stretch costs the next reply a cold
+        # page-in. ``None`` leaves the decision to the server.
+        self._keep_alive = keep_alive
 
     @property
     def base_url(self) -> str:
         return self._base_url
+
+    def _with_residency(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Renew model residency unless the caller already asked for a value."""
+        if self._keep_alive and "keep_alive" not in payload:
+            payload["keep_alive"] = self._keep_alive
+        return payload
 
     # ── chat ───────────────────────────────────────────────────────────
 
@@ -137,6 +150,8 @@ class OllamaBackend(LLMBackend):
             "options": options,
             "think": thinking,
         }
+
+        self._with_residency(payload)
 
         try:
             with requests.post(
@@ -195,6 +210,8 @@ class OllamaBackend(LLMBackend):
             "options": {"num_ctx": 4096},
             "think": thinking,
         }
+
+        self._with_residency(payload)
 
         try:
             with requests.post(
@@ -276,6 +293,8 @@ class OllamaBackend(LLMBackend):
                             payload["options"][inner_key] = inner_value
                 else:
                     payload["options"][key] = value
+
+        self._with_residency(payload)
 
         if tools and isinstance(tools, list) and len(tools) > 0:
             payload["tools"] = tools

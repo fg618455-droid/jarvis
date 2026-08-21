@@ -411,3 +411,116 @@ def test_route_chains_keep_embeddings_on_loopback_ollama():
     backend = get_embedding_backend(settings)
     assert isinstance(backend, OllamaBackend)
     assert backend.base_url == "http://127.0.0.1:11434"
+
+
+def _settings_with_route(**overrides):
+    route = {
+        "name": "cloud",
+        "provider": "openai_compatible",
+        "base_url": "https://cloud.test/v1",
+        "api_key": "",
+        "api_key_env": "",
+        "model": "cloud-model",
+        "tier": "chat",
+        "timeout_sec": 120.0,
+        "enabled": True,
+        "capabilities": ["chat", "stream", "tools"],
+    }
+    route.update(overrides)
+    return SimpleNamespace(
+        llm_routes=[route],
+        ollama_base_url="http://127.0.0.1:11434",
+        ollama_chat_model="big-chat-model",
+        llm_chat_model="big-chat-model",
+        fast_model="tiny-fast-model",
+        llm_provider="ollama",
+    )
+
+
+def _local(routes, tier):
+    from jarvis.llm.route import RoutedBackend
+
+    return next(
+        route for route in routes
+        if route.tier is tier and RoutedBackend._is_local(route)
+    )
+
+
+def test_a_disabled_route_leaves_the_local_chain_as_if_it_were_absent():
+    """A route the user switched off must not reshape the local fallback.
+
+    Otherwise switching a remote route off silently swaps the fast tier onto
+    the big chat model and clamps every local call to the short fallback
+    timeout, which turns each classification pass into a guaranteed miss.
+    """
+    from jarvis.llm.factory import get_llm_backend
+
+    with_disabled = get_llm_backend(_settings_with_route(enabled=False)).routes
+    without_any = get_llm_backend(SimpleNamespace(
+        llm_routes=[],
+        ollama_base_url="http://127.0.0.1:11434",
+        ollama_chat_model="big-chat-model",
+        llm_chat_model="big-chat-model",
+        fast_model="tiny-fast-model",
+        llm_provider="ollama",
+    )).routes
+
+    for tier in (Tier.FAST, Tier.CHAT):
+        disabled_local = _local(with_disabled, tier)
+        plain_local = _local(without_any, tier)
+        assert disabled_local.model == plain_local.model
+        assert disabled_local.timeout_sec == plain_local.timeout_sec
+
+
+def test_the_local_fast_route_runs_the_configured_fast_model():
+    """`fast_model` is what pins classification passes to a small model."""
+    from jarvis.llm.factory import get_llm_backend
+
+    routes = get_llm_backend(_settings_with_route()).routes
+
+    assert _local(routes, Tier.FAST).model == "tiny-fast-model"
+
+
+def test_a_local_fallback_gets_room_to_load_a_cold_model():
+    """Ollama evicts models, so a first call pays a page-in of many seconds.
+
+    A fallback timeout shorter than that load turns the local route into a
+    route that can never answer.
+    """
+    from jarvis.llm.factory import get_llm_backend
+
+    routes = get_llm_backend(_settings_with_route()).routes
+
+    assert _local(routes, Tier.FAST).timeout_sec >= 30.0
+    assert _local(routes, Tier.CHAT).timeout_sec >= 30.0
+
+
+def test_a_local_route_carries_the_configured_model_residency():
+    """The residency the warmup asks for must reach every later request too."""
+    from jarvis.llm.factory import get_llm_backend, OLLAMA_KEEP_ALIVE
+
+    routes = get_llm_backend(_settings_with_route()).routes
+
+    for tier in (Tier.FAST, Tier.CHAT):
+        assert _local(routes, tier).keep_alive == OLLAMA_KEEP_ALIVE
+
+
+def test_low_power_mode_hands_the_gpu_back_between_turns():
+    from jarvis.llm.factory import get_llm_backend, LOW_POWER_OLLAMA_KEEP_ALIVE
+
+    settings = _settings_with_route()
+    settings.low_power_mode = True
+
+    routes = get_llm_backend(settings).routes
+
+    assert _local(routes, Tier.FAST).keep_alive == LOW_POWER_OLLAMA_KEEP_ALIVE
+
+
+def test_a_remote_route_leaves_residency_to_its_own_server():
+    """`keep_alive` is an Ollama knob; a remote endpoint must not be sent one."""
+    from jarvis.llm.factory import get_llm_backend
+
+    routes = get_llm_backend(_settings_with_route()).routes
+    cloud = next(route for route in routes if route.name == "cloud")
+
+    assert cloud.keep_alive == ""

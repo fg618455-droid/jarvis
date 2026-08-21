@@ -39,7 +39,14 @@ from .backend import (
 )
 from .ollama import OllamaBackend, check_version, extract_text_from_response
 from .openai_compatible import OpenAICompatibleBackend, ServerCapabilities
-from .factory import get_embedding_backend, get_llm_backend
+from .factory import (
+    LOW_POWER_OLLAMA_KEEP_ALIVE,
+    OLLAMA_KEEP_ALIVE,
+    get_embedding_backend,
+    get_llm_backend,
+    is_low_power_mode,
+    ollama_keep_alive,
+)
 from .route import RequestDeadline, Route, RoutedBackend
 from .tiers import Tier, resolve_model
 
@@ -61,6 +68,10 @@ __all__ = [
     "check_version",
     "get_llm_backend",
     "get_embedding_backend",
+    "OLLAMA_KEEP_ALIVE",
+    "LOW_POWER_OLLAMA_KEEP_ALIVE",
+    "is_low_power_mode",
+    "ollama_keep_alive",
     "resolve_model",
     "extract_text_from_response",
     "call_llm_direct",

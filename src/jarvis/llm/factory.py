@@ -26,6 +26,21 @@ _OPENAI_COMPATIBLE = "openai_compatible"
 _DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 _ROUTER_CACHE: dict[int, tuple[weakref.ReferenceType[Any], RoutedBackend]] = {}
 
+# Ceilings for the loopback Ollama routes. Ollama evicts a model once its
+# keep-alive lapses, so the next call pays a page-in that runs into double
+# digits of seconds for a 7B weight set. The local route is always last in
+# its chain — there is nothing to fall forward to — so a ceiling shorter than
+# a cold load would not buy speed, it would guarantee the route can never
+# answer. The caller's own timeout still governs; these are only the maximum.
+_LOCAL_FAST_TIMEOUT_SEC = 60.0
+_LOCAL_CHAT_TIMEOUT_SEC = 180.0
+
+# How long Ollama holds a model resident after a request. The long value is
+# what makes a warm assistant stay warm; low power mode trades that away to
+# give the GPU back between conversations.
+OLLAMA_KEEP_ALIVE = "30m"
+LOW_POWER_OLLAMA_KEEP_ALIVE = "1m"
+
 
 def _resolve_provider(value: Any) -> str:
     if isinstance(value, str):
@@ -38,6 +53,18 @@ def _resolve_provider(value: Any) -> str:
 def _str_attr(settings: Any, name: str, default: str = "") -> str:
     val = getattr(settings, name, None)
     return val if isinstance(val, str) and val else default
+
+
+def is_low_power_mode(settings: Any) -> bool:
+    """Whether the user asked Jarvis to give hardware back between turns."""
+    return getattr(settings, "low_power_mode", False) is True
+
+
+def ollama_keep_alive(settings: Any) -> str:
+    """Return the Ollama residency duration for the active power mode."""
+    if is_low_power_mode(settings):
+        return LOW_POWER_OLLAMA_KEEP_ALIVE
+    return OLLAMA_KEEP_ALIVE
 
 
 def _build(provider: str, base_url: str, api_key: Optional[str]) -> LLMBackend:
@@ -114,23 +141,29 @@ def get_llm_backend(settings: Any) -> LLMBackend:
     ollama_chat = _str_attr(settings, "ollama_chat_model") or _str_attr(
         settings, "llm_chat_model"
     )
-    fast_model = (
-        ollama_chat if routes else _str_attr(settings, "fast_model") or ollama_chat
-    )
+    fast_model = _str_attr(settings, "fast_model") or ollama_chat
+    # Every Ollama request renews the model's residency, so an idle stretch
+    # between conversations never costs the next reply a cold page-in.
+    keep_alive = ollama_keep_alive(settings)
 
-    if routes:
+    # A route the user switched off is inert. It stays in the chain so the
+    # settings UI can still show it, but it does not get to decide whether the
+    # local chain is a fallback or the only path there is.
+    active_routes = [route for route in routes if route.enabled]
+
+    if active_routes:
         local_defaults = {
             Tier.FAST: Route(
                 "local-fast", _OLLAMA, private_ollama_url, "", fast_model,
-                Tier.FAST, 4.0,
+                Tier.FAST, _LOCAL_FAST_TIMEOUT_SEC, keep_alive=keep_alive,
             ),
             Tier.CHAT: Route(
                 "local-chat", _OLLAMA, private_ollama_url, "", ollama_chat,
-                Tier.CHAT, 4.0,
+                Tier.CHAT, _LOCAL_CHAT_TIMEOUT_SEC, keep_alive=keep_alive,
             ),
         }
         for tier in (Tier.FAST, Tier.CHAT):
-            tier_routes = [route for route in routes if route.tier is tier]
+            tier_routes = [route for route in active_routes if route.tier is tier]
             if not any(RoutedBackend._is_local(route) for route in tier_routes):
                 routes.append(local_defaults[tier])
     else:
@@ -144,16 +177,21 @@ def get_llm_backend(settings: Any) -> LLMBackend:
                 or ollama_chat
             )
             routes.extend((
-                Route("configured-fast", provider, base_url, api_key, fast_model, Tier.FAST, 60.0),
-                Route("configured-chat", provider, base_url, api_key, chat_model, Tier.CHAT, 180.0),
+                Route("configured-fast", provider, base_url, api_key, fast_model,
+                      Tier.FAST, _LOCAL_FAST_TIMEOUT_SEC),
+                Route("configured-chat", provider, base_url, api_key, chat_model,
+                      Tier.CHAT, _LOCAL_CHAT_TIMEOUT_SEC),
             ))
         else:
             routes.extend((
-                Route("local-fast", _OLLAMA, configured_ollama_url, "", fast_model, Tier.FAST, 60.0),
-                Route("local-chat", _OLLAMA, configured_ollama_url, "", ollama_chat, Tier.CHAT, 180.0),
+                Route("local-fast", _OLLAMA, configured_ollama_url, "", fast_model,
+                      Tier.FAST, _LOCAL_FAST_TIMEOUT_SEC, keep_alive=keep_alive),
+                Route("local-chat", _OLLAMA, configured_ollama_url, "", ollama_chat,
+                      Tier.CHAT, _LOCAL_CHAT_TIMEOUT_SEC, keep_alive=keep_alive),
             ))
     routes.append(Route(
-        "local-private", _OLLAMA, private_ollama_url, "", ollama_chat, Tier.PRIVATE, 180.0
+        "local-private", _OLLAMA, private_ollama_url, "", ollama_chat, Tier.PRIVATE,
+        180.0, keep_alive=keep_alive,
     ))
     backend = RoutedBackend(routes)
     try:

@@ -294,6 +294,44 @@
 
 ---
 
+---
+
+## 🖥️ openOnComputer: router comparison (2026-08-21)
+
+> Adding a builtin widens the catalogue every router call carries, so the tool was added to the router evals and the affected files were run **with and without it registered** on the same server. Baseline was produced by popping `openOnComputer` out of `BUILTIN_TOOLS` at session start and deselecting the three new cases.
+
+**Setup:** `EVAL_JUDGE_MODEL=gemma4:e2b` against local Ollama, plain `pytest`, no retries.
+
+| File set | Without openOnComputer | With openOnComputer |
+|----------|-----------------------:|--------------------:|
+| `test_tool_router_implicit`, `test_tool_router_context_aware`, `test_tool_selection`, `test_greeting_no_tools` | 34 passed / 8 xfailed | 37 passed / 8 xfailed |
+
+**Result:** ✅ No regression. The xfail set is identical between the two runs; the three extra passes are the new cases. Router picks for the new tool, all on the first attempt:
+
+| Query | Selected |
+|---|---|
+| "put the new Dune trailer on my screen" | `openOnComputer`, `stop` |
+| "I want to jot something down in a text editor" | `openOnComputer`, `stop` |
+| "take me to my downloads folder" | `openOnComputer`, `stop` |
+
+---
+
+## ⏱️ Tool-router latency on the local chain (2026-08-21)
+
+> Measured on the live config after the disabled-route and residency fixes. The router had been falling open to the whole catalogue on every turn: the local FAST candidate carried a 4-second ceiling, a cold Ollama page-in of a 7B weight set takes longer than that, and the resulting `EmptyResponse` (116 recorded on `local-fast`) made every routing call a guaranteed miss.
+
+| Query | Before | After | Routed to |
+|---|---:|---:|---|
+| "Hallo, wie geht es dir?" | 4022 ms → whole catalogue | 268 ms | `stop` |
+| "Wie ist das Wetter heute?" | 4025 ms → whole catalogue | 268 ms | `getWeather`, `stop` |
+| "kannst du bitte YouTube öffnen" | 4038 ms → whole catalogue | 246 ms | `openOnComputer`, `stop` |
+| "Danke dir!" | 4027 ms → whole catalogue | 238 ms | `stop` |
+| "was liegt in meinem Downloads-Ordner" | — | 245 ms | `localFiles`, `stop` |
+
+**Notes:**
+- The first call after an idle stretch still pays the page-in (~5.7 s on this machine). The `keep_alive` now sent with every request is what stops that recurring mid-session.
+- On an 8 GB card the fastest FAST tier is the chat model itself: it is already resident, so it routes in ~250 ms, while `gemma4:e2b` and `qwen3.5:0.8b` each cost an 8 s eviction-and-load on their first call. `qwen3.5:0.8b` also misrouted "Wie ist das Wetter heute?" to no tool at all.
+
 ### 📖 Legend
 
 | Symbol | Meaning |

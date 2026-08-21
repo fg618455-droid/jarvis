@@ -61,13 +61,17 @@ class Route:
     api_key_env: str = ""
     enabled: bool = True
     capabilities: frozenset[str] = frozenset({"chat", "stream", "tools"})
+    # How long an Ollama runtime should hold this route's model resident after
+    # each request. Empty leaves the server's own default in place, which is
+    # what a remote OpenAI-compatible endpoint wants.
+    keep_alive: str = ""
 
 
 def _build_backend(route: Route) -> LLMBackend:
     api_key = os.environ.get(route.api_key_env) if route.api_key_env else route.api_key
     if route.provider == "openai_compatible":
         return OpenAICompatibleBackend(route.base_url, api_key=api_key or None)
-    return OllamaBackend(route.base_url)
+    return OllamaBackend(route.base_url, keep_alive=route.keep_alive or None)
 
 
 class RoutedBackend(LLMBackend):

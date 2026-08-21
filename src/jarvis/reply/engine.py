@@ -133,7 +133,7 @@ def warm_up_reply_prefix(cfg, model: str, timeout_sec: float = 60.0) -> bool:
                 {"role": "user", "content": "Reply with OK."},
             ],
             timeout_sec=timeout_sec,
-            extra_options={"keep_alive": "30m", "max_tokens": 1},
+            extra_options={"max_tokens": 1},
             tools=None,
             thinking=False,
         )
