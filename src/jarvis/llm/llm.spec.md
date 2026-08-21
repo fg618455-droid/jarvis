@@ -46,6 +46,8 @@ Function-style Ollama helpers remain available to performance tests and eval scr
 | `list_models(...)` | `list[str]` | Models exposed by an endpoint. |
 | `warm_up(model, ...)` | `bool` | Best-effort model reachability and loading probe. |
 
+`chat()` accepts `on_token`, which asks for the assistant's text as it arrives rather than only at the end so a caller can start speaking the first sentence while the rest is still being written. It changes when the text shows up, not what comes back: the return value is the same assembled response either way, tool calls survive the fold (reassembled by index on the OpenAI shape, where they are split across deltas), and reasoning is collected but never reported through it. A listener that raises is logged and ignored, because reporting text is a side effect and must not cost the caller its reply. `RoutedBackend` passes the listener only to routes that declare the `stream` capability, so falling through the chain never depends on whether the caller wanted its text early.
+
 `direct()` and `streaming()` are convenience shapes over chat completions. Messages are stripped to fields allowed by the OpenAI Chat Completions schema before transmission.
 
 ### Tool calling

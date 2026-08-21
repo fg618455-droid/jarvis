@@ -22,9 +22,9 @@ Any code change must either adhere to our spec files perfectly or you should ask
 | `src/desktop_app/setup_wizard.spec.md` | First-run wizard (Ollama, models, Whisper, location) | Minimal friction; only shown when user action required; doesn't configure everything |
 | `src/desktop_app/chat_window.spec.md` | Text chat interface alongside voice; shared conversation, no TTS, bundled callbacks + subprocess IPC | One conversation for voice + text; text never speaks; redaction shared with voice path |
 | `src/jarvis/dictation/dictation.spec.md` | Hold-to-dictate engine, hotkey, clipboard paste | Independent from assistant pipeline; shared Whisper model; pause flag on listener |
-| `src/jarvis/listening/listening.spec.md` | Voice listener, wake word detection, audio pipeline | — |
+| `src/jarvis/listening/listening.spec.md` | Voice listener, wake word detection, audio pipeline, streamed speech queue | Each utterance carries its own callbacks; a streamed reply is closed with an end-of-reply marker |
 | `src/jarvis/listening/passive_capture.spec.md` | Passive transcript of everything heard, ambient digest into memory, deletion | Off by default; no new recording and no audio on disk; overheard is never a user fact |
-| `src/jarvis/reply/reply.spec.md` | LLM reply generation, tool use, profiles | Tools return raw data; profiles handle formatting |
+| `src/jarvis/reply/reply.spec.md` | LLM reply generation, tool use, profiles, speaking while writing | Tools return raw data; profiles handle formatting; a failing speech path costs the sound, never the answer |
 | `src/jarvis/reply/evaluator.spec.md` | **Deprecated** — evaluator no longer runs in the reply engine; preserved for reference | Replaced by the planner; see planner.spec.md |
 | `src/jarvis/reply/planner.spec.md` | Task-list planner: pre-loop query decomposition + direct-exec step resolver for small models | Fail-open; rides warm small model chain; advisory for large models, direct-exec for small |
 | `src/jarvis/tools/builtin/tool_search.spec.md` | toolSearchTool escape hatch for mid-loop tool routing | Re-runs the same router; never removes stop/self; capped per reply |

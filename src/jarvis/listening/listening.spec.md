@@ -232,6 +232,18 @@ also ends any conversation.
 
 ### 5. During TTS
 
+Speech is queued as utterances, each carrying its own completion, duration and audio-start callbacks. A streamed reply queues its next sentence while the previous one is still playing, so callbacks held on the engine would be overwritten by whichever sentence arrived last.
+
+The listener speaks each sentence the reply engine finishes rather than the whole answer at the end. Three things belong to the reply rather than to a sentence, and the sink is what keeps them that way:
+
+- Only the first sentence carries the end-of-the-wait callback, because the felt wait ends once: when sound first leaves the speakers.
+- The echo detector remembers one text, so it is given the reply accumulated so far. Handing it one sentence at a time would leave it able to recognise only the last.
+- A streamed reply does not know which sentence is its last, so the listener closes it with `end_of_reply()`. That marker makes no sound; it waits its turn in the queue and then activates the hot window, so the window opens after the final sentence rather than the first.
+
+The phase is handed back to idle only when nothing more is queued, so a pause between two sentences of one answer never reports the assistant as finished.
+
+A turn is recorded once its reply text is known **and** sound has started. Which of the two lands first depends on whether the reply was streamed, so neither closes the turn alone: whichever arrives second does. When nothing was streamed (a backend that cannot stream, or a reply withheld from the speech path) the listener speaks the whole reply as one utterance.
+
 Playback is a closed listening interval. The listener clears its audio queues when TTS starts, the sounddevice callback discards microphone frames while TTS is speaking, and a transcript that crosses the playback boundary is rejected defensively. Jarvis does not support barge-in or spoken interruption. The optional hot window opens after playback and the `echo_tolerance` delay.
 
 ## Rolling Transcript Buffer

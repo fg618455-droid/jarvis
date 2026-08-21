@@ -135,6 +135,7 @@ def chat_with_messages(
     extra_options: Optional[Dict[str, Any]] = None,
     tools: Optional[List[Dict[str, Any]]] = None,
     thinking: bool = False,
+    on_token: Optional[Callable[[str], None]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Arbitrary-messages chat call against an Ollama instance at ``base_url``."""
     return OllamaBackend(base_url).chat(
@@ -144,4 +145,5 @@ def chat_with_messages(
         extra_options=extra_options,
         tools=tools,
         thinking=thinking,
+        on_token=on_token,
     )

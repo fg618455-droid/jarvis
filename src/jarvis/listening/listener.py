@@ -13,7 +13,7 @@ import queue
 import sys
 import platform
 from collections import deque
-from typing import Optional, TYPE_CHECKING, Any
+from typing import Any, Callable, Optional, TYPE_CHECKING
 from datetime import datetime
 
 from rapidfuzz import fuzz
@@ -422,6 +422,52 @@ def _serialised_stream(stream):
                 stream.close()
             except Exception:
                 pass
+
+
+class _SpeechSegmentSink:
+    """Speaks a reply sentence by sentence as the engine writes it.
+
+    A reply is written faster than it is spoken, so the engine hands over each
+    finished sentence instead of the whole answer at the end. Three things
+    only make sense once per reply rather than once per sentence, and this is
+    what keeps them that way:
+
+    - The felt wait ends when sound first leaves the speakers, so only the
+      first sentence carries the callback that says so.
+    - Echo suppression matches what the microphone hears against what was
+      said, so the detector is given the reply accumulated so far. Handing it
+      one sentence at a time would leave it able to recognise only the last.
+    - Whether anything was spoken at all decides how the caller closes the
+      reply, so the sink remembers.
+    """
+
+    def __init__(self, listener: "VoiceListener",
+                 on_audio_start: Optional[Callable[[], None]] = None) -> None:
+        self._listener = listener
+        self._pending_audio_start = on_audio_start
+        self._spoken: list[str] = []
+
+    @property
+    def anything_spoken(self) -> bool:
+        return bool(self._spoken)
+
+    @property
+    def spoken_text(self) -> str:
+        return " ".join(self._spoken)
+
+    def __call__(self, sentence: str) -> None:
+        tts = self._listener.tts
+        if not (tts and tts.enabled):
+            return
+        audio_start, self._pending_audio_start = self._pending_audio_start, None
+        self._spoken.append(sentence)
+        self._listener.track_tts_start(self.spoken_text)
+        debug_log(f"speaking streamed sentence ({len(sentence)} chars)", "tts")
+        tts.speak(
+            sentence,
+            completion_callback=None,
+            audio_start_callback=audio_start,
+        )
 
 
 class VoiceListener(threading.Thread):
@@ -1264,6 +1310,13 @@ class VoiceListener(threading.Thread):
         else:
             print(f"💬 {acknowledgement}", flush=True)
 
+    def _speech_segment_sink(
+        self,
+        on_audio_start: Optional[Callable[[], None]] = None,
+    ) -> "_SpeechSegmentSink":
+        """Return a sink that speaks each finished sentence as it arrives."""
+        return _SpeechSegmentSink(self, on_audio_start)
+
     def _dispatch_query(self, query: str) -> None:
         """
         Dispatch a complete query to the reply engine.
@@ -1312,6 +1365,48 @@ class VoiceListener(threading.Thread):
                         "voice",
                     )
 
+        # The turn ends when sound starts, not when the reply text exists:
+        # synthesis is part of the wait. Runs on the TTS worker thread, so it
+        # holds the trace rather than looking it up. With a streamed reply the
+        # first sentence is spoken while the rest is still being written, so
+        # this fires before the engine has returned.
+        speech_begun = time.perf_counter()
+
+        # A turn is finished once its reply text is known *and* sound has
+        # started, because both are part of what the user waited for. Which
+        # of the two lands first depends on whether the reply was streamed,
+        # so neither side closes the turn alone: whichever arrives second
+        # does. `_on_audio_start` runs on the TTS worker thread, so the join
+        # is guarded.
+        turn_done = threading.Lock()
+        turn_state = {"reply": None, "audio_started": False, "finished": False}
+
+        def _finish_turn_if_ready():
+            with turn_done:
+                if turn_state["finished"]:
+                    return
+                if turn_state["reply"] is None or not turn_state["audio_started"]:
+                    return
+                turn_state["finished"] = True
+                reply_text = turn_state["reply"]
+            recorder.finish(reply=reply_text, trace=trace)
+
+        def _on_audio_start():
+            trace.mark(
+                "tts_synth",
+                (time.perf_counter() - speech_begun) * 1000.0,
+            )
+            set_phase(Phase.SPEAKING)
+            with turn_done:
+                turn_state["audio_started"] = True
+            _finish_turn_if_ready()
+
+        # Speak each sentence the engine finishes rather than waiting for the
+        # whole answer. This is the difference between a reply that starts
+        # after the model has stopped writing and one that starts while it is
+        # still going.
+        speak_segment = self._speech_segment_sink(on_audio_start=_on_audio_start)
+
         # Process the query (keep thinking tune playing during processing).
         # Hold the shared voice+text query lock so a voice query and a text
         # chat query cannot run the reply engine concurrently against the
@@ -1323,6 +1418,7 @@ class VoiceListener(threading.Thread):
                     self.db, self.cfg, None, query, self.dialogue_memory,
                     language=self._last_detected_language,
                     on_memory_lookup_started=_memory_lookup_started,
+                    on_speech_segment=speak_segment,
                 )
         except Exception as e:
             # Log the error visibly - this should never happen silently
@@ -1354,26 +1450,26 @@ class VoiceListener(threading.Thread):
                 if self.echo_detector:
                     self.echo_detector._tts_exact_duration = duration
 
-            # The turn ends when sound starts, not when the reply text exists:
-            # synthesis is part of the wait. Runs on the TTS worker thread,
-            # so it holds the trace rather than looking it up.
-            speech_begun = time.perf_counter()
-
-            def _on_audio_start():
-                trace.mark(
-                    "tts_synth",
-                    (time.perf_counter() - speech_begun) * 1000.0,
+            if speak_segment.anything_spoken:
+                # The reply is already on its way out. All that is left is to
+                # mark where it ends, so the hot window opens after the last
+                # sentence rather than after the first.
+                debug_log(
+                    f"streamed reply spoken in {len(speak_segment.spoken_text)} chars",
+                    "voice",
                 )
-                set_phase(Phase.SPEAKING)
-                recorder.finish(reply=reply, trace=trace)
-
-            # Track TTS start for echo detection with actual text
-            self.track_tts_start(reply)
-            debug_log(f"starting TTS for reply ({len(reply)} chars)", "voice")
-
-            self.tts.speak(reply, completion_callback=_on_tts_complete,
-                          duration_callback=_on_duration_known,
-                          audio_start_callback=_on_audio_start)
+                self.tts.end_of_reply(completion_callback=_on_tts_complete)
+            else:
+                # Nothing was streamed: the backend could not stream, or the
+                # reply was withheld from the speech path. Speak it whole.
+                self.track_tts_start(reply)
+                debug_log(f"starting TTS for reply ({len(reply)} chars)", "voice")
+                self.tts.speak(reply, completion_callback=_on_tts_complete,
+                              duration_callback=_on_duration_known,
+                              audio_start_callback=_on_audio_start)
+            with turn_done:
+                turn_state["reply"] = reply
+            _finish_turn_if_ready()
         else:
             debug_log(f"no TTS output: reply={bool(reply)}, tts={bool(self.tts)}, enabled={getattr(self.tts, 'enabled', False) if self.tts else False}", "voice")
             # Stop thinking tune if no TTS response

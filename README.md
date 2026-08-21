@@ -171,6 +171,7 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 - **Built-in Tools** - Screenshot OCR, web search (DuckDuckGo → Brave → Wikipedia fallback chain with auto-fetch), weather, current time in any city or timezone, file access, opening websites, apps and folders on your own machine, nutrition tracking, location awareness, plus a tool-discovery escape hatch the agent uses to widen its own toolset mid-reply
 - **Knowledge Graph Memory** - Self-organising memory that learns from conversations, auto-splits by topic, and surfaces relevant knowledge automatically
 - **Natural Voice** - Address Jarvis at either end of your sentence, then follow up without repeating the wake word after the reply finishes
+- **Starts Talking Sooner** - Jarvis speaks each sentence as it finishes writing it, instead of waiting for the whole answer. Long replies begin about a second earlier; short ones are unchanged, because there is nothing to overlap
 - **Conversation Mode** - Turn it on in the Control Centre's Conversation view and the follow-up window stays open: no question needs the wake word until you ask Jarvis to stop. The header says so on every view while it runs.
 - **Fast Stop** - Use the tray action `⚡ Stop Now (Skip Diary)` to release local model resources quickly when you need your machine back immediately.
 - **Dictation Mode** - Free, offline alternative to WisprFlow — hold a hotkey, speak, release to paste text into any app

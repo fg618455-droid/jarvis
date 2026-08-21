@@ -106,6 +106,29 @@ class TestASpokenTurn:
         stages = [s["name"] for s in get_recorder().history()[0]["stages"]]
         assert "tts_synth" in stages
 
+    def test_a_streamed_turn_is_recorded_once_the_reply_text_is_known(self):
+        """Streaming makes sound start before the text is finished.
+
+        The turn still needs both — the reply it produced and the moment the
+        wait ended — so it is written when the second of the two arrives,
+        whichever that is, and only once.
+        """
+        listener, tts = _create_listener()
+
+        def stream_one_sentence(*args, on_speech_segment=None, **kwargs):
+            on_speech_segment("Ja.")
+            return "Ja."
+
+        with patch("jarvis.reply.engine.run_reply_engine",
+                   side_effect=stream_one_sentence):
+            listener._dispatch_query("bist du da")
+            tts.speak.call_args.kwargs["audio_start_callback"]()
+
+        history = get_recorder().history()
+        assert len(history) == 1
+        assert history[0]["reply"] == "Ja."
+        assert "tts_synth" in [s["name"] for s in history[0]["stages"]]
+
     def test_a_reply_without_speech_still_finishes_the_turn(self):
         listener, _ = _create_listener(tts_enabled=False)
 

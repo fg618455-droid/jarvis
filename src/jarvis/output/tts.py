@@ -16,9 +16,35 @@ from pathlib import Path
 from typing import Optional, Callable
 from urllib.parse import urlparse
 
+from dataclasses import dataclass
+
 from ..debug import debug_log
 from ..runtime import Phase, set_phase_if
 from ..utils.audio_lock import portaudio_lock
+
+
+@dataclass
+class Utterance:
+    """One queued piece of speech together with who wants to hear about it.
+
+    A streamed reply queues its next sentence while the previous one is still
+    playing, so the callbacks cannot live on the engine: the second sentence
+    would overwrite the first sentence's, and the caller waiting to be told
+    that *its* speech started would be told about someone else's. Binding
+    them to the item keeps every answer straight.
+
+    ``text`` empty marks the end of a reply: nothing is synthesised, the
+    callbacks simply fire once everything queued ahead of it has been spoken.
+    """
+
+    text: str
+    completion_callback: Optional[Callable[[], None]] = None
+    duration_callback: Optional[Callable[[float], None]] = None
+    audio_start_callback: Optional[Callable[[], None]] = None
+
+    @property
+    def is_end_of_reply(self) -> bool:
+        return not self.text
 
 
 # ============================================================================
@@ -399,14 +425,11 @@ class ChatterboxTTS:
         self.cfg_weight = cfg_weight
 
         # Threading and queue setup (same as TextToSpeech)
-        self._q: queue.Queue[str] = queue.Queue()
+        self._q: queue.Queue[Utterance] = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._is_speaking = threading.Event()
         self._last_spoken_text: str = ""
-        self._completion_callback: Optional[Callable[[], None]] = None
-        self._duration_callback: Optional[Callable[[float], None]] = None
-        self._audio_start_callback: Optional[Callable[[], None]] = None
         self._should_interrupt = threading.Event()
 
         # Chatterbox model (eagerly loaded during initialization)
@@ -491,7 +514,7 @@ class ChatterboxTTS:
             pass
         self._stop.set()
         try:
-            self._q.put_nowait("")
+            self._q.put_nowait(Utterance(""))
         except Exception:
             pass
         self._thread.join(timeout=2.0)
@@ -506,13 +529,28 @@ class ChatterboxTTS:
         # Lazy start the worker thread and lazy init on first speak
         if self._thread is None:
             self.start()
-        self._completion_callback = completion_callback
-        self._duration_callback = duration_callback
-        self._audio_start_callback = audio_start_callback
         # Preprocess text for speech (convert links to readable descriptions)
         processed_text = _preprocess_for_speech(text)
+        if not processed_text.strip():
+            return
         try:
-            self._q.put_nowait(processed_text)
+            self._q.put_nowait(Utterance(
+                text=processed_text,
+                completion_callback=completion_callback,
+                duration_callback=duration_callback,
+                audio_start_callback=audio_start_callback,
+            ))
+        except Exception:
+            pass
+
+    def end_of_reply(self, completion_callback: Optional[Callable[[], None]] = None) -> None:
+        """Close a streamed reply. See :meth:`PiperTTS.end_of_reply`."""
+        if not self.enabled:
+            return
+        if self._thread is None:
+            self.start()
+        try:
+            self._q.put_nowait(Utterance("", completion_callback=completion_callback))
         except Exception:
             pass
 
@@ -523,17 +561,28 @@ class ChatterboxTTS:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                text = self._q.get(timeout=0.5)
+                utterance = self._q.get(timeout=0.5)
             except queue.Empty:
                 continue
-            if not text:
+            if utterance.is_end_of_reply:
+                self._finish_reply(utterance)
                 continue
             try:
-                self._speak_once(text)
+                self._speak_once(utterance)
             except Exception:
                 continue
 
-    def _speak_once(self, text: str) -> None:
+    def _finish_reply(self, utterance: Utterance) -> None:
+        """Report that everything queued before this marker has been spoken."""
+        if utterance.completion_callback is not None:
+            try:
+                utterance.completion_callback()
+            except Exception as e:
+                debug_log(f"Chatterbox TTS end-of-reply callback error: {e}", "tts")
+        self._finish_speech_phase()
+
+    def _speak_once(self, utterance: Utterance) -> None:
+        text = utterance.text
         self._is_speaking.set()
         self._last_spoken_text = text
         self._should_interrupt.clear()
@@ -567,9 +616,9 @@ class ChatterboxTTS:
             debug_log(f"Chatterbox TTS synthesis complete: {exact_duration:.2f}s", "tts")
 
             # Notify listener of exact duration for precise echo detection
-            if self._duration_callback is not None:
+            if utterance.duration_callback is not None:
                 try:
-                    self._duration_callback(exact_duration)
+                    utterance.duration_callback(exact_duration)
                 except Exception as e:
                     debug_log(f"Chatterbox TTS duration callback error: {e}", "tts")
 
@@ -586,7 +635,7 @@ class ChatterboxTTS:
                 pygame.mixer.init(frequency=self._model.sr, size=-16, channels=1, buffer=1024)
                 pygame.mixer.music.load(tmp_path)
                 pygame.mixer.music.play()
-                self._notify_audio_start()
+                self._notify_audio_start(utterance)
 
                 # Wait for playback to complete or interruption
                 while pygame.mixer.music.get_busy():
@@ -612,37 +661,35 @@ class ChatterboxTTS:
             # Signal speaking stopped to face widget
             self._notify_speaking_state(False)
             self._finish_speech_phase()
-            
+
             # Call completion callback if set and not interrupted
-            if self._completion_callback is not None and not interrupted:
+            if utterance.completion_callback is not None and not interrupted:
                 try:
-                    self._completion_callback()
+                    utterance.completion_callback()
                 except Exception:
                     pass
-                self._completion_callback = None
-    
-    def _finish_speech_phase(self) -> None:
-        """Hand the phase back after speech, played out or cut short.
 
-        Speech is the last stage of a turn, so this is the only place that
-        knows the assistant is waiting again however the playback ended.
+    def _finish_speech_phase(self) -> None:
+        """Hand the phase back once nothing more is waiting to be spoken.
+
+        See :meth:`PiperTTS._finish_speech_phase` - a streamed reply arrives
+        sentence by sentence, so one utterance ending is not the answer ending.
         """
-        self._audio_start_callback = None
+        if not self._q.empty():
+            return
         set_phase_if(Phase.SPEAKING, Phase.IDLE)
         set_phase_if(Phase.THINKING, Phase.IDLE)
 
-    def _notify_audio_start(self) -> None:
+    def _notify_audio_start(self, utterance: Utterance) -> None:
         """Announce that sound has started leaving the speakers.
 
         Separate from the completion callback because this is the instant the
         felt wait ends, and it is what the turn's timings measure against.
         """
-        callback = self._audio_start_callback
-        if callback is None:
+        if utterance.audio_start_callback is None:
             return
-        self._audio_start_callback = None
         try:
-            callback()
+            utterance.audio_start_callback()
         except Exception as e:
             debug_log(f"TTS audio start callback error: {e}", "tts")
 
@@ -739,14 +786,11 @@ class PiperTTS:
         self.sentence_silence = sentence_silence
 
         # Threading and queue setup (same pattern as other TTS engines)
-        self._q: queue.Queue[str] = queue.Queue()
+        self._q: queue.Queue[Utterance] = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._is_speaking = threading.Event()
         self._last_spoken_text: str = ""
-        self._completion_callback: Optional[Callable[[], None]] = None
-        self._duration_callback: Optional[Callable[[float], None]] = None
-        self._audio_start_callback: Optional[Callable[[], None]] = None
         self._should_interrupt = threading.Event()
 
         # Piper voice (lazy loaded)
@@ -859,7 +903,7 @@ class PiperTTS:
             pass
         self._stop.set()
         try:
-            self._q.put_nowait("")
+            self._q.put_nowait(Utterance(""))
         except Exception:
             pass
         self._thread.join(timeout=2.0)
@@ -874,13 +918,34 @@ class PiperTTS:
         # Lazy start the worker thread
         if self._thread is None:
             self.start()
-        self._completion_callback = completion_callback
-        self._duration_callback = duration_callback
-        self._audio_start_callback = audio_start_callback
         # Preprocess text for speech
         processed_text = _preprocess_for_speech(text)
+        if not processed_text.strip():
+            return
         try:
-            self._q.put_nowait(processed_text)
+            self._q.put_nowait(Utterance(
+                text=processed_text,
+                completion_callback=completion_callback,
+                duration_callback=duration_callback,
+                audio_start_callback=audio_start_callback,
+            ))
+        except Exception:
+            pass
+
+    def end_of_reply(self, completion_callback: Optional[Callable[[], None]] = None) -> None:
+        """Close a streamed reply.
+
+        A reply arriving sentence by sentence does not know which sentence is
+        its last, so the caller marks the end instead of guessing. The marker
+        makes no sound; it waits its turn in the queue and then reports that
+        the reply has been spoken in full.
+        """
+        if not self.enabled:
+            return
+        if self._thread is None:
+            self.start()
+        try:
+            self._q.put_nowait(Utterance("", completion_callback=completion_callback))
         except Exception:
             pass
 
@@ -898,18 +963,30 @@ class PiperTTS:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                text = self._q.get(timeout=0.5)
+                utterance = self._q.get(timeout=0.5)
             except queue.Empty:
                 continue
-            if not text:
+            if utterance.is_end_of_reply:
+                self._finish_reply(utterance)
                 continue
             try:
-                self._speak_once(text)
+                self._speak_once(utterance)
             except Exception as e:
                 debug_log(f"Piper TTS error in _speak_once: {e}", "tts")
                 continue
 
-    def _speak_once(self, text: str) -> None:
+    def _finish_reply(self, utterance: Utterance) -> None:
+        """Report that everything queued before this marker has been spoken."""
+        if utterance.completion_callback is not None:
+            debug_log("Piper TTS reached the end of a streamed reply", "tts")
+            try:
+                utterance.completion_callback()
+            except Exception as e:
+                debug_log(f"Piper TTS end-of-reply callback error: {e}", "tts")
+        self._finish_speech_phase()
+
+    def _speak_once(self, utterance: Utterance) -> None:
+        text = utterance.text
         self._is_speaking.set()
         self._last_spoken_text = text
         self._should_interrupt.clear()
@@ -973,9 +1050,9 @@ class PiperTTS:
             debug_log(f"Piper TTS synthesis complete: {exact_duration:.2f}s, {len(full_audio)} samples", "tts")
 
             # Notify listener of exact duration for precise echo detection
-            if self._duration_callback is not None:
+            if utterance.duration_callback is not None:
                 try:
-                    self._duration_callback(exact_duration)
+                    utterance.duration_callback(exact_duration)
                 except Exception as e:
                     debug_log(f"Piper TTS duration callback error: {e}", "tts")
 
@@ -1015,7 +1092,7 @@ class PiperTTS:
 
             # The first sample leaving the sound card is the moment the wait
             # the user feels ends, so it is announced before anything waits.
-            self._notify_audio_start()
+            self._notify_audio_start(utterance)
 
             # Wait for playback to complete
             try:
@@ -1050,35 +1127,35 @@ class PiperTTS:
             self._finish_speech_phase()
 
             # Call completion callback if set and not interrupted
-            if self._completion_callback is not None and not interrupted:
+            if utterance.completion_callback is not None and not interrupted:
                 try:
-                    self._completion_callback()
+                    utterance.completion_callback()
                 except Exception as e:
                     print(f"  ⚠️ Piper TTS completion callback error: {e}", flush=True)
-                self._completion_callback = None
 
     def _finish_speech_phase(self) -> None:
-        """Hand the phase back after speech, played out or cut short.
+        """Hand the phase back once nothing more is waiting to be spoken.
 
-        Speech is the last stage of a turn, so this is the only place that
-        knows the assistant is waiting again however the playback ended.
+        A streamed reply arrives sentence by sentence, so the end of one
+        utterance is not the end of speaking. Reporting the assistant idle
+        between two sentences of the same answer would make it look finished
+        while it is still mid-sentence.
         """
-        self._audio_start_callback = None
+        if not self._q.empty():
+            return
         set_phase_if(Phase.SPEAKING, Phase.IDLE)
         set_phase_if(Phase.THINKING, Phase.IDLE)
 
-    def _notify_audio_start(self) -> None:
+    def _notify_audio_start(self, utterance: Utterance) -> None:
         """Announce that sound has started leaving the speakers.
 
         Separate from the completion callback because this is the instant the
         felt wait ends, and it is what the turn's timings measure against.
         """
-        callback = self._audio_start_callback
-        if callback is None:
+        if utterance.audio_start_callback is None:
             return
-        self._audio_start_callback = None
         try:
-            callback()
+            utterance.audio_start_callback()
         except Exception as e:
             debug_log(f"TTS audio start callback error: {e}", "tts")
 

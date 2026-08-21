@@ -1128,3 +1128,77 @@ class TestOpenAICompatibleSanitizesMessages:
         assert sys_msg["role"] == "system"
         assert sys_msg["content"] == "You are a helpful assistant."
         assert "_is_context_injected" not in sys_msg
+
+
+class TestOpenAICompatibleChatStreaming:
+    """The same arrival schedule on the second supported protocol.
+
+    OpenAI-shape servers stream deltas rather than whole messages, and split a
+    tool call across chunks by index, so the fold is different even though the
+    contract the caller sees is the same.
+    """
+
+    _DELTAS = [
+        b'data: {"choices": [{"delta": {"role": "assistant", "content": "Das Wetter "}}]}',
+        b'data: {"choices": [{"delta": {"content": "ist gut."}}]}',
+        b'data: [DONE]',
+    ]
+
+    @patch("jarvis.llm.requests.post")
+    def test_tokens_are_reported_as_they_arrive(self, mock_post):
+        from jarvis.llm import OpenAICompatibleBackend
+
+        mock_post.return_value = _make_response(iter_lines=self._DELTAS)
+        seen = []
+
+        OpenAICompatibleBackend("http://server/v1").chat(
+            "any", [{"role": "user", "content": "hi"}], on_token=seen.append
+        )
+
+        assert seen == ["Das Wetter ", "ist gut."]
+
+    @patch("jarvis.llm.requests.post")
+    def test_the_assembled_reply_matches_the_unstreamed_shape(self, mock_post):
+        from jarvis.llm import OpenAICompatibleBackend
+
+        mock_post.return_value = _make_response(iter_lines=self._DELTAS)
+
+        response = OpenAICompatibleBackend("http://server/v1").chat(
+            "any", [{"role": "user", "content": "hi"}], on_token=lambda _t: None
+        )
+
+        assert response["message"]["content"] == "Das Wetter ist gut."
+
+    @patch("jarvis.llm.requests.post")
+    def test_a_tool_call_split_across_chunks_is_reassembled(self, mock_post):
+        from jarvis.llm import OpenAICompatibleBackend
+
+        mock_post.return_value = _make_response(iter_lines=[
+            b'data: {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1",'
+            b' "type": "function", "function": {"name": "getWeather", "arguments": "{\\"loc"}}]}}]}',
+            b'data: {"choices": [{"delta": {"tool_calls": [{"index": 0,'
+            b' "function": {"arguments": "ation\\": \\"Berlin\\"}"}}]}}]}',
+            b'data: [DONE]',
+        ])
+
+        response = OpenAICompatibleBackend("http://server/v1").chat(
+            "any", [{"role": "user", "content": "hi"}], on_token=lambda _t: None
+        )
+
+        call = response["message"]["tool_calls"][0]
+        assert call["function"]["name"] == "getWeather"
+        assert call["function"]["arguments"] == {"location": "Berlin"}
+
+    @patch("jarvis.llm.requests.post")
+    def test_without_a_listener_the_request_is_not_streamed(self, mock_post):
+        from jarvis.llm import OpenAICompatibleBackend
+
+        mock_post.return_value = _make_response(json_data={
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}]
+        })
+
+        OpenAICompatibleBackend("http://server/v1").chat(
+            "any", [{"role": "user", "content": "hi"}]
+        )
+
+        assert mock_post.call_args.kwargs["json"]["stream"] is False

@@ -150,6 +150,92 @@ class ServerCapabilities:
     models: List[str] = field(default_factory=list)
 
 
+def _assemble_streamed_chat(
+    resp: Any,
+    on_token: Callable[[str], None],
+) -> Optional[Dict[str, Any]]:
+    """Fold an OpenAI-shape chat stream back into one response dict.
+
+    Deltas carry fragments rather than whole messages, and a tool call is
+    split across chunks that identify themselves by ``index``, so the call is
+    rebuilt slot by slot and its argument string decoded once at the end —
+    the same shape ``_normalise_response`` produces for an unstreamed reply.
+
+    ``on_token`` is a side effect on the user's behalf, so a listener that
+    raises must not cost them the answer.
+    """
+    content: List[str] = []
+    role = "assistant"
+    calls: Dict[int, Dict[str, Any]] = {}
+
+    for raw in resp.iter_lines():
+        if not raw:
+            continue
+        line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        line = line.strip()
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if not line or line == "[DONE]":
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+        delta = choices[0].get("delta")
+        if not isinstance(delta, dict):
+            continue
+        role = delta.get("role") or role
+        for fragment in delta.get("tool_calls") or []:
+            if not isinstance(fragment, dict):
+                continue
+            slot = calls.setdefault(
+                int(fragment.get("index", len(calls))),
+                {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+            )
+            if fragment.get("id"):
+                slot["id"] = fragment["id"]
+            if fragment.get("type"):
+                slot["type"] = fragment["type"]
+            func = fragment.get("function")
+            if isinstance(func, dict):
+                if func.get("name"):
+                    slot["function"]["name"] = func["name"]
+                if isinstance(func.get("arguments"), str):
+                    slot["function"]["arguments"] += func["arguments"]
+        chunk = delta.get("content")
+        if not isinstance(chunk, str) or not chunk:
+            continue
+        content.append(chunk)
+        try:
+            on_token(chunk)
+        except Exception as e:
+            debug_log(f"OpenAICompatibleBackend.chat: token listener failed — {e}", "llm")
+
+    if not content and not calls:
+        debug_log("OpenAICompatibleBackend.chat: stream produced nothing", "llm")
+        return None
+
+    message: Dict[str, Any] = {"role": role, "content": "".join(content)}
+    if calls:
+        message["tool_calls"] = [
+            {**call, "function": {**call["function"],
+                                  "arguments": _decode_tool_arguments(call["function"]["arguments"])}}
+            for _, call in sorted(calls.items())
+        ]
+    return {"choices": [{"message": message}], "message": message}
+
+
+def _decode_tool_arguments(arguments: str) -> Any:
+    """Decode a tool call's accumulated argument string, or keep it as text."""
+    try:
+        return json.loads(arguments)
+    except (json.JSONDecodeError, TypeError):
+        return arguments
+
+
 def _normalise_response(data: Dict[str, Any]) -> Dict[str, Any]:
     """Lift OpenAI's ``choices[0].message`` to top-level ``message``
     (matching Ollama's shape) and JSON-decode any tool-call arguments.
@@ -390,13 +476,17 @@ class OpenAICompatibleBackend(LLMBackend):
         extra_options: Optional[Dict[str, Any]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         thinking: bool = False,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Optional[Dict[str, Any]]:
+        """With ``on_token`` the request is streamed and each piece of
+        assistant text is handed over as it arrives. The return value is the
+        same assembled response either way. See :meth:`LLMBackend.chat`."""
         sanitised = strip_nonstandard_message_fields(messages)
         sanitised = self._encode_tool_call_arguments(sanitised)
         payload: Dict[str, Any] = {
             "model": chat_model,
             "messages": sanitised,
-            "stream": False,
+            "stream": on_token is not None,
         }
         if extra_options and isinstance(extra_options, dict):
             # ``temperature``, ``max_tokens``, ``top_p`` etc. live at the
@@ -425,8 +515,11 @@ class OpenAICompatibleBackend(LLMBackend):
                 json=payload,
                 headers=self._headers(),
                 timeout=timeout_sec,
+                stream=on_token is not None,
             ) as resp:
                 resp.raise_for_status()
+                if on_token is not None:
+                    return _assemble_streamed_chat(resp, on_token)
                 data = resp.json()
             if isinstance(data, dict):
                 return _normalise_response(data)

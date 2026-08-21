@@ -24,6 +24,20 @@ Every turn creates a monotonic `RequestDeadline` from `simple_reply_first_audio_
 
 There is no word-list early router and no path that bypasses tool selection based on hard-coded language patterns. Memory intent comes from the normal planner. When retrieval will run, the engine invokes `on_memory_lookup_started` once. The voice listener may speak the configured `memory_lookup_acknowledgement`; its empty default keeps the behaviour silent and language-neutral.
 
+### Speaking while writing
+
+A reply is written faster than it is spoken, so waiting for the last token before making any sound spends the whole generation in silence. When the caller supplies `on_speech_segment`, the engine asks the backend for the reply's text as it arrives and hands over each sentence the moment it is finished. A four-sentence reply on a warm local model starts about a second earlier this way; a one-sentence reply gains nothing, because there is nothing to overlap.
+
+Sentences come from `SpeechSegmenter` in `speech_stream.py`, which releases text on a sentence terminator followed by whitespace or the end of what has arrived. The terminator set spans writing systems (Latin, ideographic, Devanagari, Arabic) rather than languages, so a reply in Chinese or Hindi segments like a German one, and a script whose punctuation is unknown simply arrives as one segment at the end. Requiring the trailing space is what stops `21.5` and `youtube.com` being cut in half.
+
+Three rules bound what reaches the speakers:
+
+- **Each model turn is its own stream.** A turn ending in a tool call and the turn that finally answers never share a segmenter, so the answer cannot inherit a half-sentence of preamble.
+- **A turn that ends in a tool call drops its tail.** What was already said stands; the unfinished fragment is discarded rather than left hanging in front of the real reply.
+- **A stream that opens as structured output is never spoken.** A reply beginning with `{`, `[`, `` ``` `` or `<` is a text-shaped tool call meant for the parser, and reading it aloud is worse than saying nothing. A brace later in a sentence is just a brace.
+
+Speech is a side effect on the user's behalf: a listener that raises is logged and ignored, both in the engine and in the backend, because a failing speech path must cost the user the sound and never the answer. Without `on_speech_segment` the request is not streamed at all and the flow is unchanged.
+
 ### Entry and Inputs
 - Entry point: the reply engine receives a user query from the ingestion layer.
 - Inputs:
@@ -32,6 +46,7 @@ There is no word-list early router and no path that bypasses tool selection base
   - configuration: model endpoints, timeouts, feature flags, and tool settings.
   - speech synthesizer (optional): for spoken output and hot-window activation.
   - optional request deadline and memory-lookup callback: shared latency budget and a language-neutral notification boundary.
+  - optional speech-segment sink: receives each finished sentence as the reply is written.
 
 ### Steps and Branches (Agentic Messages Loop)
 1. Redact

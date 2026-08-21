@@ -332,6 +332,24 @@
 - The first call after an idle stretch still pays the page-in (~5.7 s on this machine). The `keep_alive` now sent with every request is what stops that recurring mid-session.
 - On an 8 GB card the fastest FAST tier is the chat model itself: it is already resident, so it routes in ~250 ms, while `gemma4:e2b` and `qwen3.5:0.8b` each cost an 8 s eviction-and-load on their first call. `qwen3.5:0.8b` also misrouted "Wie ist das Wetter heute?" to no tool at all.
 
+---
+
+## 🗣️ Speaking while writing (2026-08-21)
+
+> Measured on the live config (`qwen2.5:7b-ctx8k`, warm) by running the real reply engine with a speech sink that timestamps each sentence it receives. "Head start" is how long before the reply text was complete the first sentence was ready to speak.
+
+| Prompt | First sentence | Reply complete | Head start |
+|---|---:|---:|---:|
+| "Erkläre mir in vier Sätzen, warum der Himmel blau ist" (through the reply engine) | 7683 ms | 8734 ms | **1051 ms** |
+| Four-sentence explanation (backend only, warm) | 876 ms | 1948 ms | **1072 ms** |
+| Three-sentence summary (backend only, warm) | 963 ms | 980 ms | 17 ms |
+
+**Transport equivalence:** a streamed and an unstreamed request were sent with the same messages and tool schema against live Ollama. Both produced `getWeather` with identical arguments, so streaming changes when the text arrives, not what the model decided.
+
+**Notes:**
+- The gain scales with reply length and is nil on a one-sentence answer, which is the expected shape: there is nothing to overlap.
+- The evals do not supply a speech sink, so they exercise the unstreamed path. The stream fold (tool calls surviving, reasoning kept out of the spoken text, a listener that raises not costing the reply) is covered by unit tests in `tests/test_llm_backend.py`, `tests/test_llm_openai_compatible.py` and `tests/test_tts_streaming.py`.
+
 ### 📖 Legend
 
 | Symbol | Meaning |

@@ -151,12 +151,22 @@ class LLMBackend(ABC):
         extra_options: Optional[Dict[str, Any]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         thinking: bool = False,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Arbitrary-messages chat. Returns the raw response dict so the
         caller (today: the reply engine) can inspect both content and
         ``tool_calls``. Raises :class:`ToolsNotSupportedError` when the
         model rejects the ``tools`` parameter so the caller can fall
-        back to text-based tool calling without losing the turn."""
+        back to text-based tool calling without losing the turn.
+
+        ``on_token`` asks for the assistant's text as it arrives rather
+        than only at the end, so a caller can start speaking the first
+        sentence while the rest is still being written. It changes when
+        the text shows up, not what comes back: the return value is the
+        same assembled response either way, and reasoning is never
+        reported through it. A listener that raises is logged and
+        ignored — reporting text is a side effect and must not cost the
+        caller its reply."""
 
     @abstractmethod
     def embed(

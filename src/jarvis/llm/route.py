@@ -281,11 +281,19 @@ class RoutedBackend(LLMBackend):
         return None
 
     def chat(self, chat_model, messages, timeout_sec=30.0, extra_options=None,
-             tools=None, thinking=False):
-        return self._run(chat_model, lambda backend, route: backend.chat(
-            route.model, messages, timeout_sec=self._timeout(timeout_sec, route),
-            extra_options=extra_options, tools=tools, thinking=thinking,
-        ), capability="tools" if tools else "chat")
+             tools=None, thinking=False, on_token=None):
+        # A route that cannot stream still answers, it just answers all at
+        # once — so falling back through the chain never depends on whether
+        # the caller wanted its text early.
+        def invoke(backend, route):
+            listener = on_token if "stream" in route.capabilities else None
+            return backend.chat(
+                route.model, messages, timeout_sec=self._timeout(timeout_sec, route),
+                extra_options=extra_options, tools=tools, thinking=thinking,
+                on_token=listener,
+            )
+
+        return self._run(chat_model, invoke, capability="tools" if tools else "chat")
 
     def embed(self, text, model, timeout_sec=15.0):
         return None

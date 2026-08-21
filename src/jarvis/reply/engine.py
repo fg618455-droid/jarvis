@@ -26,7 +26,7 @@ from ..llm import (
 
 
 def chat_with_messages(cfg, messages, *, timeout_sec=30.0, extra_options=None,
-                       tools=None, thinking=False):
+                       tools=None, thinking=False, on_token=None):
     """Local indirection: route the engine's chat call through the active
     backend (Ollama or OpenAI-compatible, per ``cfg.llm_provider``) so the
     runtime swap is transparent to the rest of the engine.
@@ -35,6 +35,9 @@ def chat_with_messages(cfg, messages, *, timeout_sec=30.0, extra_options=None,
     to capture every chat call rather than reaching into the backend ABC.
     It is also the single place every chat call is timed from, so an
     agentic turn's model time is measured wherever the loop entered it.
+
+    ``on_token`` asks the backend for the reply's text as it is written, so
+    the speech path can start on the first finished sentence.
     """
     backend = get_llm_backend(cfg)
     with telemetry_stage("llm"):
@@ -44,6 +47,7 @@ def chat_with_messages(cfg, messages, *, timeout_sec=30.0, extra_options=None,
             extra_options=extra_options,
             tools=tools,
             thinking=thinking,
+            on_token=on_token,
         )
 from .enrichment import (
     extract_search_params_for_memory,
@@ -54,6 +58,7 @@ from .enrichment import (
 from .fallbacks import in_the_voices_language
 from .prompt_dump import dump_reply_turn, is_enabled as _prompt_dump_enabled, new_session_id
 from .prompts import ModelSize, detect_model_size, get_system_prompts
+from .speech_stream import SpeechSegmenter
 from .compound_query import split_compound_query
 from .planner import (
     plan_query,
@@ -882,6 +887,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                     quiet: bool = False,
                     deadline: Optional[RequestDeadline] = None,
                     on_memory_lookup_started: Optional[Callable[[], None]] = None,
+                    on_speech_segment: Optional[Callable[[str], None]] = None,
                     ) -> Optional[str]:
     """
     Main entry point for reply generation.
@@ -897,6 +903,10 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             web_search can pick locale-appropriate resources (e.g. the
             right Wikipedia host). None when invoked outside the voice
             path — tools then fall back to their own default.
+        on_speech_segment: Called with each finished sentence of the reply as
+            it is written, so speech can start on the first one instead of
+            waiting for the last. Absent means no one is listening for early
+            text, and the reply is fetched in one piece as before.
         quiet: When True, the reply is not printed to stdout. The text-chat
             path sets this so chat replies never land in the daemon's
             stdout, which subprocess mode forwards to the desktop app's
@@ -2004,6 +2014,36 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # to the steps of the current plan.
     _plan_steps_baseline = sum(1 for m in messages if m.get("tool_name"))
 
+    def _stream_speech():
+        """Return a fresh (segmenter, listener) pair for one model turn.
+
+        Each turn of the loop is its own stream: a turn that ends in a tool
+        call and the turn that finally answers must not share a segmenter, or
+        the answer would inherit the tool turn's half-sentence. Returns
+        ``(None, None)`` when nobody asked for early text, which keeps the
+        request unstreamed and the behaviour exactly as it was.
+        """
+        if on_speech_segment is None:
+            return None, None
+        segmenter = SpeechSegmenter()
+
+        def listener(chunk: str) -> None:
+            for sentence in segmenter.feed(chunk):
+                _say(sentence)
+
+        return segmenter, listener
+
+    def _say(sentence: str) -> None:
+        """Hand one finished sentence to the speech path.
+
+        Speech is a side effect on the user's behalf: a speech path that
+        fails must cost them the sound, never the answer.
+        """
+        try:
+            on_speech_segment(sentence)
+        except Exception as e:
+            debug_log(f"speech segment listener failed: {type(e).__name__}: {e}", "tts")
+
     while turn < max_turns:
         turn += 1
         debug_log(f"🔁 messages loop turn {turn}", "planning")
@@ -2197,6 +2237,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         # tools API not supported).
         _dump_tools_schema = None if use_text_tools else tools_json_schema
         _chat_model = cfg.llm_chat_model
+        _segmenter, _on_token = _stream_speech()
         try:
             llm_resp = chat_with_messages(
                 cfg=cfg,
@@ -2205,6 +2246,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 extra_options=None,
                 tools=_dump_tools_schema,
                 thinking=getattr(cfg, 'llm_thinking_enabled', False),
+                on_token=_on_token,
             )
             dump_reply_turn(
                 session_id=_dump_session_id,
@@ -2228,6 +2270,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             use_text_tools = True
             messages[0] = {"role": "system", "content": _build_initial_system_message()}
             _update_system_message_with_context(messages)
+            _segmenter, _on_token = _stream_speech()
             llm_resp = chat_with_messages(
                 cfg=cfg,
                 messages=messages,
@@ -2235,6 +2278,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 extra_options=None,
                 tools=None,
                 thinking=getattr(cfg, 'llm_thinking_enabled', False),
+                on_token=_on_token,
             )
             dump_reply_turn(
                 session_id=_dump_session_id,
@@ -2278,6 +2322,17 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
 
         # Extract tool call if present
         t_name, t_args, t_call_id = _extract_structured_tool_call(llm_resp)
+
+        # Release the sentence still in hand. A turn that ends in a tool call
+        # was preamble, not an answer, so its tail is dropped: the user hears
+        # what was already said and then the real reply, never a half-thought
+        # left hanging in front of it.
+        if _segmenter is not None:
+            if t_name:
+                _segmenter.flush()
+            else:
+                for _sentence in _segmenter.flush():
+                    _say(_sentence)
 
         # ALWAYS append the assistant's response to messages exactly as received
         assistant_msg = {"role": "assistant", "content": content}
