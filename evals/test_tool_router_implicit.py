@@ -98,6 +98,24 @@ IMPLICIT_INTENT_CASES = [
         "Dietary check against logged meals.",
         id="dietary check → fetchMeals",
     ),
+    pytest.param(
+        "put the new Dune trailer on my screen",
+        ["openOnComputer"],
+        "Asking to see something means opening it here, not being told about it.",
+        id="show a video → openOnComputer",
+    ),
+    pytest.param(
+        "I want to jot something down in a text editor",
+        ["openOnComputer"],
+        "Wanting to use a program is a request to launch it.",
+        id="use an editor → openOnComputer",
+    ),
+    pytest.param(
+        "take me to my downloads folder",
+        ["openOnComputer"],
+        "Navigating to a folder is a desktop action, not a file read.",
+        id="downloads folder → openOnComputer",
+    ),
 ]
 
 

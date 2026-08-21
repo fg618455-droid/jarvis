@@ -21,6 +21,7 @@ from .builtin.refresh_mcp_tools import RefreshMCPToolsTool
 from .builtin.weather import WeatherTool
 from .builtin.time_tool import TimeTool
 from .builtin.stop import StopTool
+from .builtin.open_on_computer import OpenOnComputerTool
 from .builtin.tool_search import ToolSearchTool
 from .builtin.ask_crew import AskCrewTool
 from .types import ToolExecutionResult
@@ -44,6 +45,7 @@ BUILTIN_TOOLS = {
     "getWeather": WeatherTool(),
     "getTime": TimeTool(),
     "stop": StopTool(),
+    "openOnComputer": OpenOnComputerTool(),
     "toolSearchTool": ToolSearchTool(),
     "askCrew": AskCrewTool(),
 }
