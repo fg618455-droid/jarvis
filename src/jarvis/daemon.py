@@ -975,6 +975,7 @@ def main(smoke_test: bool = False) -> None:
     # Initialize TTS
     print(f"🔊 Initializing TTS engine ({cfg.tts_engine})...", flush=True)
     tts = create_tts_engine(
+        output_device=cfg.tts_output_device,
         engine=cfg.tts_engine,
         enabled=cfg.tts_enabled,
         voice=cfg.tts_voice,

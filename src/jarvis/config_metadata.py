@@ -250,6 +250,9 @@ def _build_field_metadata() -> List[FieldMeta]:
       "chatterbox", "str", nullable=True)
 
     # --- Voice Input ---
+    f("tts_output_device", "Output Device",
+      "Speaker device for Jarvis's voice (name or index). Leave empty for system default.",
+      "voice_input", "device")
     f("voice_device", "Input Device",
       "Microphone device (name or index). Leave empty for system default.",
       "voice_input", "device")

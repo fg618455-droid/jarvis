@@ -675,6 +675,33 @@ class ChatterboxTTS:
         return self._last_spoken_text
 
 
+def _resolve_output_device(configured: Optional[str]):
+    """Turn a configured device name or index into something PortAudio takes.
+
+    An empty setting means "whatever PortAudio calls default". That default
+    is a host API's idea of default, not the one Windows is actually playing
+    through, so it is worth naming the device when speech goes missing.
+
+    A name that matches nothing is not fatal: speech on the wrong card beats
+    no speech at all, and the reason is printed once so it can be fixed.
+    """
+    if configured in (None, "", "default", "system"):
+        return None
+    text = str(configured).strip()
+    if text.isdigit():
+        return int(text)
+    try:
+        import sounddevice as sd
+        for index, device in enumerate(sd.query_devices()):
+            if device.get("max_output_channels", 0) > 0 and text.lower() in device["name"].lower():
+                return index
+    except Exception as exc:
+        debug_log(f"could not resolve TTS output device {text!r}: {type(exc).__name__}", "tts")
+        return None
+    print(f"  ⚠️  No output device matches {text!r} - using the system default", flush=True)
+    return None
+
+
 class PiperTTS:
     """TTS implementation using Piper (local neural TTS with exact duration).
 
@@ -694,8 +721,14 @@ class PiperTTS:
         noise_scale: float = 0.667,
         noise_w: float = 0.8,
         sentence_silence: float = 0.2,
+        output_device: Optional[str] = None,
     ) -> None:
         self.enabled = enabled
+        # Which sound card speech goes to. None means PortAudio's default,
+        # which is not always one the user can hear: a host API can accept a
+        # stream, report success and play into a device nobody is connected
+        # to. Naming the device explicitly is the only reliable cure.
+        self._output_device = _resolve_output_device(output_device)
         self.voice = voice  # Not used in Piper, kept for interface compatibility
         self.rate = rate    # Not directly supported, use length_scale instead
         self.model_path = model_path
@@ -976,6 +1009,7 @@ class PiperTTS:
                         dtype='int16',
                         blocksize=blocksize,
                         callback=audio_callback,
+                        device=self._output_device,
                     )
                     self._audio_stream.start()
 
@@ -1086,6 +1120,7 @@ def create_tts_engine(
     piper_noise_scale: float = 0.667,
     piper_noise_w: float = 0.8,
     piper_sentence_silence: float = 0.2,
+    output_device: Optional[str] = None,
 ):
     """Factory function to create the appropriate TTS engine.
 
@@ -1106,6 +1141,7 @@ def create_tts_engine(
     else:
         # Default to Piper TTS
         return PiperTTS(
+            output_device=output_device,
             enabled=enabled,
             voice=voice,
             rate=rate,

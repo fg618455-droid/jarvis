@@ -162,6 +162,7 @@ class Settings:
     # Piper TTS
     tts_piper_model_path: str | None  # Path to .onnx voice model
     tts_piper_speaker: int | None  # Speaker ID for multi-speaker models
+    tts_output_device: str | None
     tts_piper_length_scale: float  # Speed: <1.0 faster, >1.0 slower
     tts_piper_noise_scale: float  # Audio variation
     tts_piper_noise_w: float  # Phoneme width variation
@@ -766,6 +767,7 @@ def get_default_config() -> Dict[str, Any]:
         # Piper TTS
         "tts_piper_model_path": None,  # Path to .onnx voice model
         "tts_piper_speaker": None,  # Speaker ID for multi-speaker models
+        "tts_output_device": None,
         "tts_piper_length_scale": 0.65,  # Speed: <1.0 faster, >1.0 slower (0.65 = ~30% faster)
         "tts_piper_noise_scale": 0.8,  # Audio variation (higher = more expressive)
         "tts_piper_noise_w": 1.0,  # Phoneme width variation (higher = more lively)
@@ -1060,6 +1062,8 @@ def load_settings() -> Settings:
         tts_piper_speaker = None if tts_piper_speaker_val in (None, "", "null") else int(tts_piper_speaker_val)
     except Exception:
         tts_piper_speaker = None
+    tts_output_device_val = merged.get("tts_output_device")
+    tts_output_device = None if tts_output_device_val in (None, "", "default", "system") else str(tts_output_device_val)
     tts_piper_length_scale = float(merged.get("tts_piper_length_scale", 0.65))
     tts_piper_noise_scale = float(merged.get("tts_piper_noise_scale", 0.8))
     tts_piper_noise_w = float(merged.get("tts_piper_noise_w", 1.0))
@@ -1342,6 +1346,7 @@ def load_settings() -> Settings:
         # Piper TTS
         tts_piper_model_path=tts_piper_model_path,
         tts_piper_speaker=tts_piper_speaker,
+        tts_output_device=tts_output_device,
         tts_piper_length_scale=tts_piper_length_scale,
         tts_piper_noise_scale=tts_piper_noise_scale,
         tts_piper_noise_w=tts_piper_noise_w,
