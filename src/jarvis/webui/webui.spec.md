@@ -44,6 +44,25 @@ browser can post to it.
 No response carries `Access-Control-Allow-Origin`. Every response carries
 `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
 
+### The microphone socket
+
+`GET /api/voice/stream` upgrades to a WebSocket carrying 16-bit mono PCM
+from the browser's microphone into the listener's audio queue. It cannot
+rely on the guards above: an upgrade is a GET, so the write header does not
+apply to it, and WebSockets are exempt from the same-origin policy, so any
+page in any tab can open one against a loopback port. A socket that speaks
+into a tool-running assistant needs more than "you reached the port".
+
+It therefore checks `Origin` itself. A page must name this control centre,
+on this host, on this port. An absent header is allowed, because only a
+browser sends one and nothing can trick a script into carrying someone
+else's. `null`, the sandboxed-frame origin, names no site that could be
+checked and is refused.
+
+Frames larger than a capture chunk are dropped rather than forwarded, and a
+frame the listener refuses (Jarvis is speaking, the queue is full, nothing
+listening) closes nothing: the socket stays open for the next one.
+
 The allowlist and the token divide the work between them. On loopback the
 set of valid host names is known, so the allowlist is exact and no token is
 needed: reaching the port already means reaching the machine. Off loopback
