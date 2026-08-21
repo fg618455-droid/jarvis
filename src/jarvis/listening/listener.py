@@ -85,15 +85,26 @@ def is_uncertain_language(language_probability, threshold: float) -> bool:
     return language_probability < threshold
 
 
-# Audio processing imports (optional)
+# Audio processing imports (optional).
+#
+# Kept apart on purpose: only sounddevice needs PortAudio. A machine with no
+# working audio device still transcribes audio posted by the control centre,
+# so nulling numpy and the VAD alongside it would disable a path that has no
+# device to fail on.
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    import webrtcvad
+except ImportError:
+    webrtcvad = None
+
 try:
     import sounddevice as sd
-    import webrtcvad
-    import numpy as np
 except ImportError as e:
     sd = None
-    webrtcvad = None
-    np = None
     # Log import error for debugging
     print(f"  ⚠️  Audio import error: {e}", flush=True)
     print("     This may indicate PortAudio is not found", flush=True)
@@ -104,8 +115,6 @@ except ImportError as e:
 except OSError as e:
     # PortAudio loading errors appear as OSError
     sd = None
-    webrtcvad = None
-    np = None
     print(f"  ❌ PortAudio initialisation failed: {e}", flush=True)
     print("     Please reinstall the application or check audio drivers", flush=True)
     import sys as _sys
@@ -1643,11 +1652,7 @@ class VoiceListener(threading.Thread):
     def _on_audio(self, indata, frames, time_info, status):
         """Audio callback from sounddevice."""
         try:
-            if (
-                self._should_stop
-                or self._dictation_active
-                or (self.tts is not None and self.tts.is_speaking())
-            ):
+            if not self._accepting_audio():
                 return
             self._callback_count += 1
             chunk = (indata.copy() if hasattr(indata, "copy") else indata)
@@ -1657,6 +1662,41 @@ class VoiceListener(threading.Thread):
                 pass
         except Exception:
             return
+
+    def _accepting_audio(self) -> bool:
+        """Whether captured audio may enter the pipeline right now."""
+        return not (
+            self._should_stop
+            or self._dictation_active
+            or (self.tts is not None and self.tts.is_speaking())
+        )
+
+    def feed_external_audio(self, pcm16: bytes) -> bool:
+        """Accept 16-bit little-endian mono PCM captured outside this process.
+
+        The control centre records the microphone in the browser and posts the
+        frames here. They join the queue the local callback fills, so VAD,
+        transcription and the reply path treat them like any other audio.
+
+        Returns whether the frame entered the pipeline. A refusal is normal:
+        frames arriving while Jarvis speaks are echo, and a full queue means
+        the consumer is behind. Neither may block the socket thread.
+        """
+        if np is None or not self._accepting_audio():
+            return False
+        if not pcm16 or len(pcm16) % 2:
+            return False
+        try:
+            frame = np.frombuffer(pcm16, dtype="<i2").astype(np.float32) / 32768.0
+        except Exception:
+            return False
+        if frame.size == 0:
+            return False
+        try:
+            self._audio_q.put_nowait(frame)
+        except Exception:
+            return False
+        return True
 
     def _determine_whisper_backend(self) -> str:
         """Determine which Whisper backend to use based on config and availability."""

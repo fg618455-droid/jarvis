@@ -422,9 +422,9 @@ stateDiagram-v2
 ## Audio Pipeline
 
 ```
-Microphone Audio
-    ↓
-Sounddevice Callback → _audio_q
+Microphone Audio                    Control centre (browser microphone)
+    ↓                                   ↓
+Sounddevice Callback ─────→ _audio_q ←── feed_external_audio()
     ↓
 Main Loop: Get Frames → VAD Check
     ↓
@@ -450,6 +450,26 @@ If judge.directed and judge.query:
 If judge rejects but in hot window and non-echo:
     → Override rejection, dispatch as query
 ```
+
+### Audio captured outside the process
+
+`VoiceListener.feed_external_audio(pcm16)` takes 16-bit little-endian mono
+PCM at the configured sample rate and puts it on `_audio_q`, the queue the
+sounddevice callback fills. Both sources therefore meet before VAD, and no
+stage downstream knows or cares where a frame came from.
+
+The two paths share one admission rule (`_accepting_audio`): nothing enters
+while Jarvis speaks, while dictation holds the audio path, or after stop has
+been requested. A refused frame is dropped, never queued late, because audio
+that arrives out of its moment is worse than audio that never arrives.
+
+A refusal is also the answer when the queue is full. The caller is a socket
+thread serving a live capture; blocking it to wait for a slow consumer would
+stall the browser's recorder rather than help it catch up.
+
+Only `sounddevice` requires PortAudio. `numpy` and `webrtcvad` are imported
+independently of it, so a machine with no usable audio device still runs the
+full pipeline on posted audio.
 
 ## Fallback Behaviour
 
