@@ -334,6 +334,24 @@
 
 ---
 
+## 🤖 Agent behaviour: before/after the 2026-08-21 changes
+
+> `openOnComputer` widens the catalogue every router call carries, so the agent-behaviour evals were run against the change and against `3804061` (a git worktree at the pre-change commit, same interpreter, same server) to see whether the extra tool displaces one the query needed.
+
+**Setup:** `EVAL_JUDGE_MODEL=gemma4:e2b`, local Ollama, plain `pytest`, no retries.
+
+| File set | Base (`3804061`) | With the change |
+|----------|-----------------:|----------------:|
+| `test_agent_behavior.py`, `test_greeting_no_tools.py` | 35 passed / 4 failed / 3 xfailed | 35 passed / 5 failed / 2 xfailed |
+
+**Result:** ✅ No regression attributable to the change. The pass count is identical and three failures are common to both runs (`test_enrichment_extracts_correct_keywords[time-based recall]`, `test_enrichment_skips_questions_answered_by_context`, `test_open_ended_prompt_grounds_in_graph_context_live`). The differing entries are ambient variance on this model: base failed `test_weather_query_live` where the change passed, and the change failed `test_interest_flavoured_query_live[news-of-interest-to-me]`, which flakes on both sides — repeated three times per side, it failed 1/3 at base and 2/3 with the change, with the same failure mode (the model asks which topics interest the user instead of acting on the seeded ones).
+
+`test_no_deflection_for_weather_forecast_live` appeared in the change's failure list but passes on re-run; its isolated failure was a `cp1252` console encoding error, not agent behaviour. Run evals with `-X utf8` on Windows.
+
+**Router displacement check:** in the observed picks `openOnComputer` appeared *alongside* the tool the query needed, never instead of it (`getWeather, getTime, openOnComputer, askCrew, stop, toolSearchTool` for a forecast; `webSearch, fetchWebPage, openOnComputer, toolSearchTool, stop` for a news query). The one remaining failure had `webSearch` selected and chose not to call it, so it is a model decision rather than a routing loss.
+
+---
+
 ## 🗣️ Speaking while writing (2026-08-21)
 
 > Measured on the live config (`qwen2.5:7b-ctx8k`, warm) by running the real reply engine with a speech sink that timestamps each sentence it receives. "Head start" is how long before the reply text was complete the first sentence was ready to speak.
