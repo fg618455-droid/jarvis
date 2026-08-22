@@ -7,8 +7,8 @@ import { Router } from "./router.js";
 import { live } from "./sse.js";
 import { ICONS, el, icon, toast } from "./ui.js";
 
-/* Ten destinations in one column read as a list to be searched. Grouped by
-   what they are for, they read as a map: what is happening now, what the
+/* Eleven destinations in one column read as a list to be searched. Grouped
+   by what they are for, they read as a map: what is happening now, what the
    assistant knows, and how the machine is set up. */
 const NAV_GROUPS = [
   {
@@ -16,6 +16,7 @@ const NAV_GROUPS = [
     views: [
       { name: "overview", icon: ICONS.overview },
       { name: "conversation", icon: ICONS.conversation },
+      { name: "passive", icon: ICONS.passive },
       { name: "crew", icon: ICONS.crew },
     ],
   },
@@ -42,6 +43,7 @@ const ROUTES = {
   overview: () => import("./views/overview.js"),
   memory: () => import("./views/memory.js"),
   conversation: () => import("./views/conversation.js"),
+  passive: () => import("./views/passive.js"),
   tools: () => import("./views/tools.js"),
   security: () => import("./views/security.js"),
   system: () => import("./views/system.js"),

@@ -270,64 +270,113 @@
   min-height: 56px;
 }
 
+/* ── Passive record ──────────────────────────────────────────────────── */
+
 .passive-notice {
   color: var(--fg-mute);
   font-size: var(--fs-xs);
 }
 
-.passive-days,
-.passive-day {
-  display: grid;
-  gap: var(--s2);
+/* Recording is the one state on this page that is continuously true, so
+   the pill that says so borrows the crew reading's heartbeat. The tone is
+   the header indicator's, because a page open at any depth has to read the
+   same thing about the same microphone. */
+.crew-state.recording {
+  color: var(--bad);
+  border-color: var(--bad-line);
 }
 
-.passive-day > header {
+.crew-state.recording .crew-state-dot {
+  background: var(--bad);
+  animation: breathe 3.2s ease-in-out infinite;
+}
+
+.record {
+  display: grid;
+  align-content: start;
+  padding: 0 var(--s3) var(--s2);
+  max-height: min(60vh, 44rem);
+}
+
+/* The day stays put while its lines scroll under it: a transcript with no
+   date in view is a wall of times that could belong to any day. */
+.passive-day {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
-  gap: var(--s2);
-  padding-top: var(--s2);
-  border-top: 1px solid var(--line-soft);
-}
-
-.passive-day > header h3 {
-  font-size: var(--fs-sm);
+  gap: var(--s3);
+  padding: var(--s3) 0 var(--s2);
+  background: var(--surface-inset);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-micro);
   font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
 }
 
-.passive-day > header .btn {
+.passive-day-delete {
   margin-left: auto;
+  padding: var(--s0) var(--s2);
+  font-size: var(--fs-micro);
+  letter-spacing: normal;
+  text-transform: none;
 }
 
 .passive-line {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr) auto auto;
+  grid-template-columns: 78px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--s3);
+  padding: var(--s2) 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.passive-line:last-child {
+  border-bottom: none;
+}
+
+.passive-gutter {
+  display: flex;
   align-items: baseline;
   gap: var(--s2);
-  padding: var(--s2) 0;
 }
 
 .passive-line .when {
   color: var(--fg-mute);
-  font-family: var(--mono);
   font-size: var(--fs-xs);
 }
 
+/* A line the assistant was meant to hear reads as speech; the rest of the
+   record is the room, and recedes. */
+.passive-mark {
+  width: 2px;
+  align-self: stretch;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
 .passive-text {
+  color: var(--fg-dim);
   overflow-wrap: anywhere;
 }
 
+.passive-line.addressed .passive-text {
+  color: var(--fg);
+}
+
 .passive-line-delete {
-  padding: var(--s1) var(--s2);
+  padding: var(--s0) var(--s2);
+  font-size: var(--fs-micro);
+  color: var(--fg-mute);
 }
 
 @media (max-width: 760px) {
   .passive-line {
-    grid-template-columns: 64px minmax(0, 1fr) auto;
-  }
-
-  .passive-line-delete {
-    grid-column: 2 / -1;
-    justify-self: start;
+    grid-template-columns: 56px minmax(0, 1fr) auto;
+    gap: var(--s2);
   }
 }
 

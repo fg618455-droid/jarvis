@@ -34,10 +34,10 @@ one file and no view can drift from the rest.
 | Type | An eight-step scale. Headings, labels, and readings are chosen from the ladder rather than per view |
 | Motion | Transitions mark a change of state, never decorate one. `prefers-reduced-motion` disables every animation and transition outright |
 
-The sidebar groups its ten destinations under three names: what is happening
-now, what the assistant knows, and how the machine is set up. Each group is
-an ARIA group carrying that name, so the structure is available to a screen
-reader and not only to the eye.
+The sidebar groups its eleven destinations under three names: what is
+happening now, what the assistant knows, and how the machine is set up. Each
+group is an ARIA group carrying that name, so the structure is available to a
+screen reader and not only to the eye.
 
 ## Runtime
 
@@ -223,14 +223,26 @@ the phase on every view, so a page open at any depth still says whether the
 room is being written down. It is driven by the `passive` event rather than
 polling, and shows nothing at all while the switch is off.
 
-The Conversation view carries the record itself: lines grouped by day with
-their time and text, a marker on the ones that were addressed to the
-assistant, the count still waiting to be digested, and delete controls for a
-line, a day, and the whole record. Deleting states plainly that it removes
-the transcript and not what has already been folded into the diary or the
-graph, each of which has its own delete path in the Memory view. Turning the
-switch on names the model backend that will see the ambient text, because
-whether that is local depends on what `llm_provider` points at.
+The record has a view of its own rather than a section inside another one.
+It is a privacy surface before it is a reading, and it grows without limit:
+an account of every word spoken in the room cannot sit on a page that is
+also meant to show a conversation.
+
+The view carries the switch, the state, and the count still waiting to be
+digested in its frame, then the record itself: lines grouped by day with
+their time and text, a mark on the ones that were addressed to the
+assistant, and delete controls for a line, a day, and the whole record. The
+mark is a rule in the gutter carrying its own accessible name rather than a
+label on every line, because on a busy day most of the record is addressed
+to the assistant and a label repeated that often stops being read.
+
+Turning the switch on asks first and names the model backend that will see
+the ambient text, because whether that is local depends on what
+`llm_provider` points at. Turning it off asks nothing: permission is owed
+for starting to write the room down, not for stopping. Deleting states
+plainly that it removes the transcript and not what has already been folded
+into the diary or the graph, each of which has its own delete path in the
+Memory view.
 
 See `../listening/passive_capture.spec.md`.
 

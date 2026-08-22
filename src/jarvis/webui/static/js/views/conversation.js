@@ -15,7 +15,6 @@ export async function mount(root) {
 
   const modeCard = el("section", { class: "card" });
   const discardedCard = el("section", { class: "card" });
-  const passiveCard = el("section", { class: "card" });
   const list = el("div", { class: "rows" });
 
   const input = el("textarea", {
@@ -37,17 +36,13 @@ export async function mount(root) {
     ]),
   ]);
 
-  root.append(head, modeCard, discardedCard, passiveCard, list, composer);
+  root.append(head, modeCard, discardedCard, list, composer);
 
   async function refresh() {
-    const [conversation, passive] = await Promise.all([
-      api.conversation(50),
-      api.passive("", 500),
-    ]);
+    const conversation = await api.conversation(50);
     paintMode(modeCard, Boolean(conversation.conversation_mode), refresh);
     paintDiscarded(discardedCard, conversation.discarded || {});
     paintTurns(list, conversation.turns || []);
-    paintPassive(passiveCard, passive, refresh);
   }
 
   async function submit() {
@@ -105,7 +100,6 @@ export async function mount(root) {
   await refresh();
   const off = live.on("turn", () => refresh().catch(() => {}));
   const offDiscard = live.on("discarded", () => refresh().catch(() => {}));
-  const offPassive = live.on("passive", () => refresh().catch(() => {}));
   // The conversation also ends on its own, when the judge hears the user
   // ask Jarvis to stop, so the card follows the runtime rather than the
   // last thing this page clicked.
@@ -114,7 +108,6 @@ export async function mount(root) {
   return () => {
     off();
     offDiscard();
-    offPassive();
     offMode();
     // Leaving the view releases the microphone. A capture the user cannot
     // see is a capture they cannot stop.
@@ -152,101 +145,6 @@ function paintMode(container, active, refresh) {
   );
 }
 
-
-function paintPassive(container, payload, refresh) {
-  clear(container);
-  const lines = payload.lines || [];
-  const deleteNotice = t("passive.deleteNotice");
-  const deleteAll = el("button", {
-    class: "btn danger",
-    type: "button",
-    text: t("passive.deleteAll"),
-    disabled: !lines.length,
-    onclick: async () => {
-      if (!window.confirm(`${t("passive.confirmAll")}\n\n${deleteNotice}`)) return;
-      try {
-        await api.deletePassiveAll();
-        await refresh();
-      } catch (error) {
-        toast(error.message, "bad");
-      }
-    },
-  });
-  container.append(
-    el("header", {}, [
-      el("h2", { text: t("passive.title") }),
-      chip(
-        payload.enabled ? t("passive.on") : t("passive.off"),
-        payload.enabled ? "bad" : null,
-      ),
-      el("span", {
-        class: "aside",
-        text: t("passive.waiting", { n: payload.undigested_count || 0 }),
-      }),
-      deleteAll,
-    ]),
-    el("p", { class: "passive-notice", text: deleteNotice }),
-  );
-
-  if (!lines.length) {
-    container.append(empty(t("passive.empty")));
-    return;
-  }
-
-  const byDay = new Map();
-  for (const line of lines) {
-    if (!byDay.has(line.date_utc)) byDay.set(line.date_utc, []);
-    byDay.get(line.date_utc).push(line);
-  }
-
-  const groups = el("div", { class: "passive-days" });
-  for (const [date, dayLines] of byDay) {
-    const dayDelete = el("button", {
-      class: "btn danger",
-      type: "button",
-      text: t("passive.deleteDay"),
-      onclick: async () => {
-        if (!window.confirm(`${t("passive.confirmDay", { date })}\n\n${deleteNotice}`)) return;
-        try {
-          await api.deletePassiveDay(date);
-          await refresh();
-        } catch (error) {
-          toast(error.message, "bad");
-        }
-      },
-    });
-    const group = el("section", { class: "passive-day" }, [
-      el("header", {}, [el("h3", { text: fmt.date(date) }), dayDelete]),
-    ]);
-
-    for (const line of dayLines) {
-      const epoch = new Date(line.ts_utc).getTime() / 1000;
-      group.append(
-        el("div", { class: "passive-line" }, [
-          el("time", { class: "when", text: fmt.time(epoch), datetime: line.ts_utc }),
-          el("span", { class: "passive-text", text: line.text }),
-          line.addressed ? chip(t("passive.addressed"), "accent") : null,
-          el("button", {
-            class: "btn danger passive-line-delete",
-            type: "button",
-            text: t("common.delete"),
-            onclick: async () => {
-              if (!window.confirm(`${t("passive.confirmLine")}\n\n${deleteNotice}`)) return;
-              try {
-                await api.deletePassiveLine(line.id);
-                await refresh();
-              } catch (error) {
-                toast(error.message, "bad");
-              }
-            },
-          }),
-        ]),
-      );
-    }
-    groups.append(group);
-  }
-  container.append(groups);
-}
 
 function paintDiscarded(container, discarded) {
   clear(container);

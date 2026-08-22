@@ -150,8 +150,14 @@ not poll.
 | Where | What is shown |
 |---|---|
 | Header, every view | A recording indicator sitting next to the phase: a filled dot and "recording everything" while the switch is on, nothing at all while it is off |
-| Conversation view | A "Passive record" section: lines grouped by day, each with its time, its text, and a marker when it was addressed to the assistant; per-line, per-day, and whole-record delete buttons; the count of lines still waiting to be digested |
+| Passive record view | Its own destination: the switch, the state and the undigested count in the frame, then lines grouped by day with their time and text, a named mark on the ones addressed to the assistant, and per-line, per-day, and whole-record delete buttons |
 | Settings | The switch and its three companions, rendered from the config metadata registry like every other key |
+
+The record is a destination of its own rather than a section of another
+view. It is a privacy surface with its own switch and its own delete paths,
+and it grows without limit: an account of every word spoken in the room
+cannot share a page with something a reader is meant to scroll past it to
+reach.
 
 The switch has to be reachable while the daemon is running, so a config file
 the daemon read at start is not enough on its own. `POST /api/passive/enabled`
@@ -229,5 +235,5 @@ daemon from starting.
 - **Summariser** (`summariser.spec.md`): owns the digest prompt contract and
   its hygiene rules, alongside the diary summariser's.
 - **Runtime** (`runtime.spec.md`): the `passive` state block and event kind.
-- **Control centre** (`webui.spec.md`): the header indicator, the Conversation
-  view section, and the API routes.
+- **Control centre** (`webui.spec.md`): the header indicator, the Passive
+  record view, and the API routes.

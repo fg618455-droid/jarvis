@@ -25,6 +25,7 @@ VIEWS = [
     "overview",
     "memory",
     "conversation",
+    "passive",
     "tools",
     "security",
     "system",
@@ -511,6 +512,94 @@ class TestMissionControl:
         assert page.get_by_text("<script>alert(1)</script> shipped", exact=True).is_visible()
         assert page.locator("main img").count() == 0
         assert page.locator("main script").count() == 0
+
+
+class TestPassiveRecordHasItsOwnHome:
+    """The record of everything overheard is not the conversation.
+
+    It is a privacy surface with its own switch and its own delete paths,
+    and it grows without limit. Left on the Conversation view it pushed the
+    exchange itself off the bottom of the page, which is the one thing that
+    view exists to show.
+    """
+
+    LINES = [
+        {"id": 3, "date_utc": "2026-08-22", "ts_utc": "2026-08-22T09:15:00Z",
+         "text": "<img src=x onerror=alert(1)> the kettle is on", "addressed": 0},
+        {"id": 2, "date_utc": "2026-08-22", "ts_utc": "2026-08-22T09:05:00Z",
+         "text": "Jarvis, what is the time", "addressed": 1},
+        {"id": 1, "date_utc": "2026-08-21", "ts_utc": "2026-08-21T20:00:00Z",
+         "text": "someone said something yesterday", "addressed": 0},
+    ]
+
+    def _open(self, page, served, enabled=False):
+        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.evaluate(
+            """async ([lines, enabled]) => {
+                const { api } = await import('/static/js/api.js');
+                window.__switched = [];
+                api.passive = async () => ({
+                    lines, enabled, undigested_count: 2, llm_provider: 'ollama',
+                });
+                api.setPassiveEnabled = async (next) => {
+                    window.__switched.push(next);
+                    return { enabled: next };
+                };
+            }""",
+            [self.LINES, enabled],
+        )
+        page.goto(f"{served}/#/passive")
+        page.wait_for_selector("main h1", state="visible")
+
+    def test_the_conversation_view_no_longer_carries_the_record(self, page, served):
+        page.goto(f"{served}/#/conversation", wait_until="networkidle")
+        page.wait_for_selector("main h1", state="visible")
+        page.wait_for_timeout(400)
+
+        assert page.locator(".passive-day").count() == 0
+        assert not page.console_errors
+
+    def test_the_record_groups_what_was_heard_by_day(self, page, served):
+        self._open(page, served)
+
+        assert page.locator(".passive-day").count() == 2
+        assert page.locator(".passive-line").count() == 3
+        assert not page.console_errors
+
+    def test_overheard_text_is_rendered_as_text(self, page, served):
+        self._open(page, served)
+
+        assert page.get_by_text(
+            "<img src=x onerror=alert(1)> the kettle is on", exact=True
+        ).is_visible()
+        assert page.locator("main img").count() == 0
+
+    def test_a_line_addressed_to_jarvis_carries_a_named_mark(self, page, served):
+        self._open(page, served)
+
+        assert page.locator(".passive-line.addressed").count() == 1
+        # A colour alone is not a marker: the mark says what it means.
+        assert page.get_by_label("addressed to Jarvis").count() == 1
+
+    def test_turning_the_record_on_asks_before_it_starts_listening(self, page, served):
+        self._open(page, served, enabled=False)
+        asked = []
+        page.on("dialog", lambda dialog: (asked.append(dialog.message), dialog.dismiss()))
+
+        page.get_by_role("button", name="Turn on").click()
+        page.wait_for_timeout(200)
+
+        assert asked, "the switch started the record without asking"
+        assert "ollama" in asked[0]
+        assert page.evaluate("window.__switched") == []
+
+    def test_turning_the_record_off_needs_no_permission(self, page, served):
+        self._open(page, served, enabled=True)
+
+        page.get_by_role("button", name="Turn off").click()
+        page.wait_for_timeout(200)
+
+        assert page.evaluate("window.__switched") == [False]
 
 
 class TestStreamingApiClient:
