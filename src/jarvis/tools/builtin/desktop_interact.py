@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -11,7 +12,11 @@ from ...debug import debug_log
 from ...security.gate import SecurityGate
 from ..base import Tool, ToolContext
 from ..types import ToolErrorCode, ToolExecutionResult
-from .interaction_resolver import VALID_RISKS, resolve_semantic_action
+from .interaction_resolver import (
+    VALID_RISKS,
+    compact_action_history_entry,
+    resolve_semantic_action,
+)
 
 
 DESKTOP_ACTIONS = frozenset({
@@ -26,8 +31,13 @@ DESKTOP_ACTIONS = frozenset({
     "desktop_read",
 })
 _REF_TTL_SEC = 30.0
-_MAX_CONTROLS = 300
+_MAX_DESCENDANTS = 300
+_MAX_CONTROLS = 60
+_MAX_TABS = 24
+_NAMELESS_STRUCTURAL_TYPES = frozenset({"group", "pane", "region", "custom", "tab"})
 _ACTION_CONTRACT = """
+When multiple tabs are present, first use desktop_select on the one tab whose name the task identifies,
+even if that tab is already active. Do not choose a tab when its name is ambiguous.
 - desktop_list_windows {}
 - desktop_inspect {window_id: ref supplied by the current observation}
 - desktop_find {window_id: current window ref, name?: text, control_type?: text, automation_id?: text}
@@ -55,6 +65,10 @@ class ElevatedWindowError(DesktopInteractionError):
 
 class InvalidDesktopReference(DesktopInteractionError):
     """A window/control ref is unknown, expired, or outside the active scope."""
+
+
+class TabScopeError(DesktopInteractionError):
+    """The active document tab is ambiguous or changed before execution."""
 
 
 @dataclass
@@ -131,6 +145,22 @@ def _element_value(wrapper: Any, name: str, default: Any = None) -> Any:
         return getattr(wrapper.element_info, name)
     except Exception:
         return default
+
+
+def _is_tab_selected(wrapper: Any) -> bool:
+    try:
+        selected = wrapper.is_selected()
+        if isinstance(selected, (bool, int)) and selected in (0, 1):
+            return bool(selected)
+    except Exception:
+        pass
+    try:
+        selected = wrapper.iface_selection_item.CurrentIsSelected
+        if isinstance(selected, (bool, int)) and selected in (0, 1):
+            return bool(selected)
+    except Exception:
+        pass
+    return False
 
 
 class DesktopController:
@@ -222,7 +252,7 @@ class DesktopController:
         return control_id, _ControlRef(
             wrapper=wrapper,
             window_id=window_id,
-            name=name[:300] or control_type,
+            name=name[:300],
             control_type=control_type,
             automation_id=automation_id,
             process_id=process_id,
@@ -242,28 +272,42 @@ class DesktopController:
             "sensitive": record.sensitive,
         }
 
-    def desktop_inspect(self, window_id: str) -> list[dict[str, Any]]:
+    def desktop_inspect(self, window_id: str) -> dict[str, list[dict[str, Any]]]:
         window = self._get_window(window_id)
         self._active_window_id = window_id
         self._control_generation += 1
         self._controls = {}
         try:
-            descendants = list(window.wrapper.descendants())[:_MAX_CONTROLS]
+            descendants = list(window.wrapper.descendants())[:_MAX_DESCENDANTS]
         except Exception as exc:
             raise DesktopInteractionError("The window controls could not be inspected.") from exc
-        output: list[dict[str, Any]] = []
+        controls: list[dict[str, Any]] = []
+        tabs: list[dict[str, Any]] = []
         for wrapper in descendants:
             result = self._control_record(window_id, wrapper)
             if result is None:
                 continue
             control_id, record = result
             self._controls[control_id] = record
-            output.append(self._public_control(control_id, record))
+            public = self._public_control(control_id, record)
+            if record.control_type.casefold() == "tabitem" and record.name:
+                if len(tabs) < _MAX_TABS:
+                    tabs.append({**public, "active": _is_tab_selected(wrapper)})
+                continue
+            if (
+                not record.name
+                and not record.automation_id
+                and record.control_type.casefold() in _NAMELESS_STRUCTURAL_TYPES
+            ):
+                continue
+            if len(controls) < _MAX_CONTROLS:
+                controls.append(public)
         debug_log(
-            f"desktopInteract inspected window generation={self._control_generation} controls={len(output)}",
+            f"desktopInteract inspected window generation={self._control_generation} "
+            f"controls={len(controls)} tabs={len(tabs)}",
             "tools",
         )
-        return output
+        return {"controls": controls, "tabs": tabs}
 
     def desktop_find(
         self,
@@ -287,11 +331,38 @@ class DesktopController:
             if wanted_id is not None and record.automation_id.casefold() != wanted_id:
                 continue
             matches.append(self._public_control(control_id, record))
+            if len(matches) >= _MAX_CONTROLS:
+                break
         return matches
 
     def describe_control(self, control_id: str) -> dict[str, Any]:
         record = self._get_control(control_id)
         return self._public_control(control_id, record)
+
+    def verify_active_tab(self, tab: dict[str, Any]) -> None:
+        """Fail if a named tab is no longer the uniquely active target."""
+        if not self._active_window_id:
+            raise TabScopeError("No desktop window is scoped for tab verification.")
+        window = self._get_window(self._active_window_id)
+        wanted_name = str(tab.get("name") or "")
+        wanted_automation_id = str(tab.get("automation_id") or "")
+        try:
+            descendants = list(window.wrapper.descendants())[:_MAX_DESCENDANTS]
+        except Exception as exc:
+            raise TabScopeError("The active tab could not be re-verified.") from exc
+        candidates: list[Any] = []
+        for wrapper in descendants:
+            if str(_element_value(wrapper, "control_type", "")).casefold() != "tabitem":
+                continue
+            name = str(_element_value(wrapper, "name", "") or "").strip()
+            automation_id = str(_element_value(wrapper, "automation_id", "") or "").strip()
+            if name != wanted_name:
+                continue
+            if wanted_automation_id and automation_id != wanted_automation_id:
+                continue
+            candidates.append(wrapper)
+        if len(candidates) != 1 or not _is_tab_selected(candidates[0]):
+            raise TabScopeError("The selected tab changed before the desktop action could run.")
 
     def desktop_invoke(self, control_id: str) -> dict[str, Any]:
         self._get_control(control_id).wrapper.invoke()
@@ -355,6 +426,8 @@ class DesktopController:
 
 
 def resolve_desktop_action(cfg, task: str, observation: Any, history: list[dict[str, Any]]) -> dict[str, Any] | None:
+    window = observation.get("window") if isinstance(observation, dict) else None
+    window_id = str(window.get("window_id") or "") if isinstance(window, dict) else ""
     return resolve_semantic_action(
         cfg,
         surface="desktop",
@@ -362,6 +435,7 @@ def resolve_desktop_action(cfg, task: str, observation: Any, history: list[dict[
         observation=observation,
         history=history,
         action_contract=_ACTION_CONTRACT,
+        action_validator=lambda action: _desktop_action(action, window_id),
     )
 
 
@@ -410,6 +484,35 @@ def _desktop_action(value: Any, window_id: str) -> dict[str, Any] | None:
             "amount": amount,
         }
     return {"kind": kind, "args": clean, "risk": risk}
+
+
+def _normalised_text(value: Any) -> str:
+    return " ".join(re.findall(r"\w+", str(value or "").casefold()))
+
+
+def _task_tab_target(task: str, tabs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Resolve a uniquely named tab without relying on language-specific phrases."""
+    task_key = _normalised_text(task)
+    padded_task = f" {task_key} "
+    named = [
+        tab for tab in tabs
+        if _normalised_text(tab.get("name"))
+        and f" {_normalised_text(tab.get('name'))} " in padded_task
+    ]
+    if not named:
+        return None
+    longest = max(len(_normalised_text(tab.get("name"))) for tab in named)
+    best = [tab for tab in named if len(_normalised_text(tab.get("name"))) == longest]
+    return best[0] if len(best) == 1 else None
+
+
+def _same_tab(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    first_id = str(first.get("automation_id") or "")
+    second_id = str(second.get("automation_id") or "")
+    return (
+        str(first.get("name") or "") == str(second.get("name") or "")
+        and (not first_id or not second_id or first_id == second_id)
+    )
 
 
 class DesktopInteractTool(Tool):
@@ -475,7 +578,7 @@ class DesktopInteractTool(Tool):
                     f"No running window matches {application!r}.",
                 )
             window_id = str(matches[0]["window_id"])
-            controls = self._controller.desktop_inspect(window_id)
+            inspection = self._controller.desktop_inspect(window_id)
         except DesktopUnsupported as exc:
             return ToolExecutionResult.failure(ToolErrorCode.UNSUPPORTED, str(exc), phase="preflight")
         except ElevatedWindowError as exc:
@@ -487,8 +590,11 @@ class DesktopInteractTool(Tool):
                 technical_details=str(exc),
             )
 
-        observation: Any = {"window": matches[0], "controls": controls}
+        controls = inspection["controls"]
+        tabs = inspection["tabs"]
+        observation: Any = {"window": matches[0], "controls": controls, "tabs": tabs}
         history: list[dict[str, Any]] = []
+        selected_tab: dict[str, Any] | None = None
         gate = SecurityGate.get_or_create(context.cfg)
         context.user_print(f"🪟 Desktop interaction started in {application}.")
 
@@ -524,6 +630,34 @@ class DesktopInteractTool(Tool):
                     "Jarvis will not enter passwords, one-time codes, API keys, or authentication secrets.",
                     phase="confirmation",
                 )
+            tab_selection = next(
+                (
+                    tab for tab in tabs
+                    if kind == "desktop_select" and tab.get("control_id") == control_id
+                ),
+                None,
+            )
+            multiple_tabs = len(tabs) > 1
+            if multiple_tabs and tab_selection is not None:
+                target_tab = _task_tab_target(task, tabs)
+                if target_tab is None or not _same_tab(tab_selection, target_tab):
+                    debug_log("desktopInteract refused ambiguous tab selection", "security")
+                    return ToolExecutionResult.failure(
+                        ToolErrorCode.PERMISSION_DENIED,
+                        "The desktop task does not identify one tab unambiguously, so no tab was selected.",
+                        phase="confirmation",
+                    )
+            tab_scoped_action = (
+                kind in {"desktop_invoke", "desktop_set_text", "desktop_select", "desktop_toggle"}
+                and tab_selection is None
+            )
+            if multiple_tabs and tab_scoped_action and selected_tab is None:
+                debug_log("desktopInteract refused action without explicit tab scope", "security")
+                return ToolExecutionResult.failure(
+                    ToolErrorCode.PERMISSION_DENIED,
+                    "The window has multiple tabs. Select the named target tab before changing anything.",
+                    phase="confirmation",
+                )
             consequential = (
                 kind == "desktop_set_text"
                 or (kind in {"desktop_invoke", "desktop_select", "desktop_toggle"} and risk == "consequential")
@@ -535,6 +669,8 @@ class DesktopInteractTool(Tool):
                     "control_type": str(control.get("control_type") or "")[:100],
                     "task": task[:1000],
                 }
+                if selected_tab is not None:
+                    confirmation["tab"] = str(selected_tab.get("name") or "")[:300]
                 if kind == "desktop_set_text":
                     confirmation["text"] = action_args["text"][:500]
                 debug_log(f"desktopInteract requesting confirmation kind={kind}", "security")
@@ -547,12 +683,46 @@ class DesktopInteractTool(Tool):
                     )
             debug_log(f"desktopInteract action {turn + 1}/{self._max_actions}: {kind}", "tools")
             try:
+                if multiple_tabs and tab_scoped_action and selected_tab is not None:
+                    self._controller.verify_active_tab(selected_tab)
                 result = self._controller.dispatch(kind, action_args)
                 if kind in {"desktop_invoke", "desktop_set_text", "desktop_select", "desktop_toggle"}:
-                    controls = self._controller.desktop_inspect(window_id)
-                    observation = {"window": matches[0], "controls": controls}
+                    inspection = self._controller.desktop_inspect(window_id)
+                    controls = inspection["controls"]
+                    tabs = inspection["tabs"]
+                    observation = {"window": matches[0], "controls": controls, "tabs": tabs}
+                    if multiple_tabs and tab_selection is not None:
+                        selected_tab = next(
+                            (tab for tab in tabs if _same_tab(tab, tab_selection)),
+                            tab_selection,
+                        )
+                        self._controller.verify_active_tab(selected_tab)
+                elif kind == "desktop_inspect":
+                    inspection = result
+                    controls = inspection["controls"]
+                    tabs = inspection["tabs"]
+                    observation = {"window": matches[0], "controls": controls, "tabs": tabs}
+                elif kind == "desktop_find":
+                    observation = {
+                        "window": matches[0],
+                        "controls": result,
+                        "tabs": tabs,
+                    }
                 else:
-                    observation = result
+                    observation = {
+                        "window": matches[0],
+                        "controls": controls,
+                        "tabs": tabs,
+                        "result": result,
+                    }
+            except TabScopeError as exc:
+                debug_log("desktopInteract refused action after active tab changed", "security")
+                return ToolExecutionResult.failure(
+                    ToolErrorCode.PERMISSION_DENIED,
+                    "The selected tab changed before the desktop action could run.",
+                    technical_details=str(exc),
+                    phase="execution",
+                )
             except ElevatedWindowError as exc:
                 return ToolExecutionResult.failure(ToolErrorCode.PERMISSION_DENIED, str(exc))
             except InvalidDesktopReference as exc:
@@ -567,7 +737,7 @@ class DesktopInteractTool(Tool):
                     "The desktop action could not be completed.",
                     technical_details=f"{type(exc).__name__}: {exc}",
                 )
-            history.append({"kind": kind, "args": action_args, "observation": observation})
+            history.append(compact_action_history_entry(kind, action_args, result))
 
         debug_log(f"desktopInteract hit action cap={self._max_actions}", "security")
         return ToolExecutionResult.failure(

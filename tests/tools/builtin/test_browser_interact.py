@@ -283,6 +283,30 @@ def test_browser_tool_enforces_its_action_cap(mock_config) -> None:
     assert [kind for kind, _args in browser.calls].count("browser_scroll") == 2
 
 
+def test_browser_tool_history_records_a_short_outcome_not_the_next_snapshot(mock_config) -> None:
+    browser = _FakeBrowser()
+    histories = []
+    decisions = iter([
+        {"kind": "browser_scroll", "args": {"direction": "down", "amount": 1}, "risk": "read_only"},
+        {"kind": "done", "args": {"summary": "Finished."}, "risk": "read_only"},
+    ])
+
+    def resolver(_cfg, _task, _observation, history):
+        histories.append(list(history))
+        return next(decisions)
+
+    result = BrowserInteractTool(controller=browser, resolver=resolver).run(
+        {"task": "Scroll once"}, _ctx(mock_config)
+    )
+
+    assert result.success is True
+    assert histories[1] == [{
+        "kind": "browser_scroll",
+        "args": {"direction": "down", "amount": 1},
+        "outcome": '{"ok": true}',
+    }]
+
+
 def test_browser_tool_confirms_navigation_to_a_domain_the_task_did_not_name(mock_config) -> None:
     browser = _FakeBrowser()
     browser.dispatch = MagicMock(side_effect=[{"state": "no browser"}, {"url": "https://other.test"}, {"state": "page"}])

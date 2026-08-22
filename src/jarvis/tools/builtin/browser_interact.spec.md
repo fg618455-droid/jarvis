@@ -33,16 +33,16 @@ browser_close()
 - Chromium is headed. `playwright==1.62.0` pins the Python package and its matching browser revision; the platform launch scripts run `python -m playwright install chromium` through that pinned package.
 - Each controller launches a fresh browser context. It never attaches to Chrome or Edge and never reads the user's cookies, saved passwords, or logged-in sessions.
 - Only `http` and `https` URLs are accepted. `file`, `javascript`, `data`, and every other scheme are refused before Playwright starts.
-- A snapshot contains bounded whole-page text, the accessibility tree, and at most 200 visible semantic controls.
+- A snapshot contains at most 6,000 characters each of page text and accessibility tree, plus at most 40 visible semantic controls. Nameless `group`, `region`, `generic`, and `pane` wrapper lines are removed from the tree.
 - Every control receives an opaque `b<generation>-<index>` ref. A new snapshot invalidates every earlier ref. The model never supplies a CSS selector or DOM query.
 - Click and fill resolve only through the ref table created by the most recent snapshot. Unknown and stale refs return `invalid_argument` and tell the caller to snapshot again.
 - Scroll accepts only `up` or `down` and a bounded amount from one through ten. The fixed internal wheel delta is not part of the model-facing schema.
 
 ### Action resolution
 
-The CHAT-tier resolver sees the user's task, up to eight prior action observations, and the current bounded snapshot. Snapshot content is marked untrusted. It must select one item from the fixed action contract and classify the action as `read_only`, `ordinary`, `consequential`, or `secret`.
+The CHAT-tier resolver sees the user's task, up to eight compact prior action records, and the current bounded snapshot. A history record contains only the action kind, bounded arguments, and a short outcome of at most 300 characters. It never contains a prior snapshot. The resolver payload further limits page text and accessibility tree to 3,000 characters each and ranks at most 32 named controls by overlap with the task while retaining document order among the selected controls. Snapshot content is marked untrusted. The resolver must select one item from the fixed action contract and classify the action as `read_only`, `ordinary`, `consequential`, or `secret`.
 
-Resolver output receives a second deterministic validation pass. Unknown action kinds, unexpected argument shapes, selectors, coordinates, scripts, JavaScript, and command fields are rejected. Malformed or empty model output fails closed for this tool call.
+Resolver output receives a second deterministic validation pass. Unknown action kinds, unexpected argument shapes, selectors, coordinates, scripts, JavaScript, and command fields are rejected. Malformed, empty, or contract-invalid output triggers one repair call with the same bounded observation and an explicit JSON-only correction. A second invalid output fails closed for the tool call. The repair and final failure are written to `debug_log`.
 
 ### Security
 
@@ -67,6 +67,6 @@ The gate action name is `browserInteract.<action>`. The arguments remain structu
 
 ### Testing
 
-`tests/tools/builtin/test_browser_interact.py` mocks the Playwright boundary and checks all eight adapter methods, headed isolated startup, URL-scheme refusal, snapshot generations, stale refs, exact clicks and fills, scrolling, reading, back, close, per-action confirmation, secret refusal, and the action cap. The tests never require a real browser.
+`tests/tools/builtin/test_browser_interact.py` mocks the Playwright boundary and checks all eight adapter methods, headed isolated startup, URL-scheme refusal, snapshot generations, stale refs, exact clicks and fills, scrolling, reading, back, close, compact action history, per-action confirmation, secret refusal, and the action cap. `tests/tools/builtin/test_interaction_resolver.py` uses a DuckDuckGo-scale fixture with 200 controls and large text and tree fields to enforce an 18,000-character resolver payload ceiling and the one-shot JSON repair. The tests never require a real browser.
 
 A manual test still needs Felix at the machine: enable computer interaction and ask Jarvis to open YouTube and play the second result. Verify that a visible isolated Chromium window opens, ordinary in-domain navigation works, and consequential or cross-domain actions show concrete confirmations.

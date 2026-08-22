@@ -11,7 +11,11 @@ from ...debug import debug_log
 from ...security.gate import SecurityGate
 from ..base import Tool, ToolContext
 from ..types import ToolErrorCode, ToolExecutionResult
-from .interaction_resolver import VALID_RISKS, resolve_semantic_action
+from .interaction_resolver import (
+    VALID_RISKS,
+    compact_action_history_entry,
+    resolve_semantic_action,
+)
 
 
 BROWSER_ACTIONS = frozenset({
@@ -29,7 +33,10 @@ _ACTIONABLE_SELECTOR = (
     "[role='textbox'], [role='checkbox'], [role='radio'], [role='combobox'], "
     "[role='tab'], [role='menuitem'], [role='option']"
 )
-_MAX_CONTROLS = 200
+_MAX_CANDIDATES = 200
+_MAX_CONTROLS = 40
+_MAX_PAGE_TEXT_CHARS = 6_000
+_MAX_TREE_CHARS = 6_000
 _SCROLL_PIXELS_PER_UNIT = 600
 _ACTION_CONTRACT = """
 - browser_open {url: http(s) URL}
@@ -58,6 +65,20 @@ class BrowserUnavailable(BrowserInteractionError):
 
 class InvalidBrowserReference(BrowserInteractionError):
     """A ref is unknown or no longer belongs to the latest snapshot."""
+
+
+def _trim_browser_tree(tree: str) -> str:
+    lines: list[str] = []
+    length = 0
+    for line in tree.splitlines():
+        stripped = line.strip().casefold()
+        if re.fullmatch(r"-\s*(?:group|region|generic|pane)\s*:?", stripped):
+            continue
+        lines.append(line)
+        length += len(line) + 1
+        if length >= _MAX_TREE_CHARS:
+            break
+    return "\n".join(lines)[:_MAX_TREE_CHARS]
 
 
 @dataclass
@@ -167,7 +188,7 @@ class BrowserController:
         controls: list[dict[str, Any]] = []
         candidates = page.locator(_ACTIONABLE_SELECTOR)
         try:
-            count = min(int(candidates.count()), _MAX_CONTROLS)
+            count = min(int(candidates.count()), _MAX_CANDIDATES)
         except Exception:
             count = 0
         for index in range(count):
@@ -191,6 +212,12 @@ class BrowserController:
                 or attributes.get("type")
                 or "control"
             ).strip()[:300]
+            has_accessible_name = bool(
+                attributes.get("aria-label")
+                or attributes.get("placeholder")
+                or attributes.get("title")
+                or inner
+            )
             role = str(attributes.get("role") or attributes.get("type") or "control")[:80]
             raw_href = attributes.get("href")
             href = urljoin(str(page.url), str(raw_href)) if raw_href else None
@@ -216,11 +243,20 @@ class BrowserController:
                 "role": role,
                 "href": href,
                 "sensitive": sensitive,
+                "_quality": 1 if has_accessible_name else 0,
+                "_index": index,
             })
+        controls = sorted(controls, key=lambda item: (-item["_quality"], item["_index"]))[:_MAX_CONTROLS]
+        controls.sort(key=lambda item: item["_index"])
+        for control in controls:
+            control.pop("_quality", None)
+            control.pop("_index", None)
+        visible_refs = {control["ref"] for control in controls}
+        self._refs = {ref: record for ref, record in self._refs.items() if ref in visible_refs}
         snapshot = {
             "url": str(page.url),
-            "accessibility_tree": tree[:30_000],
-            "text": text[:30_000],
+            "accessibility_tree": _trim_browser_tree(tree),
+            "text": text[:_MAX_PAGE_TEXT_CHARS],
             "controls": controls,
         }
         debug_log(
@@ -308,6 +344,7 @@ def resolve_browser_action(cfg, task: str, observation: Any, history: list[dict[
         observation=observation,
         history=history,
         action_contract=_ACTION_CONTRACT,
+        action_validator=_browser_action,
     )
 
 
@@ -516,7 +553,7 @@ class BrowserInteractTool(Tool):
                     "The browser action could not be completed.",
                     technical_details=f"{type(exc).__name__}: {exc}",
                 )
-            history.append({"kind": kind, "args": action_args, "observation": observation})
+            history.append(compact_action_history_entry(kind, action_args, result))
 
         debug_log(f"browserInteract hit action cap={self._max_actions}", "security")
         return ToolExecutionResult.failure(
