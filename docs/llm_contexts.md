@@ -313,6 +313,8 @@ user input
                                                            ├─▶ [11] best-child (FAST)
                                                            ├─▶ [11b] node merge (PRIVATE)
                                                            └─▶ [11c] auto-split (PRIVATE)
+ambient transcript (passive switch on)
+  └─▶ [17] Ambient digest → [9] daily summary update → [10] graph extract → [11] best-child
 ```
 
 ## Optimisation ideas (seed list)
@@ -324,8 +326,6 @@ user input
 5. Give each digest its own timeout budget rather than sharing `llm_digest_timeout_sec` (today a slow memory digest can starve the max-turn digest).
 6. Consider single-model deployments: the FAST tier prefers a small dedicated model while the planner tracks `llm_chat_model`; loading a second model hurts cold-start latency on small hardware. (On an OpenAI-compatible chat provider an unset `fast_model` already resolves to the chat model, so every context rides the one served model.)
 7. Narrow `llm_thinking_enabled` to router/planner only, not every context.
-ambient transcript (passive switch on)
-  └─▶ [16] Ambient digest → [9] daily summary update → [10] graph extract → [11] best-child
 8. Keep contextual intent judging off the deterministic edge-wake path.
 
 ## 21. Model and reply-prefix warm-up

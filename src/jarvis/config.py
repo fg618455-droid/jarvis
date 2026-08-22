@@ -240,6 +240,12 @@ class Settings:
     memory_enrichment_max_results: int
     memory_enrichment_source: str  # "all", "diary", or "graph"
     remio_memory_enabled: bool
+    obsidian_vault_path: str | None
+    obsidian_memory_folder: str | None
+    obsidian_write_mode: str
+    obsidian_read_enabled: bool
+    obsidian_read_max_results: int
+    obsidian_index_max_file_kb: int
     # Tool-call + tool-result messages from prior replies in the hot window
     # are re-injected into the next turn so follow-ups can reuse them instead
     # of re-fetching. These knobs cap how many prior tool turns survive and
@@ -259,12 +265,6 @@ class Settings:
     # on the raw payload reliably. Set explicitly to force on/off.
     tool_result_digest_enabled: Optional[bool]
 
-    # Agentic Loop
-    agentic_max_turns: int
-    tool_selection_strategy: str  # "all", "keyword", "embedding", or "llm"
-    # None = auto (on for SMALL models, off for LARGE). Explicit true/false forces.
-    evaluator_enabled: Optional[bool]
-    # Upper bound on toolSearchTool invocations per reply turn. The cap
     # Passive capture keeps text already produced by speech recognition.
     passive_capture_enabled: bool
     passive_capture_retention_days: int
@@ -272,6 +272,12 @@ class Settings:
     passive_digest_interval_min: float
     passive_digest_max_lines: int
 
+    # Agentic Loop
+    agentic_max_turns: int
+    tool_selection_strategy: str  # "all", "keyword", "embedding", or "llm"
+    # None = auto (on for SMALL models, off for LARGE). Explicit true/false forces.
+    evaluator_enabled: Optional[bool]
+    # Upper bound on toolSearchTool invocations per reply turn. The cap
     # prevents a small model from churning through the escape hatch forever
     # when no tool really fits.
     tool_search_max_calls: int
@@ -874,6 +880,12 @@ def get_default_config() -> Dict[str, Any]:
         "memory_enrichment_max_results": 3,
         "memory_enrichment_source": "all",  # "all", "diary", or "graph"
         "remio_memory_enabled": True,
+        "obsidian_vault_path": None,
+        "obsidian_memory_folder": "Jarvis",
+        "obsidian_write_mode": "dry_run",
+        "obsidian_read_enabled": True,
+        "obsidian_read_max_results": 3,
+        "obsidian_index_max_file_kb": 512,
         # Tool carryover: cap re-injected prior tool turns + chars per entry.
         "tool_carryover_max_turns": 2,
         "tool_carryover_per_entry_chars": 1200,
@@ -885,6 +897,13 @@ def get_default_config() -> Dict[str, Any]:
         # Auto-on for small models mitigates fetch_web_page's 50k-char payloads
         # blowing the 8192 num_ctx window before the main model sees them.
         "tool_result_digest_enabled": None,
+
+        # Passive Capture
+        "passive_capture_enabled": False,
+        "passive_capture_retention_days": 30,
+        "passive_capture_min_words": 3,
+        "passive_digest_interval_min": 15.0,
+        "passive_digest_max_lines": 120,
 
         # Agentic Loop
         "agentic_max_turns": 8,
@@ -905,13 +924,6 @@ def get_default_config() -> Dict[str, Any]:
         "location_cache_minutes": 60,
         "location_ip_address": None,
         "location_auto_detect": True,
-        # Passive Capture
-        "passive_capture_enabled": False,
-        "passive_capture_retention_days": 30,
-        "passive_capture_min_words": 3,
-        "passive_digest_interval_min": 15.0,
-        "passive_digest_max_lines": 120,
-
         # When behind CGNAT (100.64.0.0/10), attempt a privacy-light external DNS query to discover true public IP.
         # Uses a single OpenDNS resolver lookup of myip.opendns.com over DNS (no HTTP services). Disable to avoid any external request.
         "location_cgnat_resolve_public_ip": True,
@@ -1172,6 +1184,46 @@ def load_settings() -> Settings:
     if memory_enrichment_source not in ("all", "diary", "graph"):
         memory_enrichment_source = "all"
     remio_memory_enabled = bool(merged.get("remio_memory_enabled", True))
+    obsidian_vault_path = _expand_path(merged.get("obsidian_vault_path"))
+    if obsidian_vault_path:
+        candidate_vault = Path(obsidian_vault_path)
+        if not candidate_vault.is_absolute() or not candidate_vault.is_dir():
+            print(
+                f"  ⚠️ Obsidian vault disabled: path is not an existing directory ({obsidian_vault_path})",
+                flush=True,
+            )
+            obsidian_vault_path = None
+        else:
+            try:
+                obsidian_vault_path = str(candidate_vault.resolve(strict=True))
+            except OSError:
+                print("  ⚠️ Obsidian vault disabled: path is unreadable", flush=True)
+                obsidian_vault_path = None
+
+    raw_memory_folder = str(merged.get("obsidian_memory_folder", "Jarvis") or "").strip()
+    folder_path = Path(raw_memory_folder.replace("\\", "/")) if raw_memory_folder else Path()
+    invalid_memory_folder = (
+        not raw_memory_folder
+        or folder_path.is_absolute()
+        or ".." in folder_path.parts
+        or not folder_path.parts
+        or str(folder_path) == "."
+    )
+    if invalid_memory_folder:
+        print("  ⚠️ Obsidian mirror disabled: managed folder is unsafe", flush=True)
+        obsidian_memory_folder = None
+    else:
+        obsidian_memory_folder = str(folder_path)
+
+    obsidian_write_mode = str(merged.get("obsidian_write_mode", "dry_run")).strip().casefold()
+    if obsidian_write_mode not in {"off", "dry_run", "on"}:
+        print("  ⚠️ Obsidian mirror uses dry_run: write mode is invalid", flush=True)
+        obsidian_write_mode = "dry_run"
+    if obsidian_memory_folder is None:
+        obsidian_write_mode = "off"
+    obsidian_read_enabled = bool(merged.get("obsidian_read_enabled", True))
+    obsidian_read_max_results = max(1, int(merged.get("obsidian_read_max_results", 3)))
+    obsidian_index_max_file_kb = max(1, int(merged.get("obsidian_index_max_file_kb", 512)))
     tool_carryover_max_turns = max(0, int(merged.get("tool_carryover_max_turns", 2)))
     tool_carryover_per_entry_chars = max(200, int(merged.get("tool_carryover_per_entry_chars", 1200)))
     _digest_raw = merged.get("memory_digest_enabled", None)
@@ -1186,6 +1238,19 @@ def load_settings() -> Settings:
         tool_result_digest_enabled = None
     else:
         tool_result_digest_enabled = bool(_tool_digest_raw)
+    passive_capture_enabled = bool(merged.get("passive_capture_enabled", False))
+    passive_capture_retention_days = max(
+        0, int(merged.get("passive_capture_retention_days", 30))
+    )
+    passive_capture_min_words = max(
+        0, int(merged.get("passive_capture_min_words", 3))
+    )
+    passive_digest_interval_min = max(
+        0.01, float(merged.get("passive_digest_interval_min", 15.0))
+    )
+    passive_digest_max_lines = max(
+        1, int(merged.get("passive_digest_max_lines", 120))
+    )
     agentic_max_turns = int(merged.get("agentic_max_turns", 8))
     tool_selection_strategy = str(merged.get("tool_selection_strategy", "llm")).lower()
     if tool_selection_strategy not in ("all", "keyword", "embedding", "llm"):
@@ -1272,19 +1337,6 @@ def load_settings() -> Settings:
     )
     # The settings window is the primary way to configure these, so a
     # configured value wins over an environment token that may belong to an
-    passive_capture_enabled = bool(merged.get("passive_capture_enabled", False))
-    passive_capture_retention_days = max(
-        0, int(merged.get("passive_capture_retention_days", 30))
-    )
-    passive_capture_min_words = max(
-        0, int(merged.get("passive_capture_min_words", 3))
-    )
-    passive_digest_interval_min = max(
-        0.01, float(merged.get("passive_digest_interval_min", 15.0))
-    )
-    passive_digest_max_lines = max(
-        1, int(merged.get("passive_digest_max_lines", 120))
-    )
     # unrelated project.
     telegram_bot_token = str(
         merged.get("telegram_bot_token", "")
@@ -1458,10 +1510,21 @@ def load_settings() -> Settings:
         memory_enrichment_max_results=memory_enrichment_max_results,
         memory_enrichment_source=memory_enrichment_source,
         remio_memory_enabled=remio_memory_enabled,
+        obsidian_vault_path=obsidian_vault_path,
+        obsidian_memory_folder=obsidian_memory_folder,
+        obsidian_write_mode=obsidian_write_mode,
+        obsidian_read_enabled=obsidian_read_enabled,
+        obsidian_read_max_results=obsidian_read_max_results,
+        obsidian_index_max_file_kb=obsidian_index_max_file_kb,
         tool_carryover_max_turns=tool_carryover_max_turns,
         tool_carryover_per_entry_chars=tool_carryover_per_entry_chars,
         memory_digest_enabled=memory_digest_enabled,
         tool_result_digest_enabled=tool_result_digest_enabled,
+        passive_capture_enabled=passive_capture_enabled,
+        passive_capture_retention_days=passive_capture_retention_days,
+        passive_capture_min_words=passive_capture_min_words,
+        passive_digest_interval_min=passive_digest_interval_min,
+        passive_digest_max_lines=passive_digest_max_lines,
         agentic_max_turns=agentic_max_turns,
         tool_selection_strategy=tool_selection_strategy,
         evaluator_enabled=evaluator_enabled,
@@ -1494,11 +1557,4 @@ def load_settings() -> Settings:
 
         # MCP Integration
         mcps=mcps,
-
-        # Passive Capture
-        passive_capture_enabled=passive_capture_enabled,
-        passive_capture_retention_days=passive_capture_retention_days,
-        passive_capture_min_words=passive_capture_min_words,
-        passive_digest_interval_min=passive_digest_interval_min,
-        passive_digest_max_lines=passive_digest_max_lines,
     )

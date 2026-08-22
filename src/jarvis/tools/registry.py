@@ -13,6 +13,7 @@ import os
 from .builtin.screenshot import ScreenshotTool
 from .builtin.web_search import WebSearchTool
 from .builtin.local_files import LocalFilesTool
+from .builtin.vault_search import VaultSearchTool
 from .builtin.fetch_web_page import FetchWebPageTool
 from .builtin.nutrition.log_meal import LogMealTool
 from .builtin.nutrition.fetch_meals import FetchMealsTool
@@ -49,6 +50,14 @@ BUILTIN_TOOLS = {
     "toolSearchTool": ToolSearchTool(),
     "askCrew": AskCrewTool(),
 }
+
+
+def configure_vault_search_tool(cfg) -> None:
+    """Expose vaultSearch only while a valid vault is configured."""
+    if getattr(cfg, "obsidian_vault_path", None):
+        BUILTIN_TOOLS["vaultSearch"] = VaultSearchTool()
+    else:
+        BUILTIN_TOOLS.pop("vaultSearch", None)
 
 # Global MCP tools cache
 _mcp_tools_cache: Dict[str, "ToolSpec"] = {}

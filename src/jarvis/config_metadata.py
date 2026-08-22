@@ -361,6 +361,24 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("remio_memory_enabled", "Remio Memory",
       "Search the local Remio knowledge base during planner-directed memory retrieval",
       "memory", "bool")
+    f("obsidian_vault_path", "Obsidian Vault Path",
+      "Absolute path to your Obsidian vault. Empty disables both reading and writing to it",
+      "memory", "str", nullable=True)
+    f("obsidian_memory_folder", "Obsidian Memory Folder",
+      "Vault-relative folder Jarvis mirrors its knowledge graph into; the only path it may write to",
+      "memory", "str")
+    f("obsidian_write_mode", "Obsidian Write Mode",
+      "off never writes, dry_run computes and logs the plan without writing, on applies it",
+      "memory", "choice", choices=[("off", "Off"), ("dry_run", "Dry run (plan only)"), ("on", "On")])
+    f("obsidian_read_enabled", "Obsidian Reading",
+      "Index the vault as a third memory-enrichment source alongside diary and graph",
+      "memory", "bool")
+    f("obsidian_read_max_results", "Obsidian Results",
+      "Vault snippets injected per enrichment pass",
+      "memory", "int", min_val=1, max_val=20)
+    f("obsidian_index_max_file_kb", "Obsidian File Size Limit",
+      "Files larger than this are skipped by the vault indexer",
+      "memory", "int", min_val=16, max_val=8192, step=16, suffix="KB")
     f("tool_carryover_max_turns", "Tool Carryover Turns",
       "How many prior replies' tool results to keep visible for follow-up questions",
       "memory", "int", min_val=0, max_val=10)

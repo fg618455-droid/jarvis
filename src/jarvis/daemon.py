@@ -31,7 +31,7 @@ from .config import load_settings
 from .memory.db import Database
 from .memory.conversation import DialogueMemory, update_diary_from_dialogue_memory
 from .output.tts import create_tts_engine
-from .tools.registry import initialize_mcp_tools
+from .tools.registry import configure_vault_search_tool, initialize_mcp_tools
 from .debug import debug_log
 from .listening.listener import VoiceListener
 from .utils.location import get_location_context, is_location_available
@@ -804,6 +804,7 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
     _install_signal_handlers()
 
     cfg = load_settings()
+    configure_vault_search_tool(cfg)
     db = Database(cfg.db_path, cfg.sqlite_vss_path)
     # Expose cfg + db so the text-chat submission path shares the same store
     # and config as the voice listener (one conversation, one config).
@@ -838,7 +839,6 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
     )
     get_recorder().use_journal(Path(cfg.db_path).parent / "turns.jsonl")
 
-    # Control centre: started early so the interface is already reachable
     # Passive retention is enforced even while capture is switched off, so an
     # old record is not stranded. Both jobs stay off the startup and audio
     # threads. The digest worker exists only while the live switch is on.
@@ -877,6 +877,7 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
 
     register_passive_switch_listener(_set_ambient_worker)
 
+    # Control centre: started early so the interface is already reachable
     # while Whisper and the models are still loading.
     from .webui import start_from_settings as _start_webui
 
@@ -976,6 +977,10 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
             "memory",
         )
 
+    vault_worker = None
+    vault_store = None
+    vault_graph_listener = None
+
     # Knowledge graph: wipe + re-seed if the on-disk shape predates the
     # User/Directives/World taxonomy. Non-destructive to the diary —
     # users can re-import from the control centre's Memory view.
@@ -988,6 +993,56 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
         _graph_store_boot.close()
     except Exception as e:
         debug_log(f"graph legacy-shape migration failed (non-fatal): {e}", "memory")
+
+    # The vault is a projection, so start-up, planning, and listener failures
+    # stay isolated from graph writes and daemon availability.
+    if (
+        getattr(cfg, "obsidian_vault_path", None)
+        and getattr(cfg, "obsidian_memory_folder", None)
+        and getattr(cfg, "obsidian_write_mode", "off") != "off"
+    ):
+        try:
+            from .memory.graph import GraphMemoryStore, register_graph_mutation_listener
+            from .memory.vault.mirror import VaultMirrorWorker
+
+            vault_store = GraphMemoryStore(cfg.db_path)
+            vault_worker = VaultMirrorWorker(vault_store, cfg)
+            vault_graph_listener = vault_worker.notify_mutation
+            register_graph_mutation_listener(vault_graph_listener)
+            vault_worker.start()
+            print("  🗂️ Obsidian vault mirror ready", flush=True)
+        except Exception as exc:
+            debug_log(f"vault mirror start failed (non-fatal): {exc}", "vault")
+            if vault_store is not None:
+                try:
+                    vault_store.close()
+                except Exception:
+                    pass
+            vault_worker = None
+            vault_store = None
+            vault_graph_listener = None
+
+    def _stop_vault_mirror() -> None:
+        nonlocal vault_worker, vault_store, vault_graph_listener
+        if vault_graph_listener is not None:
+            try:
+                from .memory.graph import unregister_graph_mutation_listener
+                unregister_graph_mutation_listener(vault_graph_listener)
+            except Exception as exc:
+                debug_log(f"vault listener cleanup failed: {exc}", "vault")
+            vault_graph_listener = None
+        if vault_worker is not None:
+            try:
+                vault_worker.stop()
+            except Exception as exc:
+                debug_log(f"vault worker cleanup failed: {exc}", "vault")
+            vault_worker = None
+        if vault_store is not None:
+            try:
+                vault_store.close()
+            except Exception as exc:
+                debug_log(f"vault store cleanup failed: {exc}", "vault")
+            vault_store = None
 
     # Check location detection status
     if cfg.location_enabled:
@@ -1171,6 +1226,7 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
         except Exception:
             pass
 
+        _stop_vault_mirror()
         db.close()
 
         if _warm_profile_graph_listener is not None:
@@ -1357,6 +1413,7 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
         except Exception as _e:
             debug_log(f"MCP runtime shutdown error: {_e}", "jarvis")
 
+        _stop_vault_mirror()
         db.close()
 
         # Drop the warm-profile graph listener so the module registry does

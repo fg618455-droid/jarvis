@@ -1415,6 +1415,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # marginally-relevant diary / graph text.
     raw_diary_entries: list[str] = []
     raw_graph_parts: list[str] = []
+    raw_vault_parts: list[str] = []
     keywords = []
 
     questions: list[str] = []
@@ -1667,9 +1668,34 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             except Exception as e:
                 debug_log(f"graph enrichment failed: {e}", "memory")
 
+    # Step 4c: Local vault enrichment. Extractor keywords are already the
+    # topic-shaped input this index needs; the index owns the read gate and
+    # the two-content-word noise floor.
+    vault_context = ""
+    try:
+        from ..memory.vault.index import (
+            format_hits_for_prompt,
+            search_vault_for_enrichment,
+        )
+
+        vault_hits = search_vault_for_enrichment(cfg, keywords)
+        if vault_hits:
+            raw_vault_parts = [
+                f"[{hit.path}] {hit.title}\n{hit.snippet}" for hit in vault_hits
+            ]
+            vault_context = format_hits_for_prompt(vault_hits)
+            print(f"  📚 Notes: recalled {len(vault_hits)} files", flush=True)
+            for hit in vault_hits[:3]:
+                preview = hit.snippet.strip().replace("\n", " ")
+                preview = preview[:80] + ("…" if len(preview) > 80 else "")
+                print(f"     · {hit.path}: {preview}", flush=True)
+            debug_log(f"vault enrichment: {len(vault_hits)} results", "vault")
+    except Exception as e:
+        debug_log(f"vault enrichment failed: {e}", "vault")
+
     telemetry_mark("recall", (_perf_counter() - _recall_begun) * 1000.0)
 
-    # Step 4c: Memory digest for small models.
+    # Step 4d: Memory digest for small models.
     #
     # Small models (~2B) degrade sharply as the system prompt grows, and the
     # combined diary + graph payload can easily add 2-3 KB of marginally-
@@ -1688,7 +1714,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     else:
         digest_enabled = bool(digest_cfg)
 
-    if digest_enabled and (raw_diary_entries or raw_graph_parts):
+    if digest_enabled and (raw_diary_entries or raw_graph_parts or raw_vault_parts):
         try:
             _memory_digest_timeout_sec = float(
                 getattr(cfg, 'llm_digest_timeout_sec', 8.0)
@@ -1702,7 +1728,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             digest = digest_memory_for_query(
                 query=redacted,
                 diary_entries=raw_diary_entries,
-                graph_parts=raw_graph_parts,
+                graph_parts=raw_graph_parts + raw_vault_parts,
                 cfg=cfg,
                 chat_model=resolve_model(cfg, Tier.FAST),
                 timeout_sec=_memory_digest_timeout_sec,
@@ -1722,6 +1748,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             # for small models, regardless of whether any relevance survived.
             conversation_context = ""
             graph_context = ""
+            vault_context = ""
         except Exception as e:
             debug_log(f"memory digest step failed (non-fatal): {e}", "memory")
 
@@ -1874,6 +1901,9 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
 
         if graph_context:
             guidance.append("\n" + graph_context)
+
+        if vault_context:
+            guidance.append("\n" + vault_context)
 
         if memory_digest_text:
             # Distilled, relevance-filtered note used in place of raw

@@ -66,6 +66,8 @@ _CALLER_TO_CONTEXT: dict[str, str] = {
     "select_tools_with_llm": "tool_router",
     # Context 10 — conversation summariser
     "generate_conversation_summary": "summariser",
+    # Context 16 — ambient transcript digest
+    "generate_ambient_digest": "ambient_digest",
     # Context 11 — graph fact extraction
     "extract_graph_memories": "graph_extract",
     # Context 12 — graph best-child picker
