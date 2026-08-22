@@ -31,7 +31,7 @@ The automatic path lives in `reply/engine.py`. It bypasses the model's tool-choi
 
 ### Configuration
 
-- `crew_handoff_enabled`: off by default. The automatic deadline shares askCrew's confirmation requirement (see Security below), and that wait is not bounded to the deadline, so turning this on before a fast or unattended confirmation path exists means an escalation can sit at the full `security_confirmation_timeout_sec` before falling through to a refusal instead of an answer — worse than letting the local reply keep running. The explicit, model-chosen trigger is unaffected by this flag.
+- `crew_handoff_enabled`: off by default. The automatic deadline shares askCrew's confirmation requirement (see Security below), and that wait is not bounded to the deadline, so turning this on before a fast or unattended confirmation path exists means an escalation can sit at the full `security_confirmation_timeout_sec` before falling through to a refusal instead of an answer — worse than letting the local reply keep running. With the flag off, the local route runs to its ordinary caller and route timeouts; disabled external route entries do not impose a four-second local cap. The explicit, model-chosen trigger is unaffected by this flag.
 - `crew_telegram_chat_id`: the Mission Control group's chat ID. Empty disables the tool (`invalid_config`).
 - Reuses the bot already configured under `telegram_bot_token` / `telegram_api_base_url` (Security → Telegram) — that bot must also be a member of the Mission Control group, and Hermes' own `TELEGRAM_ALLOWED_USERS` allowlist must include it, or Hermes will silently ignore the message. Both are one-time setup steps outside this codebase.
 

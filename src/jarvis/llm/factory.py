@@ -122,11 +122,11 @@ def get_llm_backend(settings: Any) -> LLMBackend:
         local_defaults = {
             Tier.FAST: Route(
                 "local-fast", _OLLAMA, private_ollama_url, "", fast_model,
-                Tier.FAST, 4.0,
+                Tier.FAST, 60.0,
             ),
             Tier.CHAT: Route(
                 "local-chat", _OLLAMA, private_ollama_url, "", ollama_chat,
-                Tier.CHAT, 4.0,
+                Tier.CHAT, 180.0,
             ),
         }
         for tier in (Tier.FAST, Tier.CHAT):
