@@ -253,9 +253,13 @@ a:hover {
 
 /* ── Main ────────────────────────────────────────────────────────────── */
 
+/* The header's height is padding rather than a top margin. As body's first
+   in-flow child (the header and sidebar are both fixed) a top margin here
+   collapses out through html and adds its own height to the page, so every
+   view scrolled by the height of the header with nothing under it. */
 .main {
-  margin: var(--header) 0 0 var(--sidebar);
-  padding: var(--s5);
+  margin-left: var(--sidebar);
+  padding: calc(var(--header) + var(--main-pad)) var(--main-pad) var(--main-pad);
 }
 
 .view {
@@ -666,6 +670,7 @@ input[type="checkbox"] {
 @media (max-width: 760px) {
   :root {
     --sidebar: 60px;
+    --main-pad: var(--s3);
   }
 
   .nav-item span.text,

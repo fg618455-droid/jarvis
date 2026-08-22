@@ -35,6 +35,17 @@ export function clear(node) {
   return node;
 }
 
+/* Whether a reader has asked for motion.
+ *
+ * `tokens.css` switches off every CSS animation and transition for a reader
+ * who has not, but a graphic driven from JavaScript is neither: a bar whose
+ * width is assigned on a timer keeps moving through that rule. Anything
+ * painted that way has to ask, and must never be the only thing saying what
+ * it says. */
+export function motionAllowed() {
+  return !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
 export function card(title, body, aside) {
   const header = title
     ? el("header", {}, [el("h2", { text: title }), aside && el("span", { class: "aside" }, [aside])])
@@ -241,7 +252,7 @@ export const ICONS = {
   overview: "M4 13h6V4H4v9Zm0 7h6v-5H4v5Zm10 0h6v-9h-6v9Zm0-16v5h6V4h-6Z",
   memory: "M12 3v18M12 7h4a3 3 0 0 1 0 6h-4M12 12H8a3 3 0 0 0 0 6h4",
   conversation: "M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 12Z",
-  passive: "M12 3a3 3 0 0 1 3 3v5a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3ZM5 11a7 7 0 0 0 14 0M12 18v3",
+  microphone: "M12 3a3 3 0 0 1 3 3v5a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3ZM5 11a7 7 0 0 0 14 0M12 18v3",
   tools: "M14.7 6.3a4 4 0 0 0 5 5l-9.9 9.9a2.1 2.1 0 0 1-3-3l9.9-9.9Z",
   security: "M12 3 4 6v6c0 5 3.4 8.4 8 9 4.6-.6 8-4 8-9V6l-8-3Z",
   system: "M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3M6 6h12v12H6z",

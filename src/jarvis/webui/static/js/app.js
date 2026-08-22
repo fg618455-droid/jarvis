@@ -16,7 +16,7 @@ const NAV_GROUPS = [
     views: [
       { name: "overview", icon: ICONS.overview },
       { name: "conversation", icon: ICONS.conversation },
-      { name: "passive", icon: ICONS.passive },
+      { name: "passive", icon: ICONS.microphone },
       { name: "crew", icon: ICONS.crew },
     ],
   },

@@ -204,17 +204,70 @@ contains events emitted through `jarvis.debug.debug_log`, including listening,
 model, and route diagnostics, while the desktop face remains the everyday
 voice interaction surface.
 
-## Conversation mode
+## Conversation view
 
-The Conversation view carries the switch that holds the follow-up window
-open, so no question needs the wake word, and the header carries an
-indicator beside the phase on every view: an open microphone is a state
-worth seeing from wherever the page happens to be. Both follow the
-`conversation` event rather than the last thing the page clicked, because
-the mode also ends on its own when the user asks Jarvis to stop.
+Three bands, and the exchange is the one the view is for.
 
-Standalone there is no voice loop, so the switch reaches nothing and the
-card says so instead of showing a mode that is not running anywhere.
+| Band | Holds |
+|---|---|
+| Live | This browser's microphone, what Jarvis is doing, and the conversation-mode switch. Under them, the utterances thrown away, and only when there are any |
+| Exchange | Every turn as a dialogue on one speaker column, grouped by day, oldest first, with what each turn cost folded away behind a disclosure |
+| Composer | Typing a turn, and whether to say the answer aloud |
+
+The view fills the window rather than growing past it, so the exchange is
+the only thing on the page that scrolls and the composer stays where it is.
+
+### Two live facts, never merged
+
+The band reports the microphone and the phase side by side because they are
+true at different scopes. The phase is the daemon's own and would be true
+with this page closed. The microphone is this browser's, and is true only
+here. A view that ran them together would report that the assistant is
+listening when nothing had opened a microphone at all.
+
+### What "live" means here
+
+- **Phase.** The `phase` event, with the same dot the header uses. The
+  view reads `/api/status` on mount as well, so it is correct from the
+  moment it appears rather than from the next change, which on an idle
+  assistant may never come.
+- **Stage.** The `stage` event names which part of the turn the wait is
+  in. The phase cannot: "running a tool" is true of every tool there is.
+- **The wait.** How long the current phase has been running, counted while
+  a turn is in flight and held still at idle, where it shows the last wait
+  that finished instead.
+- **Arrival.** A turn whose id was not in the previous reading is marked
+  once, for as long as the glow lasts, and never again. A first load marks
+  nothing.
+- **Level.** While the microphone is open, the loudest sample in the frames
+  already going to the daemon. It opens no second capture, keeps no audio,
+  and changes neither what is sent nor when.
+
+The exchange scrolls to the newest turn on arrival only if the reader was
+already there. Someone reading back through the history is not dragged to
+the bottom because a turn finished elsewhere.
+
+### Motion that the stylesheet cannot reach
+
+`tokens.css` switches off every CSS animation and transition for a reader
+who asked for less motion, but a graphic painted from JavaScript is
+neither: a bar whose height is assigned on a timer keeps moving through
+that rule. `motionAllowed()` in `ui.js` is what anything painted that way
+asks, and the level meter is not built at all when the answer is no. What
+it shows is written beside it in words either way, so nothing is carried by
+motion alone.
+
+### Conversation mode
+
+The band carries the switch that holds the follow-up window open, so no
+question needs the wake word, and the header carries an indicator beside
+the phase on every view: an open microphone is a state worth seeing from
+wherever the page happens to be. Both follow the `conversation` event
+rather than the last thing the page clicked, because the mode also ends on
+its own when the user asks Jarvis to stop.
+
+Standalone there is no voice loop, so the switch reaches nothing and says
+so instead of showing a mode that is not running anywhere.
 
 ## Passive record
 

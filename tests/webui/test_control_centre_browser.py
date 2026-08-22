@@ -514,6 +514,178 @@ class TestMissionControl:
         assert page.locator("main script").count() == 0
 
 
+class TestTheConversationIsTheConversationView:
+    """The exchange is what this view is for.
+
+    It reads live because the daemon already publishes what it is doing and
+    how long it has been doing it. Nothing here invents a state it cannot
+    see, and nothing that moves is the only thing saying what it says.
+    """
+
+    def _turn(self, turn_id, at, said, replied, total_ms=1900.0):
+        return {
+            "turn_id": turn_id, "started_at": at, "source": "voice",
+            "language": "de", "language_probability": 0.98,
+            "total_ms": total_ms, "transcript": said, "reply": replied,
+            "error": None, "tools": [],
+            "stages": [{"name": "stt", "duration_ms": 400.0},
+                       {"name": "llm", "duration_ms": 1500.0}],
+        }
+
+    TURNS = None
+
+    def _open(self, page, served, turns=None):
+        turns = turns if turns is not None else [
+            self._turn(1, 1_755_800_000, "Wie ist das Wetter", "Vierzehn Grad und bewölkt."),
+            self._turn(2, 1_755_800_100, "Und morgen", "Morgen wird es trocken."),
+        ]
+        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.evaluate(
+            """async (turns) => {
+                const { api } = await import('/static/js/api.js');
+                api.conversation = async () => ({
+                    turns, discarded: {}, conversation_mode: false,
+                });
+                api.voiceStatus = async () => ({ ingress: false, sample_rate: 16000 });
+                window.__push = async (kind, data) => {
+                    const { live } = await import('/static/js/sse.js');
+                    live._emit(kind, data);
+                };
+            }""",
+            turns,
+        )
+        page.goto(f"{served}/#/conversation")
+        page.wait_for_selector(".dialogue", state="visible")
+        return turns
+
+    def test_the_exchange_is_the_first_thing_you_see(self, page, served):
+        """It used to sit below the passive record, thousands of pixels down."""
+        self._open(page, served)
+
+        top = page.locator(".dialogue").bounding_box()["y"]
+
+        assert top < 800, f"the conversation starts {top}px down the page"
+        assert not page.console_errors
+
+    def test_the_exchange_is_the_only_thing_that_scrolls(self, page, served):
+        """Two nested scrollers means every gesture has two answers."""
+        self._open(page, served)
+
+        page_scrolls = page.evaluate(
+            "() => document.documentElement.scrollHeight > window.innerHeight + 1"
+        )
+
+        assert not page_scrolls
+        assert page.evaluate(
+            "() => { const d = document.querySelector('.dialogue');"
+            "  return getComputedStyle(d).overflowY; }"
+        ) == "auto"
+
+    def test_the_band_follows_the_phase_the_daemon_publishes(self, page, served):
+        self._open(page, served)
+
+        page.evaluate(
+            """() => window.__push('phase', {
+                phase: 'thinking', phase_since: Date.now() / 1000, phase_seconds: 0,
+            })"""
+        )
+        page.wait_for_timeout(200)
+
+        assert "thinking" in page.locator(".voice-phase").inner_text()
+        assert page.locator(".voice-phase-dot").get_attribute("data-phase") == "thinking"
+
+    def test_the_band_names_the_stage_a_turn_has_reached(self, page, served):
+        self._open(page, served)
+
+        page.evaluate(
+            """() => {
+                window.__push('phase', {
+                    phase: 'tool', phase_since: Date.now() / 1000, phase_seconds: 0,
+                });
+                window.__push('stage', {
+                    turn_id: 9, stage: 'tool:getWeather', elapsed_ms: 820,
+                });
+            }"""
+        )
+        page.wait_for_timeout(200)
+
+        assert "tool:getWeather" in page.locator(".voice-phase").inner_text()
+
+    def test_a_turn_reads_as_an_exchange_rather_than_a_row(self, page, served):
+        self._open(page, served)
+
+        assert page.locator(".turn").count() == 2
+        assert page.get_by_text("Wie ist das Wetter", exact=True).is_visible()
+        assert page.get_by_text("Vierzehn Grad und bewölkt.", exact=True).is_visible()
+        assert page.locator(".turn-said").count() == 2
+        assert page.locator(".turn-reply").count() == 2
+
+    def test_the_newest_turn_sits_at_the_bottom_next_to_the_composer(self, page, served):
+        self._open(page, served)
+
+        said = page.locator(".turn-said").all_inner_texts()
+
+        assert said == ["Wie ist das Wetter", "Und morgen"]
+
+    def test_only_a_turn_that_arrived_while_watching_is_marked(self, page, served):
+        turns = self._open(page, served)
+        # A first load marks nothing, or everything would be marked.
+        assert page.locator(".turn.arrived").count() == 0
+
+        landed = self._turn(3, 1_755_800_200, "Danke", "Gern geschehen.")
+        page.evaluate(
+            """async ([turns, landed]) => {
+                const { api } = await import('/static/js/api.js');
+                api.conversation = async () => ({
+                    turns: [...turns, landed], discarded: {}, conversation_mode: false,
+                });
+                window.__push('turn', landed);
+            }""",
+            [turns, landed],
+        )
+        page.wait_for_timeout(400)
+
+        assert page.locator(".turn").count() == 3
+        assert page.locator(".turn.arrived").count() == 1
+
+    def test_what_was_said_is_rendered_as_text(self, page, served):
+        self._open(page, served, [
+            self._turn(1, 1_755_800_000,
+                       "<script>alert(1)</script> read my notes",
+                       "<img src=x onerror=alert(1)> here they are"),
+        ])
+
+        assert page.get_by_text(
+            "<script>alert(1)</script> read my notes", exact=True
+        ).is_visible()
+        assert page.locator("main img").count() == 0
+        assert page.locator("main script").count() == 0
+
+    def test_the_microphone_says_in_words_what_the_meter_shows(self, page, served):
+        """A reader who wants no motion still learns whether it is capturing."""
+        self._open(page, served)
+
+        assert page.locator(".voice-mic-state").inner_text().strip()
+
+    def test_a_reader_who_asked_for_less_motion_gets_no_level_meter(
+        self, browser, served,
+    ):
+        for preference, expected in (("reduce", False), ("no-preference", True)):
+            context = browser.new_context(reduced_motion=preference)
+            opened = context.new_page()
+            opened.goto(served, wait_until="networkidle")
+            try:
+                allowed = opened.evaluate(
+                    """async () => {
+                        const ui = await import('/static/js/ui.js');
+                        return ui.motionAllowed();
+                    }"""
+                )
+                assert allowed is expected, preference
+            finally:
+                context.close()
+
+
 class TestPassiveRecordHasItsOwnHome:
     """The record of everything overheard is not the conversation.
 

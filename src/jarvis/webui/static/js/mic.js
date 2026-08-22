@@ -32,14 +32,34 @@ function resample(input, fromRate, toRate) {
   return out;
 }
 
+/* How fast a peak is allowed to fall away. Loud speech is short and gappy,
+   so a meter that followed the raw peak would flicker between syllables and
+   read as noise rather than as a voice. */
+const DECAY = 0.82;
+
 export function createMic({ onState, onError } = {}) {
   let ctx = null;
   let stream = null;
   let node = null;
   let socket = null;
   let running = false;
+  let level = 0;
 
   const setState = (state) => { if (onState) onState(state); };
+
+  /* The loudest sample in a frame, held and decayed.
+   *
+   * This reads the frame the socket is about to send and nothing else. It
+   * opens no second capture, keeps no audio, and changes neither what is
+   * sent nor when: it is a measurement of bytes already in flight. */
+  function measure(pcm) {
+    let peak = 0;
+    for (let i = 0; i < pcm.length; i++) {
+      const sample = pcm[i] < 0 ? -pcm[i] : pcm[i];
+      if (sample > peak) peak = sample;
+    }
+    level = Math.max(peak / 0x8000, level * DECAY);
+  }
 
   async function start() {
     if (running) return;
@@ -81,6 +101,7 @@ export function createMic({ onState, onError } = {}) {
       node.port.onmessage = (event) => {
         if (!socket || socket.readyState !== WebSocket.OPEN) return;
         let buffer = event.data;
+        measure(new Int16Array(buffer));
         if (needsResample) {
           const asFloat = Int16Array.from(new Int16Array(buffer), (v) => v / 0x8000);
           const resampled = resample(asFloat, ctx.sampleRate, SAMPLE_RATE);
@@ -125,6 +146,7 @@ export function createMic({ onState, onError } = {}) {
   async function stop() {
     if (!running) return;
     running = false;
+    level = 0;
     await teardown();
     setState("idle");
   }
@@ -134,5 +156,9 @@ export function createMic({ onState, onError } = {}) {
     stop,
     toggle: () => (running ? stop() : start()),
     get running() { return running; },
+    /* The current input level, 0 to 1. Read on whatever schedule the caller
+       wants to paint on, rather than pushed: a callback per 20 ms frame
+       would repaint fifty times a second for a bar 60 pixels wide. */
+    get level() { return running ? level : 0; },
   };
 }

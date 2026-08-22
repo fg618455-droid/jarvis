@@ -211,16 +211,200 @@
 
 /* ── Conversation ────────────────────────────────────────────────────── */
 
-.turn {
-  display: grid;
-  gap: var(--s3);
-  padding: var(--s4);
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  background: var(--surface);
+/* The live band. Three readings that are true at different scopes: this
+   browser's microphone, the daemon's phase, and whether the follow-up
+   window is being held open. They sit side by side and never merge. */
+.voice {
+  grid-template-columns: minmax(220px, 1fr) minmax(240px, 1.2fr) minmax(220px, 1fr);
+  gap: var(--s5);
+  align-items: start;
 }
 
-.turn-head {
+@media (max-width: 900px) {
+  .voice {
+    grid-template-columns: 1fr;
+    gap: var(--s4);
+  }
+}
+
+.voice-label {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+
+.voice-capture {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--s3);
+}
+
+/* The one control on this page that starts something. It is round and it is
+   the largest thing in the band because opening the microphone is what this
+   view is for. */
+.voice-mic {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--fg-dim);
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+}
+
+.voice-mic:hover {
+  border-color: var(--accent-line);
+  color: var(--fg);
+}
+
+.voice-mic.open {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* The level, from the frames already going to the daemon. It is painted
+   from JavaScript, so it asks about reduced motion itself rather than
+   relying on the stylesheet, and the state it decorates is written beside
+   it in words. */
+.voice-level {
+  display: flex;
+  align-items: flex-end;
+  width: var(--s1);
+  height: 52px;
+  border-radius: 2px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.voice-level > span {
+  width: 100%;
+  height: 0;
+  background: var(--accent);
+  transition: height var(--t-fast);
+}
+
+.voice-capture-read {
+  display: grid;
+  gap: var(--s1);
+  min-width: 0;
+}
+
+.voice-mic-state {
+  font-size: var(--fs-sm);
+  color: var(--fg-mute);
+}
+
+.voice-mic-state.open {
+  color: var(--accent);
+}
+
+.voice-reading {
+  display: grid;
+  gap: var(--s2);
+}
+
+.voice-phase {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s3);
+}
+
+.voice-phase-dot {
+  align-self: center;
+}
+
+.voice-phase-name {
+  font-size: var(--fs-lg);
+}
+
+.voice-stage {
+  font-size: var(--fs-xs);
+  color: var(--fg-mute);
+  overflow-wrap: anywhere;
+}
+
+/* The wait, while it is still being waited. It only counts while a turn is
+   in flight; at rest it holds the last one that finished. */
+.voice-elapsed {
+  margin-left: auto;
+  font-size: var(--fs-lg);
+  color: var(--fg-mute);
+}
+
+.voice-elapsed.running {
+  color: var(--accent);
+}
+
+.voice-mode {
+  display: grid;
+  gap: var(--s2);
+  justify-items: start;
+}
+
+.voice-mode-lead {
+  font-size: var(--fs-micro);
+  color: var(--fg-mute);
+}
+
+.voice-discarded {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--line-soft);
+}
+
+.voice-discarded .aside {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--fg-mute);
+}
+
+/* ── The exchange ────────────────────────────────────────────────────── */
+
+/* The exchange is the only thing on this view that scrolls. A page that
+   scrolls and a transcript inside it that also scrolls means every gesture
+   has two possible answers, and the composer keeps sliding out of reach. */
+.view-conversation {
+  height: calc(100vh - var(--header) - var(--main-pad) * 2);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.dialogue {
+  display: grid;
+  align-content: start;
+  gap: var(--s3);
+  padding: 0 var(--s4) var(--s4);
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.turn {
+  display: grid;
+  gap: var(--s2);
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+}
+
+.turn:last-child {
+  border-bottom: none;
+}
+
+.turn-meta {
   display: flex;
   align-items: baseline;
   gap: var(--s3);
@@ -229,18 +413,67 @@
   color: var(--fg-mute);
 }
 
-.turn-head .when {
-  font-family: var(--mono);
+.turn-total {
+  margin-left: auto;
+}
+
+/* Both halves hang off the same speaker column, so an exchange reads as two
+   turns of one conversation rather than as a field and its value. */
+.turn-line {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr);
+  gap: var(--s3);
+  align-items: baseline;
+}
+
+.turn-line .who {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
 }
 
 .turn-said {
   color: var(--fg);
+  overflow-wrap: anywhere;
 }
 
 .turn-reply {
   color: var(--fg-dim);
-  padding-left: var(--s4);
-  border-left: 2px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.turn-reply.failed {
+  color: var(--bad);
+}
+
+/* What the turn cost is kept, and kept closed. It is the reason this view
+   existed before, and it is not the reason to open it now. */
+.turn-trace {
+  margin-left: calc(60px + var(--s3));
+}
+
+.turn-trace > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+  cursor: pointer;
+}
+
+.turn-trace > summary:hover {
+  color: var(--fg-dim);
+}
+
+.turn-trace[open] > summary {
+  margin-bottom: var(--s2);
+}
+
+.turn-trace .turn-tools {
+  margin-bottom: var(--s2);
 }
 
 .turn-tools {
@@ -249,9 +482,12 @@
   gap: var(--s2);
 }
 
+/* A turn that landed while the page was open says so once, then stops. */
+.turn.arrived {
+  animation: arrived var(--t-glow) ease-out;
+}
+
 .composer {
-  position: sticky;
-  bottom: 0;
   display: grid;
   gap: var(--s2);
   padding: var(--s3);
@@ -264,6 +500,10 @@
   display: flex;
   gap: var(--s2);
   align-items: center;
+}
+
+.composer-row .spacer {
+  margin-left: auto;
 }
 
 .composer textarea {

@@ -72,6 +72,9 @@
   --sidebar: 240px;
   --header: 56px;
   --content-max: 1200px;
+  /* The gutter around a view. Named because a view that fills the window
+     rather than growing past it has to subtract exactly this. */
+  --main-pad: var(--s5);
 
   --t-fast: 120ms ease-out;
   --t-view: 200ms ease-out;
