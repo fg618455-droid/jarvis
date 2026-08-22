@@ -514,6 +514,83 @@ class TestMissionControl:
         assert page.locator("main script").count() == 0
 
 
+class TestTheOverviewLeadsSomewhere:
+    """The landing page reads across the others, so it links into them.
+
+    It stopped keeping its own list of recent turns: the Conversation view
+    shows the same history as a conversation, and a worse copy of it here
+    only teaches a reader that the two disagree.
+    """
+
+    def _turn(self, turn_id, at, total_ms):
+        return {
+            "turn_id": turn_id, "started_at": at, "source": "voice",
+            "language": "de", "total_ms": total_ms,
+            "transcript": f"question {turn_id}", "reply": f"answer {turn_id}",
+            "error": None, "tools": [],
+            "stages": [{"name": "stt", "duration_ms": total_ms * 0.2},
+                       {"name": "llm", "duration_ms": total_ms * 0.6}],
+        }
+
+    def _open(self, page, served):
+        turns = [self._turn(n, 1_755_800_000 + n * 60, total)
+                 for n, total in enumerate([1800, 2000, 2200, 9000], start=1)]
+        page.goto(f"{served}/#/logs", wait_until="networkidle")
+        page.evaluate(
+            """async (turns) => {
+                const { api } = await import('/static/js/api.js');
+                api.turns = async () => ({ turns });
+                api.status = async () => ({
+                    phase: 'idle', phase_since: 1755800000, uptime_seconds: 900,
+                    last_turn: turns[turns.length - 1], discarded: { no_speech: 2 },
+                    models: { chat: 'qwen2.5:7b-ctx8k' },
+                });
+                api.tools = async () => ({ tools: [
+                    { name: 'getWeather', origin: 'builtin' },
+                    { name: 'askCrew', origin: 'builtin' },
+                ], servers: [] });
+                api.security = async () => ({ level: 'critical', pending: [] });
+                api.graphStats = async () => ({ total_nodes: 42, total_tokens: 1337 });
+            }""",
+            turns,
+        )
+        page.goto(f"{served}/#/overview")
+        page.wait_for_selector(".readings", state="visible")
+        return turns
+
+    def test_it_no_longer_keeps_its_own_list_of_recent_turns(self, page, served):
+        self._open(page, served)
+
+        assert page.get_by_text("question 1", exact=True).count() == 0
+        assert not page.console_errors
+
+    def test_the_typical_wait_is_shown_beside_the_last_one(self, page, served):
+        """One slow turn is not the state of things."""
+        self._open(page, served)
+
+        # Totals are 1.80, 2.00, 2.20 and 9.00 seconds: the median is 2.10.
+        assert "2.10 s" in page.locator(".turn-typical").inner_text()
+        assert "9.00 s" in page.locator(".turn-total-big").inner_text()
+
+    def test_every_reading_leads_to_the_view_that_holds_it(self, page, served):
+        self._open(page, served)
+
+        targets = page.locator(".readings a.card").evaluate_all(
+            "cards => cards.map(card => new URL(card.href).hash)"
+        )
+
+        assert targets == ["#/memory", "#/tools", "#/security", "#/conversation"]
+
+    def test_following_a_reading_opens_its_view(self, page, served):
+        self._open(page, served)
+
+        page.locator(".readings a.card").first.click()
+        page.wait_for_timeout(300)
+
+        assert page.evaluate("location.hash") == "#/memory"
+        assert not page.console_errors
+
+
 class TestTheConversationIsTheConversationView:
     """The exchange is what this view is for.
 

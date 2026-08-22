@@ -177,6 +177,23 @@ nothing at all for a bare terminal launch) sees one long call rather than
 an exit — the tray's crash/stopped-unexpectedly handling never fires for a
 requested restart.
 
+## Overview
+
+The only page that reads across the others, so what it holds is a reading
+per destination and a way into each. It keeps no turn history of its own:
+the Conversation view holds the turns and holds them as a conversation, and
+a second, worse copy here would only teach a reader that the two disagree.
+
+| Band | Holds |
+|---|---|
+| Where the time went | The last turn's total, the median of the recent ones beside it, the recent totals as a sparkline, and the stage breakdown with its legend |
+| Readings | Memory, tools, security, and discarded utterances. Each is a card that links to the view holding the detail |
+| Last exchange | What was just said and what came back, and a way into the conversation |
+
+The median rather than the mean: one turn that waited on a cold model would
+drag an average somewhere no turn has ever actually been, and a single last
+reading cannot say whether it was normal.
+
 ## LLM routes view
 
 The LLM routes view displays the ordered FAST, CHAT, and PRIVATE chains. Each

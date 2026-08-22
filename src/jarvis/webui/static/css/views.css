@@ -5,7 +5,8 @@
 .turn-total {
   display: flex;
   align-items: baseline;
-  gap: var(--s3);
+  flex-wrap: wrap;
+  gap: var(--s3) var(--s5);
 }
 
 .turn-total .big {
@@ -13,6 +14,41 @@
   font-variant-numeric: tabular-nums;
   font-size: var(--fs-3xl);
   line-height: 1;
+}
+
+/* The middle of the recent waits, beside the last one. A single reading
+   cannot say whether it was normal, and on this machine the difference
+   between a warm model and a cold one is most of a turn. */
+.turn-typical {
+  display: grid;
+  gap: 2px;
+}
+
+.turn-typical .num {
+  font-size: var(--fs-lg);
+  color: var(--fg-dim);
+}
+
+.turn-spark {
+  margin-left: auto;
+}
+
+/* A reading that leads somewhere. The whole card is the target, so the
+   number is the thing you click rather than a link underneath it. */
+a.card-link {
+  color: inherit;
+  text-decoration: none;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+
+a.card-link:hover {
+  background: var(--surface-2);
+  border-color: var(--accent-line);
+  text-decoration: none;
+}
+
+a.card-link:hover .stat-value {
+  color: var(--accent);
 }
 
 .exchange {
@@ -413,7 +449,7 @@
   color: var(--fg-mute);
 }
 
-.turn-total {
+.turn-cost {
   margin-left: auto;
 }
 

@@ -353,7 +353,7 @@ function turnCard(turn, firstLoad, state) {
               : turn.language,
           })
         : null,
-      el("span", { class: "num turn-total", text: fmt.ms(turn.total_ms) }),
+      el("span", { class: "num turn-cost", text: fmt.ms(turn.total_ms) }),
     ]),
     el("div", { class: "turn-line" }, [
       el("span", { class: "who", text: t("overview.you") }),

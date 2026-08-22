@@ -1,39 +1,38 @@
-/* Overview: what the assistant is doing, and where the last turn went. */
+/* Overview: where the last turn went, and what every other view is holding.
+
+   This is the only page that reads across the rest, so what it shows is a
+   reading per destination and a way into each. It keeps no history of its
+   own: the Conversation view holds the turns and holds them as a
+   conversation, and a second, worse copy here would only teach a reader
+   that the two disagree. */
 
 import { api } from "../api.js";
 import * as fmt from "../fmt.js";
 import { t } from "../i18n.js";
 import { live } from "../sse.js";
-import {
-  card,
-  chip,
-  clear,
-  el,
-  empty,
-  meter,
-  sparkline,
-  stageBar,
-  stageLegend,
-  stat,
-} from "../ui.js";
+import { chip, clear, el, empty, sparkline, stageBar, stageLegend } from "../ui.js";
+
+const REFRESH_MS = 15000;
 
 export async function mount(root) {
-  const head = el("div", { class: "view-head" }, [
-    el("h1", { text: t("overview.title") }),
-    el("p", { text: t("overview.lead") }),
-  ]);
-
-  const lastTurnCard = el("section", { class: "card" });
-  const cardsRow = el("div", { class: "grid" });
+  const timeCard = el("section", { class: "card" });
+  const readings = el("div", { class: "grid readings" });
   const exchangeCard = el("section", { class: "card" });
-  const recentCard = el("section", { class: "card" });
 
-  root.append(head, lastTurnCard, cardsRow, exchangeCard, recentCard);
+  root.append(
+    el("div", { class: "view-head" }, [
+      el("h1", { text: t("overview.title") }),
+      el("p", { text: t("overview.lead") }),
+    ]),
+    timeCard,
+    readings,
+    exchangeCard,
+  );
 
   async function paint() {
     const [status, turnsPayload, tools, security, graph] = await Promise.all([
       api.status(),
-      api.turns(20),
+      api.turns(50),
       api.tools().catch(() => ({ tools: [], servers: [] })),
       api.security().catch(() => ({ level: "?", pending: [] })),
       api.graphStats().catch(() => ({})),
@@ -42,17 +41,16 @@ export async function mount(root) {
     const turns = turnsPayload.turns || [];
     const last = status.last_turn || turns[turns.length - 1] || null;
 
-    paintLastTurn(lastTurnCard, last, turns);
-    paintCards(cardsRow, { status, tools, security, graph });
+    paintTime(timeCard, last, turns);
+    paintReadings(readings, { status, tools, security, graph });
     paintExchange(exchangeCard, last);
-    paintRecent(recentCard, turns);
   }
 
   await paint();
 
   // A finished turn is the only thing on this view that changes on its own.
   const off = live.on("turn", () => paint().catch(() => {}));
-  const timer = setInterval(() => paint().catch(() => {}), 15000);
+  const timer = setInterval(() => paint().catch(() => {}), REFRESH_MS);
 
   return () => {
     off();
@@ -60,7 +58,21 @@ export async function mount(root) {
   };
 }
 
-function paintLastTurn(container, turn, turns) {
+/* ── Where the time went ────────────────────────────────────────────── */
+
+/* The middle of the recent totals rather than their mean: one turn that
+   waited on a cold model would drag an average somewhere no turn has ever
+   actually been. */
+function median(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function paintTime(container, turn, turns) {
   clear(container);
   container.append(
     el("header", {}, [
@@ -75,69 +87,88 @@ function paintLastTurn(container, turn, turns) {
   }
 
   const totals = turns.map((item) => item.total_ms || 0).filter(Boolean);
+  const typical = median(totals);
 
   container.append(
     el("div", { class: "turn-total" }, [
-      el("span", { class: "big", text: fmt.ms(turn.total_ms) }),
-      turn.source === "text" ? chip("text") : null,
-      turn.language ? chip(turn.language) : null,
-      el("span", { style: "margin-left:auto" }, [sparkline(totals)]),
+      el("span", { class: "big turn-total-big", text: fmt.ms(turn.total_ms) }),
+      // The last wait on its own says nothing about whether it was normal.
+      typical === null
+        ? null
+        : el("span", { class: "turn-typical" }, [
+            el("span", { class: "stat-label", text: t("overview.median", { n: totals.length }) }),
+            el("span", { class: "num", text: fmt.ms(typical) }),
+          ]),
+      turn.source === "text" ? chip(t("conversation.typed")) : null,
+      el("span", { class: "turn-spark" }, [sparkline(totals)]),
     ]),
     stageBar(turn),
     stageLegend(turn),
   );
 }
 
-function paintCards(container, { status, tools, security, graph }) {
+/* ── One reading per destination ────────────────────────────────────── */
+
+function reading(view, title, value, sub) {
+  return el("a", { class: "card card-link", href: `#/${view}` }, [
+    el("header", {}, [el("h2", { text: title })]),
+    el("div", { class: "stat" }, [
+      el("span", { class: "stat-value", text: value }),
+      sub ? el("span", { class: "stat-sub" }, [sub]) : null,
+    ]),
+  ]);
+}
+
+function paintReadings(container, { status, tools, security, graph }) {
   clear(container);
 
   const builtin = (tools.tools || []).filter((tool) => tool.origin === "builtin").length;
   const mcp = (tools.tools || []).filter((tool) => tool.origin === "mcp").length;
-  const discarded = Object.values(status.discarded || {}).reduce((a, b) => a + b, 0);
+  const discarded = Object.entries(status.discarded || {}).filter(([, n]) => n);
+  const discardedTotal = discarded.reduce((sum, [, n]) => sum + n, 0);
 
   container.append(
-    card(t("overview.memoryCard"), [
-      stat(t("memory.stats.nodes"), fmt.number(graph.total_nodes ?? 0)),
-      el("span", {
-        class: "stat-sub",
-        text: `${fmt.number(graph.total_tokens ?? 0)} ${t("memory.stats.tokens").toLowerCase()}`,
-      }),
-    ]),
-
-    card(t("overview.toolsCard"), [
-      stat(t("nav.tools"), fmt.number(builtin + mcp)),
-      el("span", {
-        class: "stat-sub",
-        text: `${builtin} ${t("overview.builtin")} · ${mcp} ${t("overview.mcp")}`,
-      }),
-    ]),
-
-    card(t("overview.securityCard"), [
-      stat(t("security.level"), security.level || "—"),
-      el("span", {
-        class: "stat-sub",
-        text: security.pending?.length
-          ? `${security.pending.length} ${t("overview.pending")}`
-          : t("security.noPending"),
-      }),
-    ]),
-
-    card(t("overview.discarded"), [
-      stat(t("conversation.discarded"), fmt.number(discarded)),
-      el(
-        "div",
-        { class: "turn-tools" },
-        Object.entries(status.discarded || {}).map(([reason, count]) =>
-          chip(`${reason} ${count}`),
-        ),
-      ),
-    ]),
+    reading(
+      "memory",
+      t("overview.memoryCard"),
+      fmt.number(graph.total_nodes ?? 0),
+      `${fmt.number(graph.total_tokens ?? 0)} ${t("memory.stats.tokens").toLowerCase()}`,
+    ),
+    reading(
+      "tools",
+      t("overview.toolsCard"),
+      fmt.number(builtin + mcp),
+      `${builtin} ${t("overview.builtin")} · ${mcp} ${t("overview.mcp")}`,
+    ),
+    reading(
+      "security",
+      t("overview.securityCard"),
+      security.level || "—",
+      security.pending?.length
+        ? `${security.pending.length} ${t("overview.pending")}`
+        : t("security.noPending"),
+    ),
+    reading(
+      "conversation",
+      t("overview.discarded"),
+      fmt.number(discardedTotal),
+      discarded.length
+        ? discarded.map(([reason, count]) => `${reason} ${count}`).join(" · ")
+        : t("common.none"),
+    ),
   );
 }
 
+/* ── What just happened ─────────────────────────────────────────────── */
+
 function paintExchange(container, turn) {
   clear(container);
-  container.append(el("header", {}, [el("h2", { text: t("overview.exchange") })]));
+  container.append(
+    el("header", {}, [
+      el("h2", { text: t("overview.exchange") }),
+      el("a", { class: "aside", href: "#/conversation", text: t("overview.openConversation") }),
+    ]),
+  );
 
   if (!turn) {
     container.append(empty(t("conversation.empty")));
@@ -168,28 +199,4 @@ function paintExchange(container, turn) {
         : null,
     ]),
   );
-}
-
-function paintRecent(container, turns) {
-  clear(container);
-  container.append(el("header", {}, [el("h2", { text: t("overview.recent") })]));
-
-  if (!turns.length) {
-    container.append(empty(t("conversation.empty")));
-    return;
-  }
-
-  const list = el("div", { class: "rows scroll" });
-  for (const turn of [...turns].reverse()) {
-    list.append(
-      el("div", { class: "row" }, [
-        el("span", { class: "key num", text: fmt.time(turn.started_at) }),
-        el("span", { class: "val" }, [
-          el("span", { text: turn.transcript || "—" }),
-          el("span", { class: "muted num", text: `  ${fmt.ms(turn.total_ms)}` }),
-        ]),
-      ]),
-    );
-  }
-  container.append(list);
 }
