@@ -92,6 +92,17 @@ def test_launch_scripts_install_the_browser_for_the_pinned_playwright_package() 
         assert "playwright install chromium" in text
 
 
+def test_windows_launchers_stop_when_dependency_installation_fails() -> None:
+    root = Path(__file__).resolve().parents[3]
+    powershell = (root / "scripts/run_windows.ps1").read_text(encoding="utf-8")
+    batch = (root / "scripts/run_desktop_app.bat").read_text(encoding="utf-8")
+
+    assert powershell.count("Dependency installation failed.") == 2
+    assert "ERROR: Dependency installation failed." in batch
+    dependency_error = batch.index("ERROR: Dependency installation failed.")
+    assert "exit /b 1" in batch[dependency_error:dependency_error + 200]
+
+
 def test_new_tool_sources_contain_no_eval_shell_or_coordinate_automation() -> None:
     root = Path(__file__).resolve().parents[3]
     sources = "\n".join(

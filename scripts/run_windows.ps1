@@ -29,6 +29,7 @@ if ($micromamba) {
 
   Write-Info 'Installing Python requirements with pip...'
   micromamba run -p $envPrefix pip install -r requirements.txt
+  if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
   Write-Info 'Installing the Chromium build pinned by Playwright...'
   micromamba run -p $envPrefix python -m playwright install chromium
 
@@ -58,6 +59,7 @@ if (-not (Test-Path $venvPython)) {
 
 Write-Info 'Installing Python requirements with pip...'
 & $venvPython -m pip install -r requirements.txt
+if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
 Write-Info 'Installing the Chromium build pinned by Playwright...'
 & $venvPython -m playwright install chromium
 
