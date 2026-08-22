@@ -22,8 +22,6 @@ from flask import Blueprint, current_app, jsonify, request
 from jarvis.debug import debug_log
 from jarvis.listening.audio_ingress import audio_ingress_available, feed_audio
 
-from ..server import is_loopback_host
-
 
 bp = Blueprint("voice", __name__, url_prefix="/api")
 
@@ -60,6 +58,13 @@ def origin_allowed(origin: Optional[str], bind_host: str, port: int) -> bool:
         return False
     if origin_port != port:
         return False
+
+    # Deferred: server.py imports crew_stream -> api.crew, and importing
+    # this package's __init__ eagerly imports every submodule including
+    # this one, so a module-level import here would run before server.py
+    # finishes defining the name.
+    from ..server import is_loopback_host
+
     if is_loopback_host(bind_host):
         return is_loopback_host(host)
     return host == bind_host
