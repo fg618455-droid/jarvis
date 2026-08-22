@@ -428,9 +428,13 @@ def _select_llm(
     )
 
     try:
+        # Match the main chat runner. Ollama keys model residency by context
+        # size, so alternating 4096 here with the loop's 8192 reloads one
+        # shared FAST/CHAT model before both calls.
         resp = llm_backend.direct(
             llm_model, sys_prompt, user_prompt,
             timeout_sec=llm_timeout_sec,
+            num_ctx=8192,
             max_tokens=50,
         )
     except Exception as e:

@@ -51,7 +51,7 @@ Note: embedding is **not** the default strategy because nomic-embed-text produce
 ### LLM Strategy (default)
 
 1. Build a catalogue of `- name: description` lines (descriptions truncated to 120 chars) for every registered tool except always-included ones.
-2. Send to `call_llm_direct` with a system prompt asking for the **top 5 most relevant** tool names as a comma-separated list. The prompt instructs the router to prefer 1–3 tools for narrow queries and to return `"none"` for greetings/small talk.
+2. Send through the FAST-tier backend's `direct()` call with a system prompt asking for the **top 5 most relevant** tool names as a comma-separated list. The prompt instructs the router to prefer 1–3 tools for narrow queries and to return `"none"` for greetings/small talk. The request uses `num_ctx=8192`, matching the main Ollama chat runner; when FAST and CHAT resolve to the same model, routing therefore reuses the resident runner instead of forcing Ollama to rebuild it at a different context size between the two calls.
 3. Parse the response, matching tokens against known tool names (unknowns are dropped silently).
 4. Apply a hard `_LLM_MAX_SELECTED` (5) cap regardless of what the router returned, to guard against chatty routers that echo the whole catalogue.
 5. Append always-included tools.

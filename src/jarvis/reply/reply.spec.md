@@ -63,6 +63,7 @@ There is no word-list early router and no path that bypasses tool selection base
 
 3. Tool Routing and Pre-flight Planner
    - `select_tools` runs before the planner and produces the authoritative narrowed catalogue. With the embedding strategy, static builtin and cached MCP description vectors come from a bounded process cache warmed during voice startup; each turn embeds only the query. A per-tool embedding failure excludes that tool rather than invalidating successful cached vectors.
+   - The default LLM router requests an 8192-token Ollama context, the same size as the main chat loop. When FAST and CHAT are the same local model, the router and reply reuse one resident runner rather than alternating incompatible 4096- and 8192-token runners. This is context sizing only; the router prompt and 50-token output cap remain classification-shaped.
    - When `planner_enabled` is true, the task-list planner (`plan_query` in `src/jarvis/reply/planner.py`) sees the query, a compact dialogue snippet, and the router-narrowed catalogue (names + one-line descriptions).
    - The planner emits an ordered list of short sub-tasks (max 5). Two of the tokens are structural for the engine:
      - `searchMemory topic='...'` as a leading step means "answering requires information from prior conversations"; the engine runs memory enrichment. Omitting it means "no memory needed".
