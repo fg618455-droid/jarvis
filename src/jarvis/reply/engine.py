@@ -10,7 +10,11 @@ from typing import Any, Callable, Optional, TYPE_CHECKING
 from ..utils.redact import redact
 from ..system_prompt import build_system_prompt
 from ..output.tts import resolve_voice_language
-from ..runtime import mark as telemetry_mark, stage as telemetry_stage
+from ..runtime import (
+    current_turn,
+    mark as telemetry_mark,
+    stage as telemetry_stage,
+)
 from ..tools.registry import run_tool_with_retries, generate_tools_description, generate_tools_json_schema, BUILTIN_TOOLS
 from ..tools.builtin.stop import STOP_SIGNAL
 from ..debug import debug_log
@@ -82,6 +86,53 @@ if TYPE_CHECKING:
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
+
+CREW_HANDOFF_CHECKPOINT_MS = 3000.0
+LOCAL_REPLY_HARD_CUTOFF_MS = 5000.0
+
+
+def _automatic_crew_handoff_available(cfg: Any) -> bool:
+    """Whether the existing crew transport is configured for this turn."""
+    return bool(
+        str(getattr(cfg, "telegram_bot_token", "") or "").strip()
+        and str(getattr(cfg, "crew_telegram_chat_id", "") or "").strip()
+    )
+
+
+def _automatic_handoff_reason(trace: Any, close_to_done: bool) -> Optional[str]:
+    """Return the deadline reason for handing this turn to the crew.
+
+    ``close_to_done`` is structural rather than linguistic: the router made
+    a positive no-tool decision, or every local tool step has produced a
+    result and only final synthesis remains. No language-specific phrase
+    matching is involved.
+    """
+    if trace is None:
+        return None
+    elapsed_ms = trace.elapsed_ms()
+    if elapsed_ms >= LOCAL_REPLY_HARD_CUTOFF_MS:
+        return "hard_cutoff"
+    if elapsed_ms >= CREW_HANDOFF_CHECKPOINT_MS and not close_to_done:
+        return "not_close_to_done"
+    return None
+
+
+def _bounded_local_timeout(
+    configured_sec: float,
+    trace: Any,
+    close_to_done: bool,
+) -> float:
+    """Cap one blocking local model call at the applicable reply deadline."""
+    if trace is None:
+        return configured_sec
+    cutoff_ms = (
+        LOCAL_REPLY_HARD_CUTOFF_MS
+        if close_to_done
+        else CREW_HANDOFF_CHECKPOINT_MS
+    )
+    remaining_sec = max(0.001, (cutoff_ms - trace.elapsed_ms()) / 1000.0)
+    return min(configured_sec, remaining_sec)
 
 
 def build_reply_prompt_prefix(cfg) -> str:
@@ -908,6 +959,10 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     """
     # Step 1: Redact sensitive information
     redacted = redact(text)
+    turn_trace = current_turn()
+    automatic_handoff_enabled = (
+        turn_trace is not None and _automatic_crew_handoff_available(cfg)
+    )
     caller_supplied_deadline = deadline is not None
     deadline = deadline or RequestDeadline.after(
         _first_audio_budget(cfg, "simple_reply_first_audio_sec", 3.0)
@@ -1026,6 +1081,24 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         routed_tools = list(_cached_routed)
         debug_log("tool router served from hot-window cache", "planning")
     else:
+        _router_timeout_sec = float(
+            getattr(cfg, "llm_tools_timeout_sec", 8.0)
+        )
+        if automatic_handoff_enabled:
+            _router_timeout_sec = _bounded_local_timeout(
+                _router_timeout_sec,
+                turn_trace,
+                close_to_done=False,
+            )
+        _embedding_timeout_sec = float(
+            getattr(cfg, "llm_embedding_timeout_sec", 10.0)
+        )
+        if automatic_handoff_enabled:
+            _embedding_timeout_sec = _bounded_local_timeout(
+                _embedding_timeout_sec,
+                turn_trace,
+                close_to_done=False,
+            )
         routed_tools = select_tools(
             query=redacted,
             builtin_tools=BUILTIN_TOOLS,
@@ -1033,10 +1106,10 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             strategy=strategy,
             llm_backend=get_llm_backend(cfg),
             llm_model=resolve_model(cfg, Tier.FAST),
-            llm_timeout_sec=float(getattr(cfg, "llm_tools_timeout_sec", 8.0)),
+            llm_timeout_sec=_router_timeout_sec,
             embedding_backend=get_embedding_backend(cfg),
             embed_model=cfg.embedding_model,
-            embed_timeout_sec=float(getattr(cfg, "llm_embedding_timeout_sec", 10.0)),
+            embed_timeout_sec=_embedding_timeout_sec,
             context_hint=context_hint,
         )
         # Don't cache the router's "fall open to all tools" fallback. That
@@ -1143,11 +1216,19 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         )
     elif planner_enabled:
         try:
+            _planner_timeout_sec = None
+            if automatic_handoff_enabled:
+                _planner_timeout_sec = _bounded_local_timeout(
+                    float(getattr(cfg, "planner_timeout_sec", 3.0)),
+                    turn_trace,
+                    close_to_done=False,
+                )
             action_plan = plan_query(
                 cfg=cfg,
                 query=redacted,
                 dialogue_context=_dialogue_ctx,
                 tools=_planner_tool_catalog,
+                timeout_sec=_planner_timeout_sec,
             )
         except Exception as _plan_exc:  # pragma: no cover — defensive
             debug_log(f"planner step failed (non-fatal): {_plan_exc}", "planning")
@@ -1317,9 +1398,18 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 search_params = _cached_params
                 debug_log("memory extractor served from hot-window cache", "memory")
             else:
+                _extractor_timeout_sec = float(
+                    getattr(cfg, 'llm_tools_timeout_sec', 8.0)
+                )
+                if automatic_handoff_enabled:
+                    _extractor_timeout_sec = _bounded_local_timeout(
+                        _extractor_timeout_sec,
+                        turn_trace,
+                        close_to_done=False,
+                    )
                 search_params = extract_search_params_for_memory(
                     _extractor_query, cfg, resolve_model(cfg, Tier.FAST),
-                    timeout_sec=float(getattr(cfg, 'llm_tools_timeout_sec', 8.0)),
+                    timeout_sec=_extractor_timeout_sec,
                     thinking=getattr(cfg, 'llm_thinking_enabled', False),
                     context_hint=context_hint,
                 )
@@ -1347,6 +1437,12 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         and keywords
         and bool(getattr(cfg, "remio_memory_enabled", False))
         and deadline.remaining() > 0.15
+        and (
+            not automatic_handoff_enabled
+            or _bounded_local_timeout(
+                60.0, turn_trace, close_to_done=False
+            ) > 0.15
+        )
     ):
         try:
             from concurrent.futures import ThreadPoolExecutor
@@ -1358,7 +1454,13 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             )
             remio_future = remio_pool.submit(
                 RemioAdapter(
-                    timeout_sec=min(2.0, deadline.remaining()),
+                    timeout_sec=min(
+                        2.0,
+                        deadline.remaining(),
+                        _bounded_local_timeout(
+                            60.0, turn_trace, close_to_done=False
+                        ) if automatic_handoff_enabled else 60.0,
+                    ),
                     max_results=min(
                         3,
                         int(getattr(cfg, "memory_enrichment_max_results", 3)),
@@ -1389,7 +1491,15 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 cfg=cfg,
                 from_time=from_time,
                 to_time=to_time,
-                timeout_sec=float(getattr(cfg, 'llm_embedding_timeout_sec', 10.0)),
+                timeout_sec=(
+                    _bounded_local_timeout(
+                        float(getattr(cfg, 'llm_embedding_timeout_sec', 10.0)),
+                        turn_trace,
+                        close_to_done=False,
+                    )
+                    if automatic_handoff_enabled
+                    else float(getattr(cfg, 'llm_embedding_timeout_sec', 10.0))
+                ),
                 voice_debug=cfg.voice_debug,
                 max_results=cfg.memory_enrichment_max_results,
             )
@@ -1412,7 +1522,13 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         try:
             from ..memory.remio import format_hits
 
-            wait_budget = min(2.0, deadline.remaining())
+            wait_budget = min(
+                2.0,
+                deadline.remaining(),
+                _bounded_local_timeout(
+                    60.0, turn_trace, close_to_done=False
+                ) if automatic_handoff_enabled else 60.0,
+            )
             remio_hits = (
                 remio_future.result(timeout=wait_budget)
                 if wait_budget > 0.0
@@ -1525,13 +1641,22 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
 
     if digest_enabled and (raw_diary_entries or raw_graph_parts):
         try:
+            _memory_digest_timeout_sec = float(
+                getattr(cfg, 'llm_digest_timeout_sec', 8.0)
+            )
+            if automatic_handoff_enabled:
+                _memory_digest_timeout_sec = _bounded_local_timeout(
+                    _memory_digest_timeout_sec,
+                    turn_trace,
+                    close_to_done=False,
+                )
             digest = digest_memory_for_query(
                 query=redacted,
                 diary_entries=raw_diary_entries,
                 graph_parts=raw_graph_parts,
                 cfg=cfg,
                 chat_model=resolve_model(cfg, Tier.FAST),
-                timeout_sec=float(getattr(cfg, 'llm_digest_timeout_sec', 8.0)),
+                timeout_sec=_memory_digest_timeout_sec,
                 thinking=getattr(cfg, 'llm_thinking_enabled', False),
             )
             # Replace the raw injections with the digest note (or nothing
@@ -1987,6 +2112,65 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     max_turns = cfg.agentic_max_turns
     turn = 0
 
+    _handoff_reply: Optional[str] = None
+
+    def _hand_off_to_crew(reason: str) -> str:
+        """Delegate once and return the only reply this turn may deliver."""
+        nonlocal _handoff_reply
+        if _handoff_reply is not None:
+            return _handoff_reply
+
+        elapsed_ms = turn_trace.elapsed_ms() if turn_trace is not None else 0.0
+        debug_log(
+            f"automatic crew handoff decided at {elapsed_ms:.1f}ms "
+            f"(reason={reason})",
+            "planning",
+        )
+        print(
+            f"  📨 Local reply deadline reached ({elapsed_ms / 1000.0:.1f}s); "
+            "requesting crew delegation",
+            flush=True,
+        )
+        try:
+            with telemetry_stage("crew_handoff"):
+                result = run_tool_with_retries(
+                    db=db,
+                    cfg=cfg,
+                    tool_name="askCrew",
+                    tool_args={"agent": "jarvis", "task": redacted},
+                    system_prompt=build_system_prompt(
+                        str(getattr(cfg, "wake_word", "jarvis") or "jarvis")
+                        .strip()
+                        .capitalize()
+                    ),
+                    original_prompt="",
+                    redacted_text=redacted,
+                    max_retries=1,
+                    language=language,
+                )
+        except Exception as exc:
+            debug_log(
+                f"automatic crew handoff failed: {type(exc).__name__}",
+                "planning",
+            )
+            result = None
+
+        if result is not None and result.success and result.reply_text:
+            _handoff_reply = result.reply_text.strip()
+            debug_log("automatic crew handoff accepted", "planning")
+        else:
+            detail = (
+                getattr(result, "error_message", None)
+                if result is not None else None
+            )
+            detail = str(detail or "The crew channel could not accept it.").strip()
+            _handoff_reply = (
+                "I couldn't hand this request to the crew, so no crew answer "
+                f"will follow. {detail}"
+            )
+            debug_log("automatic crew handoff was not accepted", "planning")
+        return _handoff_reply
+
     # Per-reply session id used to group prompt dumps on disk when
     # JARVIS_DUMP_PROMPTS=1 is set. Generated unconditionally so the
     # identifier stays stable even if dumping is toggled mid-loop.
@@ -2022,27 +2206,65 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         # a final reply from the accumulated results.
         # See planner.spec.md.
         _plan_tool_steps = tool_steps_of(action_plan)
+        _tool_results_so_far = (
+            sum(1 for m in messages if m.get("tool_name"))
+            - _plan_steps_baseline
+        )
+        _local_close_to_done = bool(
+            _router_said_no_tools
+            or (
+                _tool_results_so_far > 0
+                and _tool_results_so_far >= len(_plan_tool_steps)
+            )
+        )
+        if automatic_handoff_enabled:
+            _handoff_reason = _automatic_handoff_reason(
+                turn_trace, _local_close_to_done
+            )
+            if _handoff_reason is not None:
+                reply = _hand_off_to_crew(_handoff_reason)
+                break
+            if (
+                turn_trace.elapsed_ms() >= CREW_HANDOFF_CHECKPOINT_MS
+                and _local_close_to_done
+            ):
+                debug_log(
+                    "automatic crew handoff deferred: local turn is close "
+                    "to done",
+                    "planning",
+                )
         if (
             use_text_tools
             and _plan_tool_steps
             and not _plan_under_specified
         ):
-            _tool_results_so_far = (
-                sum(1 for m in messages if m.get("tool_name"))
-                - _plan_steps_baseline
-            )
             if 0 <= _tool_results_so_far < len(_plan_tool_steps):
                 _plan_exec_handled = False
                 try:
                     _prior = list(invoked_tools_history)
+                    _resolver_timeout_sec = None
+                    if automatic_handoff_enabled:
+                        _resolver_timeout_sec = _bounded_local_timeout(
+                            float(getattr(cfg, "planner_timeout_sec", 3.0)),
+                            turn_trace,
+                            close_to_done=False,
+                        )
                     _resolved = _resolve_plan_step(
                         cfg=cfg,
                         next_step_text=_plan_tool_steps[_tool_results_so_far],
                         prior_results=_prior,
                         tools_schema=tools_json_schema or [],
+                        timeout_sec=_resolver_timeout_sec,
                     )
                     if _resolved is not None:
                         _name, _args = _resolved
+                        if automatic_handoff_enabled:
+                            _handoff_reason = _automatic_handoff_reason(
+                                turn_trace, close_to_done=False
+                            )
+                            if _handoff_reason is not None:
+                                reply = _hand_off_to_crew(_handoff_reason)
+                                break
                         try:
                             _cand_sig = (
                                 _name,
@@ -2198,10 +2420,19 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         _dump_tools_schema = None if use_text_tools else tools_json_schema
         _chat_model = cfg.llm_chat_model
         try:
+            _chat_timeout_sec = float(
+                getattr(cfg, 'llm_chat_timeout_sec', 45.0)
+            )
+            if automatic_handoff_enabled:
+                _chat_timeout_sec = _bounded_local_timeout(
+                    _chat_timeout_sec,
+                    turn_trace,
+                    _local_close_to_done,
+                )
             llm_resp = chat_with_messages(
                 cfg=cfg,
                 messages=messages,
-                timeout_sec=float(getattr(cfg, 'llm_chat_timeout_sec', 45.0)),
+                timeout_sec=_chat_timeout_sec,
                 extra_options=None,
                 tools=_dump_tools_schema,
                 thinking=getattr(cfg, 'llm_thinking_enabled', False),
@@ -2228,10 +2459,19 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             use_text_tools = True
             messages[0] = {"role": "system", "content": _build_initial_system_message()}
             _update_system_message_with_context(messages)
+            _fallback_timeout_sec = float(
+                getattr(cfg, 'llm_chat_timeout_sec', 45.0)
+            )
+            if automatic_handoff_enabled:
+                _fallback_timeout_sec = _bounded_local_timeout(
+                    _fallback_timeout_sec,
+                    turn_trace,
+                    _local_close_to_done,
+                )
             llm_resp = chat_with_messages(
                 cfg=cfg,
                 messages=messages,
-                timeout_sec=float(getattr(cfg, 'llm_chat_timeout_sec', 45.0)),
+                timeout_sec=_fallback_timeout_sec,
                 extra_options=None,
                 tools=None,
                 thinking=getattr(cfg, 'llm_thinking_enabled', False),
@@ -2278,6 +2518,19 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
 
         # Extract tool call if present
         t_name, t_args, t_call_id = _extract_structured_tool_call(llm_resp)
+
+        if automatic_handoff_enabled:
+            # A complete prose response is no longer merely close to done.
+            # It owns the turn below the hard cutoff even when the router
+            # conservatively exposed tools that the model did not use.
+            _response_is_done = bool(content and not t_name)
+            _handoff_reason = _automatic_handoff_reason(
+                turn_trace,
+                _local_close_to_done or _response_is_done,
+            )
+            if _handoff_reason is not None:
+                reply = _hand_off_to_crew(_handoff_reason)
+                break
 
         # ALWAYS append the assistant's response to messages exactly as received
         assistant_msg = {"role": "assistant", "content": content}

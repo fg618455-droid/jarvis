@@ -52,6 +52,7 @@ reply text: synthesis is part of the wait.
 | `planner` | `plan_query`, when the planner is enabled |
 | `recall` | Diary and graph enrichment together |
 | `llm` | Each chat call, once per agentic turn |
+| `crew_handoff` | The automatic deadline decision through confirmation and the `askCrew` send attempt |
 | `tts_synth` | Handing the reply to speech until the first sample plays |
 
 Tool calls are recorded separately from stages, with their name, duration,

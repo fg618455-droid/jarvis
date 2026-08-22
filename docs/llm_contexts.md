@@ -21,7 +21,8 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
   - Tool schema: native via `generate_tools_json_schema()` ([src/jarvis/tools/registry.py](src/jarvis/tools/registry.py)) or text fallback via `_text_tool_call_guidance()` ([engine.py:68](src/jarvis/reply/engine.py:68))
   - Tool results from prior turns (raw or digested — see #5)
 - **Output**: OpenAI-style `{content, tool_calls, thinking}`. Consumed by the tool orchestrator and TTS pipeline. Natural-language content is delivered immediately; no post-turn evaluator runs.
-- **Limits**: `num_ctx: 8192` (explicit). Timeout `llm_chat_timeout_sec` (45s). Auto-fallback from native to text tool-calls on HTTP 400 (`ToolsNotSupportedError`), sticky for the session. Risk: `fetch_web_page` truncates at 50,000 chars (~37k tokens) — mitigated for SMALL models by tool-result digest (#5) which compresses the payload before it enters the messages history. LARGE models receive the raw payload and may silently see a truncated context.
+- **Automatic crew edge**: when a `TurnTrace` is active and both existing crew Telegram settings are configured, the trace's monotonic origin governs a direct edge from this loop to `askCrew`. At 3 seconds the edge fires unless the router made a positive no-tool decision, every local tool step has a result and only synthesis remains, or a complete natural-language response has arrived. At 5 seconds it fires regardless. The engine calls `run_tool_with_retries` with `agent="jarvis"` and the redacted request, so the critical confirmation gate and ordinary askCrew transport remain in force. This edge adds no LLM call and bypasses only the model's tool-choice decision. A handoff discards local content and returns the fire-and-forget acknowledgement as the turn's only reply; the crew result arrives later through Telegram or the shared vault.
+- **Limits**: `num_ctx: 8192` (explicit). Timeout `llm_chat_timeout_sec` (45s). With automatic crew handoff available, each main chat call is capped by the remaining 3-second decision budget, or the remaining 5-second hard budget when the structural close-to-done predicate is true. Router, embedding-router, planner, resolver, memory extractor, retrieval, and digest calls share the same applicable remainder. Auto-fallback from native to text tool-calls on HTTP 400 (`ToolsNotSupportedError`), sticky for the session. Risk: `fetch_web_page` truncates at 50,000 chars (~37k tokens) — mitigated for SMALL models by tool-result digest (#5) which compresses the payload before it enters the messages history. LARGE models receive the raw payload and may silently see a truncated context.
 - **Text-chat entry**: The desktop `ChatWindow` (see `src/desktop_app/chat_window.spec.md`) submits via `jarvis.daemon.submit_text_query`, which calls this same context on a worker thread with `tts=None` and `language=None` (no Whisper-detected language for typed input). Voice and text share the global `DialogueMemory` so they are one conversation. No new LLM context is introduced — the planner, router, enrichment, and digests all run unchanged. Text chat never speaks; the reply is returned to the UI via callbacks (bundled) or `__CHAT__:` IPC events (subprocess).
 - **Telegram entry**: a message from the configured chat submits through the same `jarvis.daemon.submit_text_query` (see `src/jarvis/telegram/telegram.spec.md`), so it shares the global `DialogueMemory` with voice and text and introduces no new LLM context. Gated on `telegram_chat_enabled`; the reply is sent back to the chat rather than spoken.
 
@@ -168,7 +169,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 - **Inputs**: user query, dialogue context, **router-narrowed** tool catalogue (names + one-line descriptions) — not the full 30+ list. When the carry-over guard from #7 fires, the previous turn's failed tool name is unioned into this catalogue before the planner sees it, so the planner can plan a re-call without `toolSearchTool` round-tripping. **No** memory context — the planner decides *whether* memory is needed.
 - **System prompt**: `_PROMPT_TEMPLATE` in `planner.py`. Teaches the `searchMemory topic='...'` directive for prior-conversation lookups, short imperative tool steps, angle-bracket entity placeholders, final synthesis step, same-language output, no numbering.
 - **Output**: list of plan steps (max `MAX_STEPS` = 5). Gates memory enrichment (#3 / #4) and augments the tool router (#7 — planner's picks are unioned in, not replacing). Single-step `["Reply to the user."]` plans are the planner's positive "no memory, no tools" signal. An empty list is fail-open — the engine reverts to running #3 unconditionally. A **stop-only plan** (every step is `stop`) is also rejected by a deterministic post-plan guard and returns `[]` — same fail-open path as an LLM failure — so the engine falls through to the tool router and chat model rather than silently dismissing the conversation. Consumed further by the engine to build the `ACTION PLAN:` system-message block and drive the direct-exec loop (#13) for small models.
-- **Limits**: `planner_timeout_sec` (3s). `max_tokens: 150`. Fail-open → `[]`.
+- **Limits**: `planner_timeout_sec` (3s). `max_tokens: 150`. Fail-open → `[]`. When automatic crew handoff is available, the engine passes the smaller time remaining to the 3-second decision point.
 
 ## 13. Plan Step Resolver (per direct-exec turn, small models)
 
@@ -178,7 +179,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 - **Inputs**: next planned step text, prior tool calls (name + args + result excerpt), per-turn tool schema.
 - **System prompt**: `_STEP_RESOLVER_SYSTEM` at [planner.py:300](src/jarvis/reply/planner.py:300). Teaches one-JSON-object output, placeholder substitution from prior results, `null` for synthesis steps.
 - **Output**: `(tool_name, arguments)` tuple or `None`. Unknown tool names are rejected via the allow-list guard.
-- **Limits**: `planner_timeout_sec` (3s). `max_tokens: 100`. Fail-open → `None` (engine falls back to the chat-model turn).
+- **Limits**: `planner_timeout_sec` (3s). `max_tokens: 100`. Fail-open → `None` (engine falls back to the chat-model turn). When automatic crew handoff is available, the engine passes the smaller time remaining to the 3-second decision point and checks the same trace before executing the resolved tool.
 
 ## 14. Tool-specific LLM calls
 
@@ -268,7 +269,7 @@ Driven by `detect_model_size(model_name) → SMALL (≤7.5B) | LARGE (>7.5B)` �
 - Routes and models: `llm_routes` contains ordered FAST and CHAT entries. `llm_chat_model` and `fast_model` carry the first effective route models for prompt sizing. `ollama_chat_model` is the PRIVATE and local-fallback model. Every explicit context model is obtained through `resolve_model(cfg, tier)`, except the untiered ambient digest (#17), which calls `cfg.llm_chat_model` directly. Streaming uses one monotonic request deadline; an available loopback route receives a 1.2-second progress window before the remaining tier chain is tried, and the first route to emit text exclusively owns the answer.
 - Embeddings: `ollama_embed_model` through loopback `get_embedding_backend(cfg)`. Embeddings never use `llm_routes`.
 - Flags: `memory_digest_enabled`, `tool_result_digest_enabled`, `remio_memory_enabled`, `llm_thinking_enabled`, `intent_judge_thinking_enabled`, `tool_selection_strategy`, `planner_enabled`, `low_power_mode`, `passive_capture_enabled`. Enabled Remio retrieval runs locally alongside planner-directed diary lookup, contributes attributable excerpts only, and fails without changing the prompt.
-- Timeouts: `llm_chat_timeout_sec` (45s, also #17), `llm_digest_timeout_sec` (8s, shared across #4/#5/#6), `llm_tools_timeout_sec`, `intent_judge_timeout_sec` (6s), `planner_timeout_sec` (3s), `simple_reply_first_audio_sec` (3s), `memory_reply_first_audio_sec` (10s), `passive_digest_interval_min` (15-minute worker interval). Reply budgets are monotonic and planner-directed memory work shares the remaining budget.
+- Timeouts: `llm_chat_timeout_sec` (45s, also #17), `llm_digest_timeout_sec` (8s, shared across #4/#5/#6), `llm_tools_timeout_sec`, `intent_judge_timeout_sec` (6s), `planner_timeout_sec` (3s), `simple_reply_first_audio_sec` (3s), `memory_reply_first_audio_sec` (10s), `passive_digest_interval_min` (15-minute worker interval). Reply budgets are monotonic and planner-directed memory work shares the remaining budget. When the existing crew token and chat ID are configured, the current `TurnTrace` additionally caps local pre-flight and loop work at the 3-second decision point or 5-second hard cutoff. These handoff thresholds are the fixed reply contract, not configuration keys.
 - Caps: `agentic_max_turns` (8), `tool_search_max_calls` (3), `_LLM_MAX_SELECTED` (5), `_DIGEST_MAX_CHARS` (400), `_TOOL_DIGEST_MAX_CHARS` (600), `passive_digest_max_lines` (120). Per-context `max_tokens` caps listed above (50–1500 depending on task — the ambient digest uses 300, the intent judge's 1500 covers reasoning + answer on reasoning models; rewrite tasks scale with input length).
 - Runtime residency: `low_power_mode` skips startup LLM warmups and shortens Ollama `keep_alive` for intent judge and warmup calls from `"30m"` to `"1m"`. It does not change prompts, model selection, timeouts, or context limits.
 
@@ -297,6 +298,8 @@ user input
                     ├─ planner disabled            → skip #3 and #4
                     └─ plan reply-only             → skip #3 and #4 entirely
                     └─▶ AGENTIC LOOP  (≤ agentic_max_turns)
+                                      ├─ 3s and not close to done → askCrew fire-and-forget
+                                      ├─ 5s hard cutoff           → askCrew fire-and-forget
                                       ├─ [13] Plan step resolver (SMALL, direct-exec)
                                       ├─ [1] Main chat turn
                                       ├─ tool execution
@@ -343,7 +346,7 @@ ambient transcript (passive switch on)
 
 ## Measuring
 
-`tests/performance/test_pipeline_timings.py` times each context in this graph against a live Ollama. Run:
+`tests/performance/test_pipeline_timings.py` times each context in this graph against a live Ollama. The recorder patches the reply engine's provider-dispatched chat boundary and `RoutedBackend.direct`, so the main loop and pre-flight contexts are both visible. `JARVIS_PERF_MODEL` is assigned to the effective provider-independent chat model and its Ollama alias; `JARVIS_PERF_FAST_MODEL` optionally selects a dedicated FAST-tier model. Run:
 
 ```
 pytest tests/performance/ -v -m performance -s

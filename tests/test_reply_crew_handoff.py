@@ -1,0 +1,223 @@
+"""Automatic local-to-crew handoff behaviour in the reply engine."""
+
+from __future__ import annotations
+
+import time
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from jarvis.runtime.telemetry import get_recorder
+from jarvis.tools.types import ToolExecutionResult
+
+
+def _reply(text: str) -> dict:
+    return {"message": {"role": "assistant", "content": text}}
+
+
+@pytest.fixture(autouse=True)
+def _clean_turn_recorder():
+    recorder = get_recorder()
+    recorder.abandon()
+    recorder.clear()
+    recorder.use_journal(None)
+    yield
+    recorder.abandon()
+    recorder.clear()
+    recorder.use_journal(None)
+
+
+def _crew_ready(mock_config) -> None:
+    mock_config.planner_enabled = False
+    mock_config.memory_digest_enabled = False
+    mock_config.telegram_bot_token = "token"
+    mock_config.crew_telegram_chat_id = "-100123"
+
+
+def _begin_elapsed_turn(elapsed_sec: float):
+    trace = get_recorder().begin(source="text")
+    trace._origin = time.perf_counter() - elapsed_sec
+    return trace
+
+
+def _delegated_result() -> ToolExecutionResult:
+    return ToolExecutionResult(
+        success=True,
+        reply_text=(
+            "Delegated to jarvis. They will post the result in the crew "
+            "channel or the shared vault once done."
+        ),
+    )
+
+
+def test_a_tool_heavy_turn_hands_off_at_three_seconds(
+    mock_config, db, dialogue_memory,
+):
+    """No local prose and real tools remaining is not close to done."""
+    from jarvis.reply import engine as engine_mod
+
+    _crew_ready(mock_config)
+    trace = _begin_elapsed_turn(3.1)
+    local_chat = MagicMock(return_value=_reply("local answer"))
+    tool_runner = MagicMock(return_value=_delegated_result())
+
+    with patch.object(engine_mod, "select_tools", return_value=["webSearch", "stop"]), \
+         patch.object(engine_mod, "chat_with_messages", local_chat), \
+         patch.object(engine_mod, "run_tool_with_retries", tool_runner):
+        result = engine_mod.run_reply_engine(
+            db=db,
+            cfg=mock_config,
+            tts=None,
+            text="investigate this in depth",
+            dialogue_memory=dialogue_memory,
+            quiet=True,
+        )
+
+    assert result == _delegated_result().reply_text
+    local_chat.assert_not_called()
+    assert tool_runner.call_args.kwargs["tool_name"] == "askCrew"
+    assert tool_runner.call_args.kwargs["tool_args"] == {
+        "agent": "jarvis",
+        "task": "investigate this in depth",
+    }
+    handoff = [stage for stage in trace.stages if stage.name == "crew_handoff"]
+    assert len(handoff) == 1
+    assert handoff[0].start_ms >= 3000.0
+
+
+def test_a_reply_only_turn_may_finish_locally_between_three_and_five_seconds(
+    mock_config, db, dialogue_memory,
+):
+    """A positive no-tool route is the explicit close-to-done signal."""
+    from jarvis.reply import engine as engine_mod
+
+    _crew_ready(mock_config)
+    _begin_elapsed_turn(3.1)
+    tool_runner = MagicMock(return_value=_delegated_result())
+
+    def local_chat(**kwargs):
+        assert 0.0 < kwargs["timeout_sec"] <= 2.0
+        return _reply("local answer")
+
+    with patch.object(engine_mod, "select_tools", return_value=["stop"]), \
+         patch.object(engine_mod, "chat_with_messages", side_effect=local_chat), \
+         patch.object(engine_mod, "run_tool_with_retries", tool_runner):
+        result = engine_mod.run_reply_engine(
+            db=db,
+            cfg=mock_config,
+            tts=None,
+            text="answer briefly",
+            dialogue_memory=dialogue_memory,
+            quiet=True,
+        )
+
+    assert result == "local answer"
+    tool_runner.assert_not_called()
+
+
+def test_a_local_answer_finishing_after_five_seconds_is_discarded(
+    mock_config, db, dialogue_memory,
+):
+    """The hard cutoff owns the turn even if a local answer arrives just after it."""
+    from jarvis.reply import engine as engine_mod
+
+    _crew_ready(mock_config)
+    _begin_elapsed_turn(4.9)
+    tool_runner = MagicMock(return_value=_delegated_result())
+
+    def late_local_chat(**kwargs):
+        assert 0.0 < kwargs["timeout_sec"] <= 0.2
+        time.sleep(0.15)
+        return _reply("fully formed local answer")
+
+    with patch.object(engine_mod, "select_tools", return_value=["stop"]), \
+         patch.object(engine_mod, "chat_with_messages", side_effect=late_local_chat), \
+         patch.object(engine_mod, "run_tool_with_retries", tool_runner):
+        result = engine_mod.run_reply_engine(
+            db=db,
+            cfg=mock_config,
+            tts=None,
+            text="answer briefly",
+            dialogue_memory=dialogue_memory,
+            quiet=True,
+        )
+
+    assert result == _delegated_result().reply_text
+    assert "fully formed local answer" not in result
+    assert tool_runner.call_count == 1
+
+
+def test_a_complete_local_answer_arriving_before_five_seconds_wins_the_turn(
+    mock_config, db, dialogue_memory,
+):
+    """Natural-language content is done, even if the router exposed tools."""
+    from jarvis.reply import engine as engine_mod
+
+    _crew_ready(mock_config)
+    _begin_elapsed_turn(2.9)
+    tool_runner = MagicMock(return_value=_delegated_result())
+
+    def completed_local_chat(**kwargs):
+        assert 0.0 < kwargs["timeout_sec"] <= 0.2
+        time.sleep(0.15)
+        return _reply("complete local answer")
+
+    with patch.object(
+        engine_mod, "select_tools", return_value=["webSearch", "stop"]
+    ), patch.object(
+        engine_mod, "chat_with_messages", side_effect=completed_local_chat
+    ), patch.object(
+        engine_mod, "run_tool_with_retries", tool_runner
+    ):
+        result = engine_mod.run_reply_engine(
+            db=db,
+            cfg=mock_config,
+            tts=None,
+            text="answer with what you know",
+            dialogue_memory=dialogue_memory,
+            quiet=True,
+        )
+
+    assert result == "complete local answer"
+    tool_runner.assert_not_called()
+
+
+def test_router_and_planner_share_the_three_second_checkpoint(
+    mock_config, db, dialogue_memory,
+):
+    """Pre-flight model calls cannot each claim a fresh full timeout."""
+    from jarvis.reply import engine as engine_mod
+
+    _crew_ready(mock_config)
+    mock_config.planner_enabled = True
+    _begin_elapsed_turn(1.0)
+    router_timeouts: list[float] = []
+    planner_timeouts: list[float] = []
+
+    def route(**kwargs):
+        router_timeouts.append(kwargs["llm_timeout_sec"])
+        return ["webSearch", "stop"]
+
+    def plan(**kwargs):
+        planner_timeouts.append(kwargs["timeout_sec"])
+        return ["Reply to the user."]
+
+    with patch.object(engine_mod, "select_tools", side_effect=route), \
+         patch.object(engine_mod, "plan_query", side_effect=plan), \
+         patch.object(
+             engine_mod,
+             "chat_with_messages",
+             return_value=_reply("local answer"),
+         ):
+        result = engine_mod.run_reply_engine(
+            db=db,
+            cfg=mock_config,
+            tts=None,
+            text="explain this reasonably detailed question without guessing anything",
+            dialogue_memory=dialogue_memory,
+            quiet=True,
+        )
+
+    assert result == "local answer"
+    assert router_timeouts and 0.0 < router_timeouts[0] <= 2.0
+    assert planner_timeouts and 0.0 < planner_timeouts[0] <= 2.0

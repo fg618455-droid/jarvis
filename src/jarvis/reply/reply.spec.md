@@ -22,6 +22,19 @@ Design principles enforced by the engine:
 
 Every turn creates a monotonic `RequestDeadline` from `simple_reply_first_audio_sec`. Once the existing language-independent planner and recall gate establish that long-term memory is needed, a caller-unspecified budget is rebased to `memory_reply_first_audio_sec`. Deadline-aware sources share the remaining budget rather than each receiving a fresh full timeout.
 
+When a `TurnTrace` is active and the existing crew Telegram token and chat ID are both configured, the trace's monotonic origin also governs automatic crew handoff. No second handoff clock is created:
+
+- At 3 seconds, the local turn hands the redacted request to `askCrew` unless it is structurally close to done.
+- Close to done means the router made a positive no-tool decision, or every local tool step has produced a result and only final synthesis remains. The predicate does not inspect words in the request or answer.
+- A complete natural-language response that arrives before 5 seconds is done and owns the turn, even when the router conservatively exposed unused tools.
+- A close-to-done turn may continue only until 5 seconds. The 5-second cutoff always hands off, including when a fully formed local answer arrives just after the cutoff.
+- Router, embedding-router, planner, plan resolver, memory extractor, memory retrieval, memory digest, and main chat calls receive only the remaining applicable budget. An in-flight tool is checked immediately when control returns to the loop.
+- The automatic path invokes `askCrew` through `run_tool_with_retries`, so the critical security confirmation still applies. It does not synthesise a model tool-call decision.
+- A handoff owns the turn. The local answer is discarded and Jarvis returns only the honest fire-and-forget acknowledgement. The crew result appears later in Telegram or the shared vault, not inline.
+- If crew configuration is absent or no `TurnTrace` exists, automatic handoff is inactive and the ordinary request budgets apply.
+
+The handoff attempt is recorded as `crew_handoff` in the same trace and `askCrew` remains present in the trace's tool calls. Control Centre history and CSV export accept stage names dynamically, so both surfaces show the decision without a separate telemetry path.
+
 There is no word-list early router and no path that bypasses tool selection based on hard-coded language patterns. Memory intent comes from the normal planner. When retrieval will run, the engine invokes `on_memory_lookup_started` once. The voice listener may speak the configured `memory_lookup_acknowledgement`; its empty default keeps the behaviour silent and language-neutral.
 
 ### Entry and Inputs
@@ -32,6 +45,7 @@ There is no word-list early router and no path that bypasses tool selection base
   - configuration: model endpoints, timeouts, feature flags, and tool settings.
   - speech synthesizer (optional): for spoken output and hot-window activation.
   - optional request deadline and memory-lookup callback: shared latency budget and a language-neutral notification boundary.
+  - active `TurnTrace` from the voice, text, or Telegram caller: the monotonic source for automatic crew deadlines.
 
 ### Steps and Branches (Agentic Messages Loop)
 1. Redact
@@ -134,6 +148,7 @@ There is no word-list early router and no path that bypasses tool selection base
    - `toolSearchTool` is a builtin; see `src/jarvis/tools/builtin/tool_search.spec.md`.
 
    **Termination**: When the chat model produces natural-language content (non-tool-call response), the engine delivers it immediately. The planner's task list is the termination contract: all planned tool steps are direct-executed before the chat model is called for synthesis, so the synthesis turn is always the final turn. For plan-empty queries (short or trivial), the chat model's first content response is delivered directly.
+   - Automatic crew deadline: before each local loop unit and immediately after each main chat call, the engine applies the 3-second close-to-done decision and 5-second hard cutoff. A handoff response terminates the loop and is the turn's only output.
    - Max-turn digest: when the loop exhausts `agentic_max_turns` without ever producing a content turn (e.g. a pure tool-call loop), the engine calls `digest_loop_for_max_turns` in `enrichment.py`. This runs a single cheap LLM pass over the loop's accumulated activity (tool calls, tool result excerpts, any prose) and produces a short reply that begins with a caveat sentence noting the request was not fully completed. The caveat and the summary are generated in the same language as the user's request, not hardcoded English. On digest failure the engine falls back to the last candidate reply (if any) or a generic error message.
 
 7. Tool and Planning Protocol
