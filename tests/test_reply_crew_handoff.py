@@ -32,6 +32,7 @@ def _crew_ready(mock_config) -> None:
     mock_config.memory_digest_enabled = False
     mock_config.telegram_bot_token = "token"
     mock_config.crew_telegram_chat_id = "-100123"
+    mock_config.crew_handoff_enabled = True
 
 
 def _begin_elapsed_turn(elapsed_sec: float):
@@ -180,6 +181,71 @@ def test_a_complete_local_answer_arriving_before_five_seconds_wins_the_turn(
 
     assert result == "complete local answer"
     tool_runner.assert_not_called()
+
+
+def test_automatic_handoff_is_off_by_default(
+    mock_config, db, dialogue_memory,
+):
+    """crew_handoff_enabled defaults False: a slow turn just keeps running locally.
+
+    Even with a fully configured crew transport, the deadline must not fire
+    askCrew on its own until this flag is turned on: askCrew's confirmation
+    wait is not yet bounded to the deadline, so an unattended escalation can
+    sit on the full confirmation timeout before falling through to a refusal
+    instead of an answer.
+    """
+    from jarvis.reply import engine as engine_mod
+
+    mock_config.planner_enabled = False
+    mock_config.memory_digest_enabled = False
+    mock_config.telegram_bot_token = "token"
+    mock_config.crew_telegram_chat_id = "-100123"
+    assert mock_config.crew_handoff_enabled is False
+
+    _begin_elapsed_turn(9.0)  # past both the 3s checkpoint and the 5s cutoff
+    tool_runner = MagicMock(return_value=_delegated_result())
+
+    with patch.object(engine_mod, "select_tools", return_value=["webSearch", "stop"]), \
+         patch.object(
+             engine_mod, "chat_with_messages", return_value=_reply("local answer"),
+         ), \
+         patch.object(engine_mod, "run_tool_with_retries", tool_runner):
+        result = engine_mod.run_reply_engine(
+            db=db,
+            cfg=mock_config,
+            tts=None,
+            text="investigate this in depth",
+            dialogue_memory=dialogue_memory,
+            quiet=True,
+        )
+
+    assert result == "local answer"
+    assert not any(
+        call.kwargs.get("tool_name") == "askCrew" for call in tool_runner.call_args_list
+    )
+
+
+def test_crew_handoff_enabled_defaults_false_from_a_real_config_file(
+    tmp_path, monkeypatch,
+):
+    """load_settings() must wire the flag, not just accept it as a stray key."""
+    import json
+
+    from jarvis.config import load_settings
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"telegram_bot_token": "tok", "crew_telegram_chat_id": "-100123"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
+
+    assert load_settings().crew_handoff_enabled is False
+
+    config_path.write_text(
+        json.dumps({"crew_handoff_enabled": True}), encoding="utf-8",
+    )
+    assert load_settings().crew_handoff_enabled is True
 
 
 def test_router_and_planner_share_the_three_second_checkpoint(

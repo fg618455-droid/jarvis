@@ -93,9 +93,18 @@ LOCAL_REPLY_HARD_CUTOFF_MS = 5000.0
 
 
 def _automatic_crew_handoff_available(cfg: Any) -> bool:
-    """Whether the existing crew transport is configured for this turn."""
+    """Whether the deadline may hand this turn to the crew on its own.
+
+    Off by default (``crew_handoff_enabled``) even when the crew transport
+    is fully configured: the handoff still asks for confirmation like any
+    askCrew call, and that wait is not yet bounded to the deadline, so an
+    unattended escalation can sit on the full confirmation timeout before
+    falling through to a refusal instead of an answer. An explicit askCrew
+    call from the model is unaffected by this flag.
+    """
     return bool(
-        str(getattr(cfg, "telegram_bot_token", "") or "").strip()
+        getattr(cfg, "crew_handoff_enabled", False)
+        and str(getattr(cfg, "telegram_bot_token", "") or "").strip()
         and str(getattr(cfg, "crew_telegram_chat_id", "") or "").strip()
     )
 

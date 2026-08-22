@@ -153,6 +153,7 @@ class Settings:
     crew_api_key: str
     crew_telegram_chat_id: str
     crew_agents: list[str]
+    crew_handoff_enabled: bool
 
     # Screen Capture
     allowlist_bundles: list[str]
@@ -755,6 +756,12 @@ def get_default_config() -> Dict[str, Any]:
         # logged something, so without a roster an idle agent disappears
         # from Mission Control and reads as though it never existed.
         "crew_agents": list(DEFAULT_CREW_AGENTS),
+        # Off by default: the automatic deadline handoff still routes
+        # through askCrew's always-on confirmation requirement with no
+        # bound of its own, so an unattended escalation can sit on the
+        # full confirmation timeout before falling through to a refusal
+        # rather than an answer. Explicit askCrew calls are unaffected.
+        "crew_handoff_enabled": False,
 
         # Screen Capture
         "allowlist_bundles": [
@@ -1292,6 +1299,7 @@ def load_settings() -> Settings:
         for name in (merged.get("crew_agents") or [])
         if str(name).strip()
     ] or list(DEFAULT_CREW_AGENTS)
+    crew_handoff_enabled = bool(merged.get("crew_handoff_enabled", False))
 
     return Settings(
         # Database & Storage
@@ -1345,6 +1353,7 @@ def load_settings() -> Settings:
         crew_api_url=crew_api_url,
         crew_api_key=crew_api_key,
         crew_telegram_chat_id=crew_telegram_chat_id,
+        crew_handoff_enabled=crew_handoff_enabled,
 
         # Screen Capture
         allowlist_bundles=allowlist_bundles,

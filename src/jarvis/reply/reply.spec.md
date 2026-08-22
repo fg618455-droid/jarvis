@@ -22,7 +22,7 @@ Design principles enforced by the engine:
 
 Every turn creates a monotonic `RequestDeadline` from `simple_reply_first_audio_sec`. Once the existing language-independent planner and recall gate establish that long-term memory is needed, a caller-unspecified budget is rebased to `memory_reply_first_audio_sec`. Deadline-aware sources share the remaining budget rather than each receiving a fresh full timeout.
 
-When a `TurnTrace` is active and the existing crew Telegram token and chat ID are both configured, the trace's monotonic origin also governs automatic crew handoff. No second handoff clock is created:
+When `crew_handoff_enabled` is on, a `TurnTrace` is active, and the existing crew Telegram token and chat ID are both configured, the trace's monotonic origin also governs automatic crew handoff. No second handoff clock is created. The flag defaults off: the automatic path shares askCrew's confirmation requirement with no bound of its own, so an unattended escalation can sit at the full confirmation timeout before falling through to a refusal instead of an answer, which is worse than letting the local reply keep running. See `tools/builtin/ask_crew.spec.md`.
 
 - At 3 seconds, the local turn hands the redacted request to `askCrew` unless it is structurally close to done.
 - Close to done means the router made a positive no-tool decision, or every local tool step has produced a result and only final synthesis remains. The predicate does not inspect words in the request or answer.
@@ -31,7 +31,7 @@ When a `TurnTrace` is active and the existing crew Telegram token and chat ID ar
 - Router, embedding-router, planner, plan resolver, memory extractor, memory retrieval, memory digest, and main chat calls receive only the remaining applicable budget. An in-flight tool is checked immediately when control returns to the loop.
 - The automatic path invokes `askCrew` through `run_tool_with_retries`, so the critical security confirmation still applies. It does not synthesise a model tool-call decision.
 - A handoff owns the turn. The local answer is discarded and Jarvis returns only the honest fire-and-forget acknowledgement. The crew result appears later in Telegram or the shared vault, not inline.
-- If crew configuration is absent or no `TurnTrace` exists, automatic handoff is inactive and the ordinary request budgets apply.
+- If `crew_handoff_enabled` is off, crew configuration is absent, or no `TurnTrace` exists, automatic handoff is inactive and the ordinary request budgets apply.
 
 The handoff attempt is recorded as `crew_handoff` in the same trace and `askCrew` remains present in the trace's tool calls. Control Centre history and CSV export accept stage names dynamically, so both surfaces show the decision without a separate telemetry path.
 

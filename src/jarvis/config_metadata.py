@@ -500,6 +500,13 @@ def _build_field_metadata() -> List[FieldMeta]:
       "task. Sent with the bot configured under Security → Telegram, which "
       "must also be a member of that group. Empty disables askCrew",
       "crew", "str", nullable=True)
+    f("crew_handoff_enabled", "Automatic Crew Handoff",
+      "Hand a slow local reply to the crew on its own, once it has run past "
+      "the deadline, instead of only when askCrew is explicitly requested. "
+      "Still asks for confirmation like any askCrew call, and that wait is "
+      "not yet bounded to the deadline, so a delegation with nobody free to "
+      "confirm can sit at the full confirmation timeout before it gives up",
+      "crew", "bool")
 
     # --- Advanced ---
     f("echo_tolerance", "Echo Tolerance",

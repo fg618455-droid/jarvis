@@ -24,13 +24,14 @@ The automatic path lives in `reply/engine.py`. It bypasses the model's tool-choi
   - `task` (string, required): the task to delegate, in the user's own words.
 - **Output**: on success, a short confirmation that the task was delegated. On failure, a stable `ToolExecutionResult` error (`invalid_argument` for an unknown agent or empty task, `invalid_config` when the crew channel isn't set up, `unavailable` — retryable — when Telegram can't be reached).
 - **Explicit trigger**: the local model emits an `askCrew` tool call.
-- **Automatic trigger**: both `telegram_bot_token` and `crew_telegram_chat_id` are configured, a `TurnTrace` is active, and the reply engine reaches either deadline:
+- **Automatic trigger**: `crew_handoff_enabled` is on, both `telegram_bot_token` and `crew_telegram_chat_id` are configured, a `TurnTrace` is active, and the reply engine reaches either deadline:
   - at 3 seconds, hand off unless the router made a positive no-tool decision, all local tool steps have results and only final synthesis remains, or a complete natural-language response has arrived;
   - at 5 seconds, hand off regardless of the close-to-done signal.
 - **Automatic task**: the redacted user request is delegated to the general `jarvis` crew topic.
 
 ### Configuration
 
+- `crew_handoff_enabled`: off by default. The automatic deadline shares askCrew's confirmation requirement (see Security below), and that wait is not bounded to the deadline, so turning this on before a fast or unattended confirmation path exists means an escalation can sit at the full `security_confirmation_timeout_sec` before falling through to a refusal instead of an answer — worse than letting the local reply keep running. The explicit, model-chosen trigger is unaffected by this flag.
 - `crew_telegram_chat_id`: the Mission Control group's chat ID. Empty disables the tool (`invalid_config`).
 - Reuses the bot already configured under `telegram_bot_token` / `telegram_api_base_url` (Security → Telegram) — that bot must also be a member of the Mission Control group, and Hermes' own `TELEGRAM_ALLOWED_USERS` allowlist must include it, or Hermes will silently ignore the message. Both are one-time setup steps outside this codebase.
 
@@ -56,4 +57,4 @@ The deadline decision owns the turn. Local content arriving after a handoff deci
 
 ### Testing
 
-Behaviour tests (`tests/tools/builtin/test_ask_crew.py`) mock `RequestsTelegramTransport` and cover: unknown agent, empty task, missing configuration (both without any network call), a successful send's exact payload shape (including the no-thread-id case for `jarvis`), and a network failure reported as retryable. A gate test (`tests/test_security_gate.py`) confirms `askCrew` always requires confirmation. Engine tests (`tests/test_reply_crew_handoff.py`) cover both deadlines, the structural close-to-done predicate, shared pre-flight budgets, single-answer ownership, and the `crew_handoff` stage.
+Behaviour tests (`tests/tools/builtin/test_ask_crew.py`) mock `RequestsTelegramTransport` and cover: unknown agent, empty task, missing configuration (both without any network call), a successful send's exact payload shape (including the no-thread-id case for `jarvis`), and a network failure reported as retryable. A gate test (`tests/test_security_gate.py`) confirms `askCrew` always requires confirmation. Engine tests (`tests/test_reply_crew_handoff.py`) cover both deadlines, the structural close-to-done predicate, shared pre-flight budgets, single-answer ownership, the `crew_handoff` stage, that `crew_handoff_enabled` defaults off with the deadline otherwise fully configured, and that `load_settings()` wires the flag from a real config file.
