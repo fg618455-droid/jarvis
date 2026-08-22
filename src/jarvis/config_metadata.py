@@ -477,6 +477,10 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("low_power_mode", "Low Power Mode",
       "Reduce background LLM residency and skip LLM startup warmup",
       "features", "bool")
+    f("computer_interaction_enabled", "Computer Interaction",
+      "Opt in to bounded semantic browser and Windows application control. "
+      "Consequential actions still require individual confirmation",
+      "features", "bool")
     f("tune_enabled", "Startup Tune",
       "Play startup sound",
       "features", "bool")

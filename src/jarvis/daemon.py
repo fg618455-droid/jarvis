@@ -31,7 +31,11 @@ from .config import load_settings
 from .memory.db import Database
 from .memory.conversation import DialogueMemory, update_diary_from_dialogue_memory
 from .output.tts import create_tts_engine
-from .tools.registry import configure_vault_search_tool, initialize_mcp_tools
+from .tools.registry import (
+    configure_computer_interaction_tools,
+    configure_vault_search_tool,
+    initialize_mcp_tools,
+)
 from .debug import debug_log
 from .listening.listener import VoiceListener
 from .utils.location import get_location_context, is_location_available
@@ -805,6 +809,7 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
 
     cfg = load_settings()
     configure_vault_search_tool(cfg)
+    configure_computer_interaction_tools(cfg)
     db = Database(cfg.db_path, cfg.sqlite_vss_path)
     # Expose cfg + db so the text-chat submission path shares the same store
     # and config as the voice listener (one conversation, one config).

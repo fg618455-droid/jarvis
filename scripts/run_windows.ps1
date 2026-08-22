@@ -29,6 +29,8 @@ if ($micromamba) {
 
   Write-Info 'Installing Python requirements with pip...'
   micromamba run -p $envPrefix pip install -r requirements.txt
+  Write-Info 'Installing the Chromium build pinned by Playwright...'
+  micromamba run -p $envPrefix python -m playwright install chromium
 
   # Prefer launching python.exe directly so Ctrl+C propagates to the child on Windows
   $envPython = Join-Path $envPrefix 'python.exe'
@@ -56,6 +58,8 @@ if (-not (Test-Path $venvPython)) {
 
 Write-Info 'Installing Python requirements with pip...'
 & $venvPython -m pip install -r requirements.txt
+Write-Info 'Installing the Chromium build pinned by Playwright...'
+& $venvPython -m playwright install chromium
 
 Write-Info 'Starting daemon...'
 & $venvPython -m jarvis.daemon

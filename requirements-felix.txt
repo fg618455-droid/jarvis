@@ -5,7 +5,8 @@ requests==2.32.3
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
 html2text>=2020.1.16
-playwright>=1.40.0
+playwright==1.62.0
+pywinauto==0.6.9; sys_platform == "win32"
 numpy<2.0.0
 faster-whisper==1.0.3
 setuptools<81

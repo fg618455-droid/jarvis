@@ -14,7 +14,10 @@ LEVEL_CRITICAL = "critical"
 LEVEL_PARANOID = "paranoid"
 VALID_LEVELS = frozenset({LEVEL_OFF, LEVEL_CRITICAL, LEVEL_PARANOID})
 
-_CRITICAL_BUILTINS = frozenset({"deleteMeal", "askCrew"})
+_CRITICAL_BUILTINS = frozenset({
+    "deleteMeal", "askCrew", "browserInteract", "desktopInteract",
+})
+_CRITICAL_ACTION_PREFIXES = ("browserInteract.", "desktopInteract.")
 _LOCAL_FILE_MUTATIONS = frozenset({"write", "append", "delete"})
 
 
@@ -137,6 +140,8 @@ class SecurityGate:
         if "__" in action_name:
             return True
         if action_name in _CRITICAL_BUILTINS:
+            return True
+        if action_name.startswith(_CRITICAL_ACTION_PREFIXES):
             return True
         if action_name == "localFiles":
             # The tool strips and lowercases the operation before it acts, so

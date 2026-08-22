@@ -25,6 +25,8 @@ from .builtin.stop import StopTool
 from .builtin.open_on_computer import OpenOnComputerTool
 from .builtin.tool_search import ToolSearchTool
 from .builtin.ask_crew import AskCrewTool
+from .builtin.browser_interact import BrowserInteractTool
+from .builtin.desktop_interact import DesktopInteractTool
 from .types import ToolExecutionResult
 from ..config import Settings
 from .external.mcp_client import MCPClient
@@ -58,6 +60,20 @@ def configure_vault_search_tool(cfg) -> None:
         BUILTIN_TOOLS["vaultSearch"] = VaultSearchTool()
     else:
         BUILTIN_TOOLS.pop("vaultSearch", None)
+
+
+def configure_computer_interaction_tools(cfg) -> None:
+    """Register semantic computer control only after explicit opt-in."""
+    if getattr(cfg, "computer_interaction_enabled", False):
+        if not isinstance(BUILTIN_TOOLS.get("browserInteract"), BrowserInteractTool):
+            BUILTIN_TOOLS["browserInteract"] = BrowserInteractTool()
+        if not isinstance(BUILTIN_TOOLS.get("desktopInteract"), DesktopInteractTool):
+            BUILTIN_TOOLS["desktopInteract"] = DesktopInteractTool()
+    else:
+        browser_tool = BUILTIN_TOOLS.pop("browserInteract", None)
+        if isinstance(browser_tool, BrowserInteractTool):
+            browser_tool.close()
+        BUILTIN_TOOLS.pop("desktopInteract", None)
 
 # Global MCP tools cache
 _mcp_tools_cache: Dict[str, "ToolSpec"] = {}

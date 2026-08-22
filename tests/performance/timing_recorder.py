@@ -68,6 +68,9 @@ _CALLER_TO_CONTEXT: dict[str, str] = {
     "generate_conversation_summary": "summariser",
     # Context 16 — ambient transcript digest
     "generate_ambient_digest": "ambient_digest",
+    # Contexts 19 and 20, bounded semantic computer interaction loops
+    "resolve_browser_action": "browser_action_resolver",
+    "resolve_desktop_action": "desktop_action_resolver",
     # Context 11 — graph fact extraction
     "extract_graph_memories": "graph_extract",
     # Context 12 — graph best-child picker
