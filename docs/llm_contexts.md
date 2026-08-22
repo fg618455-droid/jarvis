@@ -231,6 +231,26 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 
 ---
 
+## 19. Browser Semantic Action Resolver
+
+- **File**: [src/jarvis/tools/builtin/browser_interact.py](src/jarvis/tools/builtin/browser_interact.py) through `resolve_semantic_action()` in [interaction_resolver.py](src/jarvis/tools/builtin/interaction_resolver.py).
+- **Trigger**: once per action in a `browserInteract` call, after the outer critical-tool confirmation. The tool is absent unless `computer_interaction_enabled` is true. A call stops on completion, refusal, failure, or after eight actions.
+- **Model / gating**: CHAT tier via `resolve_model(cfg, Tier.CHAT)`. The timeout is `planner_timeout_sec`. Every consequential action receives a separate synchronous `SecurityGate.confirm()` before execution; secret entry is refused without a confirmation.
+- **Inputs**: the user's browser task, the current bounded accessibility snapshot and visible text, and up to eight prior action observations. Page content is labelled untrusted. The system prompt and fixed action contract are byte-static; dynamic task and observations are a JSON user message.
+- **Output**: one JSON object selecting `browser_open`, `browser_snapshot`, `browser_click`, `browser_fill`, `browser_scroll`, `browser_read`, `browser_back`, `browser_close`, or the resolver-only `done` outcome. The output includes a semantic risk class. A deterministic validator rejects selectors, coordinates, scripts, commands, unknown actions, malformed arguments, and non-http(s) navigation before Playwright sees them.
+- **Limits**: `num_ctx: 8192`, `max_tokens: 180`, temperature 0, at most eight calls per tool invocation. Invalid output fails closed for this tool call.
+
+## 20. Desktop Semantic Action Resolver
+
+- **File**: [src/jarvis/tools/builtin/desktop_interact.py](src/jarvis/tools/builtin/desktop_interact.py) through `resolve_semantic_action()` in [interaction_resolver.py](src/jarvis/tools/builtin/interaction_resolver.py).
+- **Trigger**: once per action in a `desktopInteract` call after an already-running application is deterministically scoped to one UIA window. The tool is absent unless `computer_interaction_enabled` is true. A call stops on completion, refusal, failure, or after eight actions.
+- **Model / gating**: CHAT tier via `resolve_model(cfg, Tier.CHAT)`. The timeout is `planner_timeout_sec`. Text setting and every consequential invoke, select, or toggle receives an action-level `SecurityGate.confirm()`; secret entry is refused outright.
+- **Inputs**: the user's task, the selected application title, at most 300 named controls carrying opaque expiring refs, and up to eight prior action observations. UI text is labelled untrusted. Raw handles and process IDs never enter the model context.
+- **Output**: one JSON object selecting one of the nine fixed `desktop_*` actions or the resolver-only `done` outcome, plus a semantic risk class. A deterministic validator pins window operations back to the selected window and rejects raw handles, coordinates, keystrokes, scripts, commands, unknown actions, and malformed arguments.
+- **Limits**: `num_ctx: 8192`, `max_tokens: 180`, temperature 0, at most eight calls per tool invocation. UIA refs expire after 30 seconds. Invalid output fails closed for this tool call.
+
+---
+
 ## Frequency / Size Summary
 
 | # | Context | Per reply | Optional? | Model tier |
@@ -253,6 +273,8 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 | 14 | Tool-specific | per-tool | n/a | FAST or CHAT as listed above |
 | 17 | Ambient digest | 0-1 per configured interval | passive capture only | untiered (`llm_chat_model` direct) |
 | 18 | Canned fallback rendering | 0-1, once per message per language | only with a named voice language | SMALL (FAST tier) |
+| 19 | Browser semantic action resolver | 0-8 per browserInteract | opt-in tool + confirmed invocation | CHAT |
+| 20 | Desktop semantic action resolver | 0-8 per desktopInteract | opt-in tool + confirmed invocation | CHAT |
 
 ## Size-aware auto switches
 
@@ -269,7 +291,7 @@ Driven by `detect_model_size(model_name) → SMALL (≤7.5B) | LARGE (>7.5B)` �
 
 - Routes and models: `llm_routes` contains ordered FAST and CHAT entries. `llm_chat_model` and `fast_model` carry the first effective route models for prompt sizing. `ollama_chat_model` is the PRIVATE and local-fallback model. Every explicit context model is obtained through `resolve_model(cfg, tier)`, except the untiered ambient digest (#17), which calls `cfg.llm_chat_model` directly. Streaming uses one monotonic request deadline; an available loopback route receives a 1.2-second progress window before the remaining tier chain is tried, and the first route to emit text exclusively owns the answer.
 - Embeddings: `ollama_embed_model` through loopback `get_embedding_backend(cfg)`. Embeddings never use `llm_routes`.
-- Flags: `memory_digest_enabled`, `tool_result_digest_enabled`, `remio_memory_enabled`, `llm_thinking_enabled`, `intent_judge_thinking_enabled`, `tool_selection_strategy`, `planner_enabled`, `low_power_mode`, `passive_capture_enabled`. Enabled Remio retrieval runs locally alongside planner-directed diary lookup, contributes attributable excerpts only, and fails without changing the prompt.
+- Flags: `memory_digest_enabled`, `tool_result_digest_enabled`, `remio_memory_enabled`, `llm_thinking_enabled`, `intent_judge_thinking_enabled`, `tool_selection_strategy`, `planner_enabled`, `low_power_mode`, `passive_capture_enabled`, `computer_interaction_enabled`. Enabled Remio retrieval runs locally alongside planner-directed diary lookup, contributes attributable excerpts only, and fails without changing the prompt. Computer interaction defaults off and controls whether the two semantic interaction tools are registered at all.
 - Timeouts: `llm_chat_timeout_sec` (180s, also #17), `llm_digest_timeout_sec` (8s, shared across #4/#5/#6), `llm_tools_timeout_sec`, `intent_judge_timeout_sec` (6s), `planner_timeout_sec` (3s), `simple_reply_first_audio_sec` (3s), `memory_reply_first_audio_sec` (10s), `passive_digest_interval_min` (15-minute worker interval). Reply budgets are monotonic and planner-directed memory work shares the remaining budget. When automatic crew handoff is enabled and the existing crew token and chat ID are configured, the current `TurnTrace` additionally caps local pre-flight and loop work at the 3-second decision point or 5-second hard cutoff. These handoff thresholds are the fixed reply contract, not configuration keys.
 - Caps: `agentic_max_turns` (8), `tool_search_max_calls` (3), `_LLM_MAX_SELECTED` (5), `_DIGEST_MAX_CHARS` (400), `_TOOL_DIGEST_MAX_CHARS` (600), `passive_digest_max_lines` (120). Per-context `max_tokens` caps listed above (50–1500 depending on task — the ambient digest uses 300, the intent judge's 1500 covers reasoning + answer on reasoning models; rewrite tasks scale with input length).
 - Runtime residency: every request an `OllamaBackend` sends carries `keep_alive`, so each call renews the model's residency rather than relying on the startup warmup to hold it. The value comes from `ollama_keep_alive(cfg)` in [src/jarvis/llm/factory.py](src/jarvis/llm/factory.py) and reaches the backend through its route. `low_power_mode` additionally skips startup LLM warmups and shortens that residency from `"30m"` to `"1m"`. It does not change prompts, model selection, timeouts, or context limits.

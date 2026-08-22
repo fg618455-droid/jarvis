@@ -12,7 +12,7 @@ An unavailable confirmation path never permits execution.
 | Level | Behaviour |
 |-------|-----------|
 | `off` | Valid tools execute without confirmation. This level is intended for controlled development only. |
-| `critical` | Every MCP tool, `deleteMeal`, `askCrew`, and `localFiles` write, append, or delete operations require confirmation. |
+| `critical` | Every MCP tool, `deleteMeal`, `askCrew`, `browserInteract`, `desktopInteract`, their consequential inner actions, and `localFiles` write, append, or delete operations require confirmation. |
 | `paranoid` | Every valid built-in and MCP tool requires confirmation. |
 
 The default level is `critical`. An unknown level is treated as `critical`.
@@ -43,6 +43,16 @@ channels survive.
 Argument checks read values exactly as the tool reads them. `localFiles`
 strips and lowercases its operation before acting, so the gate does the same
 and surrounding whitespace cannot slip a mutation past confirmation.
+
+`browserInteract` and `desktopInteract` are multi-action tools. Their public
+invocation first passes through this gate as a critical built-in. Their bounded
+inner loops then call `confirm()` again with `browserInteract.<action>` or
+`desktopInteract.<action>` before each consequential action. These prefixes are
+critical action names in their own right, so the inner confirmation cannot turn
+into a no-op at the default level. Structured action arguments name the concrete
+application or domain, control, task, and bounded non-secret text. A refusal
+stops the loop. Secret-entry actions are refused by the tool before the gate is
+called, so they cannot be approved accidentally.
 
 ## Synchronous execution boundary
 
