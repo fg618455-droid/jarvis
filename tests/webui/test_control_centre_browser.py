@@ -44,11 +44,19 @@ def _free_port() -> int:
 
 @pytest.fixture(scope="module")
 def browser():
-    """A headless Chromium, skipped when the browser is not installed."""
+    """A headless Chromium, skipped when the browser is not installed.
+
+    It is given a synthetic microphone, because the one path here that
+    cannot be proved by rendering a page is the one that captures audio.
+    The flags affect nothing but `getUserMedia`.
+    """
     playwright = pytest.importorskip("playwright.sync_api")
     with playwright.sync_playwright() as driver:
         try:
-            launched = driver.chromium.launch()
+            launched = driver.chromium.launch(args=[
+                "--use-fake-device-for-media-stream",
+                "--use-fake-ui-for-media-stream",
+            ])
         except Exception as exc:  # noqa: BLE001 - any launch failure is a skip
             pytest.skip(f"chromium is not available: {exc}")
         yield launched
@@ -801,6 +809,72 @@ class TestTheConversationIsTheConversationView:
                 assert allowed is expected, preference
             finally:
                 context.close()
+
+
+class TestTheMicrophoneReachesTheDaemon:
+    """The one path here that rendering a page cannot prove.
+
+    Everything else on the Conversation view is a reading being painted.
+    This is a capture opening, a socket carrying frames to the listener's
+    own ingress, and a level measured from those same frames. It runs
+    against the real server with a synthetic microphone, because a stub
+    would prove only that the stub was called.
+    """
+
+    def _open(self, browser, served):
+        pytest.importorskip("simple_websocket")
+        context = browser.new_context(permissions=["microphone"])
+        page = context.new_page()
+        page.console_errors = []
+        page.on("pageerror", lambda error: page.console_errors.append(str(error)))
+        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        # Standalone nothing is listening, so the view would refuse to open
+        # the microphone at all. The socket it opens is the real one.
+        page.evaluate(
+            """async () => {
+                const { api } = await import('/static/js/api.js');
+                api.voiceStatus = async () => ({ ingress: true, sample_rate: 16000 });
+            }"""
+        )
+        page.goto(f"{served}/#/conversation")
+        page.wait_for_selector(".voice-mic", state="visible")
+        return context, page
+
+    def test_opening_it_streams_and_the_level_follows_what_it_hears(
+        self, browser, served,
+    ):
+        context, page = self._open(browser, served)
+        try:
+            page.locator(".voice-mic").click()
+            page.wait_for_timeout(2500)
+
+            assert page.locator(".voice-mic").get_attribute("aria-pressed") == "true"
+            # The state is in words, not only in the meter.
+            assert page.locator(".voice-mic-state").inner_text().strip()
+            height = page.evaluate(
+                "() => document.querySelector('.voice-level > span').style.height"
+            )
+            assert height not in ("", "0%"), f"no level from a live capture: {height!r}"
+            assert not page.console_errors
+        finally:
+            context.close()
+
+    def test_leaving_the_view_lets_the_microphone_go(self, browser, served):
+        """A capture the user cannot see is a capture they cannot stop."""
+        context, page = self._open(browser, served)
+        try:
+            page.locator(".voice-mic").click()
+            page.wait_for_timeout(1500)
+
+            page.goto(f"{served}/#/overview")
+            page.wait_for_timeout(800)
+
+            page.goto(f"{served}/#/conversation")
+            page.wait_for_selector(".voice-mic", state="visible")
+            assert page.locator(".voice-mic").get_attribute("aria-pressed") == "false"
+            assert not page.console_errors
+        finally:
+            context.close()
 
 
 class TestPassiveRecordHasItsOwnHome:
