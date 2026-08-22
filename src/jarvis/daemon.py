@@ -957,6 +957,10 @@ def main(smoke_test: bool = False) -> None:
             auto_detect=cfg.location_auto_detect,
             resolve_cgnat_public_ip=cfg.location_cgnat_resolve_public_ip,
             location_cache_minutes=cfg.location_cache_minutes,
+            manual_city=cfg.location_manual_city,
+            manual_region=cfg.location_manual_region,
+            manual_country=cfg.location_manual_country,
+            manual_timezone=cfg.location_manual_timezone,
         )
         if location_context == "Location: Unknown":
             print("📍 Location detection not available", flush=True)

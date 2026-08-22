@@ -296,6 +296,14 @@ class Settings:
     location_ip_address: str | None
     location_auto_detect: bool
     location_cgnat_resolve_public_ip: bool
+    # Manual place override. GeoIP resolves an IP to whichever city the
+    # ISP registered the address block under, which for rural or overseas
+    # connections is often a distant hub, not the real place. Setting a
+    # city or country here bypasses IP geolocation entirely.
+    location_manual_city: str | None
+    location_manual_region: str | None
+    location_manual_country: str | None
+    location_manual_timezone: str | None
 
     # Web Search
     web_search_enabled: bool
@@ -906,6 +914,14 @@ def get_default_config() -> Dict[str, Any]:
         # Uses a single OpenDNS resolver lookup of myip.opendns.com over DNS (no HTTP services). Disable to avoid any external request.
         "location_cgnat_resolve_public_ip": True,
 
+        # Manual place override. Set a city or country to skip IP geolocation
+        # entirely, e.g. when the ISP registers the IP block under a different
+        # city than where the connection is actually used.
+        "location_manual_city": None,
+        "location_manual_region": None,
+        "location_manual_country": None,
+        "location_manual_timezone": None,
+
         # Web Search
         "web_search_enabled": True,
         "brave_search_api_key": "",
@@ -1199,6 +1215,14 @@ def load_settings() -> Settings:
     location_ip_address = None if location_ip_address_val in (None, "", "null") else str(location_ip_address_val)
     location_auto_detect = bool(merged.get("location_auto_detect", True))
     location_cgnat_resolve_public_ip = bool(merged.get("location_cgnat_resolve_public_ip", True))
+
+    def _clean_str(value: object) -> str | None:
+        return None if value in (None, "", "null") else str(value)
+
+    location_manual_city = _clean_str(merged.get("location_manual_city"))
+    location_manual_region = _clean_str(merged.get("location_manual_region"))
+    location_manual_country = _clean_str(merged.get("location_manual_country"))
+    location_manual_timezone = _clean_str(merged.get("location_manual_timezone"))
     web_search_enabled = bool(merged.get("web_search_enabled", True))
     brave_search_api_key = str(merged.get("brave_search_api_key", "") or "").strip()
     wikipedia_fallback_enabled = bool(merged.get("wikipedia_fallback_enabled", True))
@@ -1447,6 +1471,10 @@ def load_settings() -> Settings:
         location_ip_address=location_ip_address,
         location_auto_detect=location_auto_detect,
         location_cgnat_resolve_public_ip=location_cgnat_resolve_public_ip,
+        location_manual_city=location_manual_city,
+        location_manual_region=location_manual_region,
+        location_manual_country=location_manual_country,
+        location_manual_timezone=location_manual_timezone,
 
         # Web Search
         web_search_enabled=web_search_enabled,

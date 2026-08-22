@@ -802,6 +802,10 @@ def _live_time_location_string(cfg) -> str:
                 auto_detect=getattr(cfg, 'location_auto_detect', True),
                 resolve_cgnat_public_ip=getattr(cfg, 'location_cgnat_resolve_public_ip', True),
                 location_cache_minutes=getattr(cfg, 'location_cache_minutes', 60),
+                manual_city=getattr(cfg, 'location_manual_city', None),
+                manual_region=getattr(cfg, 'location_manual_region', None),
+                manual_country=getattr(cfg, 'location_manual_country', None),
+                manual_timezone=getattr(cfg, 'location_manual_timezone', None),
             )
         return f"Current local time: {format_time_context(tz_name)}. {location_context}"
     except Exception as e:

@@ -428,6 +428,18 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("location_cgnat_resolve_public_ip", "CGNAT Resolve",
       "Resolve public IP when behind CGNAT",
       "location", "bool")
+    f("location_manual_city", "Manual City Override",
+      "Set your real city to skip IP geolocation (fixes ISPs that register your address under the wrong town)",
+      "location", "str", nullable=True)
+    f("location_manual_region", "Manual Region Override",
+      "Optional state/region shown alongside the manual city",
+      "location", "str", nullable=True)
+    f("location_manual_country", "Manual Country Override",
+      "Set your real country to skip IP geolocation",
+      "location", "str", nullable=True)
+    f("location_manual_timezone", "Manual Timezone Override",
+      "IANA timezone (e.g. Asia/Bangkok) to use alongside the manual location",
+      "location", "str", nullable=True)
 
     # --- Features ---
     f("web_search_enabled", "Web Search",

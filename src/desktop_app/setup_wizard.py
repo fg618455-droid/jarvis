@@ -569,6 +569,10 @@ class SetupWizard(QWizard):
                         config_ip=cfg.location_ip_address,
                         auto_detect=cfg.location_auto_detect,
                         resolve_cgnat_public_ip=cfg.location_cgnat_resolve_public_ip,
+                        manual_city=cfg.location_manual_city,
+                        manual_region=cfg.location_manual_region,
+                        manual_country=cfg.location_manual_country,
+                        manual_timezone=cfg.location_manual_timezone,
                     )
                     self._location_working = context != "Location: Unknown"
             except Exception:
@@ -800,6 +804,10 @@ class WelcomePage(QWizardPage):
                     config_ip=cfg.location_ip_address,
                     auto_detect=cfg.location_auto_detect,
                     resolve_cgnat_public_ip=cfg.location_cgnat_resolve_public_ip,
+                    manual_city=cfg.location_manual_city,
+                    manual_region=cfg.location_manual_region,
+                    manual_country=cfg.location_manual_country,
+                    manual_timezone=cfg.location_manual_timezone,
                 )
             except Exception:
                 location_context = get_location_context(auto_detect=True, resolve_cgnat_public_ip=True)
@@ -3171,6 +3179,10 @@ class LocationPage(QWizardPage):
                     config_ip=cfg.location_ip_address,
                     auto_detect=cfg.location_auto_detect,
                     resolve_cgnat_public_ip=cfg.location_cgnat_resolve_public_ip,
+                    manual_city=cfg.location_manual_city,
+                    manual_region=cfg.location_manual_region,
+                    manual_country=cfg.location_manual_country,
+                    manual_timezone=cfg.location_manual_timezone,
                 )
             except Exception:
                 location_context = get_location_context(auto_detect=True, resolve_cgnat_public_ip=True)
