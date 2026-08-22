@@ -20,6 +20,25 @@ and settings. The daemon serves it in-process.
 5. **Read live, write through the same doors.** Mutations go through the
    same functions the voice path calls, including the security gate.
 
+## Visual language
+
+Every colour, type size, spacing step, and duration the interface uses is
+named in `static/css/tokens.css`. A view that needs a shade it cannot find
+gains a token rather than a literal, so the whole instrument is retuned from
+one file and no view can drift from the rest.
+
+| Group | Rule |
+|---|---|
+| Surface | Four depths: the page, a card above it, a well recessed inside a card, and the raised controls within either |
+| Colour | One accent, for what is active, focused, selected, or newly arrived. Three status tones, each with a text, fill, and border value so a chip, a rail, and a meter read the same |
+| Type | An eight-step scale. Headings, labels, and readings are chosen from the ladder rather than per view |
+| Motion | Transitions mark a change of state, never decorate one. `prefers-reduced-motion` disables every animation and transition outright |
+
+The sidebar groups its ten destinations under three names: what is happening
+now, what the assistant knows, and how the machine is set up. Each group is
+an ARIA group carrying that name, so the structure is available to a screen
+reader and not only to the eye.
+
 ## Runtime
 
 | Aspect | Behaviour |

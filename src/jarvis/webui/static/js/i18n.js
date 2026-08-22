@@ -20,6 +20,10 @@ const STRINGS = {
     "nav.crew": "Mission Control",
     "nav.settings": "Settings",
 
+    "nav.group.live": "Live",
+    "nav.group.knowledge": "Knowledge",
+    "nav.group.operations": "Operations",
+
     "phase.starting": "starting up",
     "phase.idle": "waiting for the wake word",
     "phase.capturing": "listening",
@@ -288,6 +292,10 @@ const STRINGS = {
     "nav.llm": "LLM-Routen",
     "nav.crew": "Mission Control",
     "nav.settings": "Einstellungen",
+
+    "nav.group.live": "Live",
+    "nav.group.knowledge": "Wissen",
+    "nav.group.operations": "Betrieb",
 
     "phase.starting": "startet",
     "phase.idle": "wartet auf das Weckwort",

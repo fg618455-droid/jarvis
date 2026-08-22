@@ -17,7 +17,7 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font);
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }
@@ -77,7 +77,7 @@ a:hover {
   align-items: center;
   gap: var(--s5);
   color: var(--fg-dim);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .header-metric {
@@ -88,7 +88,7 @@ a:hover {
 
 .header-metric .label {
   color: var(--fg-mute);
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .passive-indicator {
@@ -208,7 +208,7 @@ a:hover {
 .nav-item .badge {
   margin-left: auto;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-micro);
   color: var(--fg-mute);
 }
 
@@ -216,12 +216,33 @@ a:hover {
   color: var(--accent);
 }
 
+/* Ten destinations read as a list; three named groups read as a map. The
+   label is decoration for the eye and structure for a screen reader, so
+   the buttons under it sit in a group that carries the same name. */
+.nav-group {
+  display: grid;
+  gap: var(--s1);
+}
+
+.nav-group + .nav-group {
+  margin-top: var(--s4);
+}
+
+.nav-group-label {
+  padding: 0 var(--s3);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+
 .sidebar-foot {
   margin-top: auto;
   padding: var(--s3);
   border-top: 1px solid var(--line-soft);
   color: var(--fg-mute);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   display: grid;
   gap: var(--s1);
 }
@@ -258,13 +279,13 @@ a:hover {
 }
 
 .view-head h1 {
-  font-size: 20px;
+  font-size: var(--fs-xl);
   font-weight: 600;
 }
 
 .view-head p {
   color: var(--fg-mute);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .view-head .actions {
@@ -292,7 +313,7 @@ a:hover {
 }
 
 .card > header h2 {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -302,7 +323,7 @@ a:hover {
 .card > header .aside {
   margin-left: auto;
   color: var(--fg-mute);
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .grid {
@@ -338,21 +359,21 @@ a:hover {
 }
 
 .stat-label {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--fg-mute);
 }
 
 .stat-value {
-  font-size: 24px;
+  font-size: var(--fs-2xl);
   line-height: 1.1;
 }
 
 .stat-value.small {
-  font-size: 16px;
+  font-size: var(--fs-lg);
 }
 
 .stat-sub {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--fg-dim);
 }
 
@@ -396,7 +417,7 @@ a:hover {
   display: flex;
   flex-wrap: wrap;
   gap: var(--s3);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--fg-dim);
 }
 
@@ -432,12 +453,12 @@ a:hover {
 table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 th {
   text-align: left;
-  font-size: 11px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--fg-mute);
@@ -552,7 +573,7 @@ input[type="checkbox"] {
   border-radius: var(--r-sm);
   background: var(--surface-3);
   border: 1px solid var(--line);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--fg-dim);
 }
 
@@ -562,9 +583,9 @@ input[type="checkbox"] {
   color: var(--accent);
 }
 
-.chip.ok { color: var(--ok); border-color: rgba(74, 222, 128, 0.3); }
-.chip.warn { color: var(--warn); border-color: rgba(251, 191, 36, 0.3); }
-.chip.bad { color: var(--bad); border-color: rgba(248, 113, 113, 0.3); }
+.chip.ok { color: var(--ok); border-color: var(--ok-line); }
+.chip.warn { color: var(--warn); border-color: var(--warn-line); }
+.chip.bad { color: var(--bad); border-color: var(--bad-line); }
 
 /* ── Misc ────────────────────────────────────────────────────────────── */
 
@@ -576,7 +597,7 @@ input[type="checkbox"] {
   padding: var(--s6) var(--s4);
   text-align: center;
   color: var(--fg-mute);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .rows {
@@ -592,7 +613,7 @@ input[type="checkbox"] {
 
 .row .key {
   color: var(--fg-mute);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   min-width: 140px;
 }
 
@@ -604,6 +625,15 @@ input[type="checkbox"] {
 .scroll {
   max-height: 420px;
   overflow-y: auto;
+}
+
+/* A well: content that belongs inside a card but is not the card itself,
+   such as a feed or a table. Recessing it gives a view three depths to
+   work with rather than two. */
+.well {
+  background: var(--surface-inset);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
 }
 
 ::-webkit-scrollbar {
@@ -641,7 +671,7 @@ input[type="checkbox"] {
   border-radius: var(--r);
   padding: var(--s3) var(--s4);
   box-shadow: var(--shadow);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   max-width: 380px;
 }
 
@@ -658,8 +688,15 @@ input[type="checkbox"] {
   }
 
   .nav-item span.text,
+  .nav-group-label,
   .sidebar-foot {
     display: none;
+  }
+
+  /* Without their labels the groups still need to read as groups, so the
+     gap between them becomes the only separator. */
+  .nav-group + .nav-group {
+    margin-top: var(--s3);
   }
 
   .nav-item {

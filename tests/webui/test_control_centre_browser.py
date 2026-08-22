@@ -30,6 +30,8 @@ VIEWS = [
     "system",
     "settings",
     "llm",
+    "logs",
+    "crew",
 ]
 
 
@@ -102,6 +104,17 @@ class TestEveryViewRenders:
             page.wait_for_timeout(400)
 
         assert not page.foreign_requests, f"outbound: {page.foreign_requests}"
+
+    def test_every_destination_sits_inside_a_named_navigation_group(self, page, served):
+        page.goto(served, wait_until="networkidle")
+        page.wait_for_selector(".nav-group", state="visible")
+
+        grouped = page.locator(".nav-group .nav-item").count()
+
+        assert grouped == len(VIEWS), "a destination escaped its group"
+        assert page.locator(".nav-item").count() == grouped
+        for group in page.locator(".nav-group").all():
+            assert group.get_attribute("aria-label"), "a group has no accessible name"
 
     def test_switching_language_keeps_the_view_you_are_on(self, page, served):
         page.goto(f"{served}/#/tools", wait_until="networkidle")
