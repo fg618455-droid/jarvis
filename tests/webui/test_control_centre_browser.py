@@ -264,6 +264,168 @@ class TestMemoryMaintenance:
         assert page.evaluate("window.__maintenanceCalls") == []
 
 
+class TestMissionControl:
+    """The crew view against a reading it never has to fetch.
+
+    The test server has no crew endpoint configured, so the first reading is
+    stubbed and every later one is pushed the way the daemon's poller pushes
+    it. That is the path that matters: the view is fed by the event stream,
+    not by a timer of its own.
+    """
+
+    ROSTER = ["JARVIS", "DEV", "RESEARCH", "ASSISTANT", "SCHULE", "SCRIBE", "REACH"]
+
+    def _reading(self, entries, agents):
+        return {
+            "configured": True,
+            "reachable": True,
+            "checked_at": 1_755_800_000,
+            "entries": entries,
+            "agents": agents,
+            "daily": [
+                {"date": f"2026-08-{day:02d}", "count": 0,
+                 "success": 0, "partial": 0, "failure": 0}
+                for day in range(9, 23)
+            ],
+        }
+
+    def _agent(self, name, total=0, last_status=None, last_at=None):
+        return {
+            "name": name, "success": total, "partial": 0, "failure": 0,
+            "total": total, "last_at": last_at, "last_status": last_status,
+            "daily": [0] * 13 + [total],
+        }
+
+    def _open(self, page, served, entries):
+        # In roster order, the way the endpoint reports it.
+        agents = [
+            self._agent("DEV", total=2, last_status="success",
+                        last_at="2026-08-22T09:00:00+00:00")
+            if name == "DEV"
+            else self._agent(name)
+            for name in self.ROSTER
+        ]
+        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.evaluate(
+            """async (reading) => {
+                const { api } = await import('/static/js/api.js');
+                api.crew = async () => reading;
+                window.__push = async (next) => {
+                    const { live } = await import('/static/js/sse.js');
+                    live._emit('crew', next);
+                };
+            }""",
+            self._reading(entries, agents),
+        )
+        page.goto(f"{served}/#/crew")
+        page.wait_for_selector(".agent", state="visible")
+        return agents
+
+    ENTRIES = [
+        {"id": 2, "agent_name": "DEV", "task_description": "Fixed the router",
+         "model_used": "gpt-5.6-sol", "status": "success",
+         "created_at": "2026-08-22T09:00:00+00:00"},
+        {"id": 1, "agent_name": "DEV", "task_description": "Broke the router",
+         "model_used": "gpt-5.6-sol", "status": "failure",
+         "created_at": "2026-08-22T08:00:00+00:00"},
+    ]
+
+    def test_an_agent_with_nothing_logged_is_shown_as_quiet_not_hidden(
+        self, page, served,
+    ):
+        self._open(page, served, self.ENTRIES)
+
+        names = page.locator(".agent-name").all_inner_texts()
+
+        assert names == self.ROSTER, "the roster is not all there"
+        reach = page.locator(".agent", has=page.get_by_text("REACH", exact=True))
+        assert "quiet" in (reach.get_attribute("class") or "")
+        assert not page.console_errors
+
+    def test_the_reading_says_how_old_it_is(self, page, served):
+        self._open(page, served, self.ENTRIES)
+
+        assert page.locator(".crew-state").inner_text().strip()
+        assert page.locator(".crew-checked").inner_text().strip()
+
+    def test_a_pushed_reading_repaints_without_being_asked_for(self, page, served):
+        agents = self._open(page, served, self.ENTRIES)
+        assert page.locator(".feed-row").count() == 2
+
+        page.evaluate(
+            "reading => window.__push(reading)",
+            self._reading([
+                {"id": 3, "agent_name": "SCRIBE", "task_description": "Wrote it down",
+                 "model_used": "gemini-2.5-flash", "status": "partial",
+                 "created_at": "2026-08-22T10:00:00+00:00"},
+                *self.ENTRIES,
+            ], agents),
+        )
+        page.wait_for_timeout(300)
+
+        assert page.locator(".feed-row").count() == 3
+        assert not page.console_errors
+
+    def test_only_a_line_that_just_arrived_is_marked_as_new(self, page, served):
+        agents = self._open(page, served, self.ENTRIES)
+        # Nothing is new on the first reading, or everything would be.
+        assert page.locator(".feed-row.arrived").count() == 0
+
+        landed = self._reading([
+            {"id": 3, "agent_name": "SCRIBE", "task_description": "Wrote it down",
+             "model_used": "gemini-2.5-flash", "status": "success",
+             "created_at": "2026-08-22T10:00:00+00:00"},
+            *self.ENTRIES,
+        ], agents)
+        page.evaluate("reading => window.__push(reading)", landed)
+        page.wait_for_timeout(300)
+        assert page.locator(".feed-row.arrived").count() == 1
+
+        # The same line on the next reading is no longer news.
+        page.evaluate("reading => window.__push(reading)", landed)
+        page.wait_for_timeout(300)
+        assert page.locator(".feed-row.arrived").count() == 0
+
+    def test_choosing_an_agent_narrows_the_feed_to_its_work(self, page, served):
+        self._open(page, served, self.ENTRIES + [
+            {"id": 0, "agent_name": "SCHULE", "task_description": "Read the timetable",
+             "model_used": "gpt-5.6-sol", "status": "success",
+             "created_at": "2026-08-22T07:00:00+00:00"},
+        ])
+        assert page.locator(".feed-row").count() == 3
+
+        page.locator(".agent", has=page.get_by_text("DEV", exact=True)).click()
+        page.wait_for_timeout(200)
+
+        assert set(page.locator(".feed-agent").all_inner_texts()) == {"DEV"}
+        assert page.locator(".feed-row").count() == 2
+        assert not page.console_errors
+
+    def test_a_failing_filter_says_so_rather_than_showing_an_empty_feed(
+        self, page, served,
+    ):
+        self._open(page, served, [self.ENTRIES[0]])
+
+        page.get_by_role("button", name="Failures only").click()
+        page.wait_for_timeout(200)
+
+        assert page.locator(".feed-row").count() == 0
+        assert page.get_by_text("Nothing here matches the filter.").is_visible()
+
+    def test_what_an_agent_logged_is_rendered_as_text(self, page, served):
+        """The task text comes from a machine this daemon does not own."""
+        self._open(page, served, [{
+            "id": 9, "agent_name": "<img src=x onerror=alert(1)>",
+            "task_description": "<script>alert(1)</script> shipped",
+            "model_used": "gpt-5.6-sol", "status": "success",
+            "created_at": "2026-08-22T09:00:00+00:00",
+        }])
+
+        assert page.get_by_text("<script>alert(1)</script> shipped", exact=True).is_visible()
+        assert page.locator("main img").count() == 0
+        assert page.locator("main script").count() == 0
+
+
 class TestStreamingApiClient:
     @pytest.mark.parametrize(
         ("method_name", "path"),

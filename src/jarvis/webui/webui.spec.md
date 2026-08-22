@@ -274,6 +274,40 @@ entries is reported with zero counts and a null `last_at`, which the view
 shows as quiet. An unlisted agent is appended rather than dropped, because
 hiding real activity is the worse failure.
 
+### What the view shows
+
+Three bands, over one reading:
+
+| Band | Holds |
+|---|---|
+| Summary | How much of the roster is working, the fortnight's total, the success rate, and how long ago the last thing happened. Under them, fourteen days as bars stacked by outcome |
+| Roster | One card per agent: last outcome, how long ago, its own fourteen days, and the share that succeeded. A card selects that agent |
+| Activity | The log as a feed on a single rail, grouped by day, each entry carrying its full text rather than a truncated column |
+
+The feed can be narrowed to one agent, to failures, or to both. Filtering
+never asks for anything: it selects from the reading already on the page,
+and says how much of it is showing.
+
+### What "live" means here
+
+An agent logs a line when it *finishes* something. Nothing in the log says
+what an agent is doing right now, so the view does not imply that it knows.
+What is genuinely live is shown and nothing else is:
+
+- **Freshness.** How long ago the reading was taken, counted up every
+  second, beside a state that never stands in for it.
+- **Recency.** How long ago each agent last worked, and each entry, on the
+  same second-by-second count.
+- **Arrival.** An entry whose id was not in the previous reading is marked
+  once, for as long as the glow lasts, and never again. A first load marks
+  nothing, because everything would be marked and the signal would mean
+  nothing.
+- **Silence.** An agent with nothing in the window is dimmed and says so.
+
+Nothing else on this view moves. A marker that pulses without a change of
+state behind it is decoration, and decoration on an operations view reads
+as information that is not there.
+
 ## Configuration
 
 | Key | Type | Default | Meaning |

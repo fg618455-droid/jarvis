@@ -429,25 +429,6 @@ a:hover {
   margin-right: var(--s1);
 }
 
-/* ── Heatmap ─────────────────────────────────────────────────────────── */
-
-.heatgrid {
-  display: flex;
-  gap: var(--s1);
-}
-
-.heatcell {
-  flex: 1;
-  height: 20px;
-  border-radius: var(--r-sm);
-  background: var(--accent);
-  transition: opacity var(--t-fast);
-}
-
-.heatcell:hover {
-  opacity: 1 !important;
-}
-
 /* ── Tables ──────────────────────────────────────────────────────────── */
 
 table {
@@ -709,5 +690,17 @@ input[type="checkbox"] {
 
   .header {
     padding: 0 var(--s3);
+    gap: var(--s3);
+  }
+
+  /* The phase and the two recording indicators are the header's reason to
+     exist on a narrow screen. Uptime and last turn wrap into two lines
+     there and are on the Overview anyway. */
+  .header-metric {
+    display: none;
+  }
+
+  .header-right {
+    gap: var(--s3);
   }
 }
