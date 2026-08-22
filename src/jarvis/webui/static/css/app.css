@@ -336,10 +336,14 @@ a:hover {
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 
+/* A pair of cards that hold unrelated readings, so they size to what they
+   hold. Stretched to match, an empty one becomes a tall box of nothing
+   beside a full one. */
 .grid-2 {
   display: grid;
   gap: var(--s4);
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  align-items: start;
 }
 
 .split {
@@ -441,14 +445,21 @@ table {
   font-size: var(--fs-sm);
 }
 
+/* The header stays put while the body scrolls under it. Without it a table
+   taller than its container ends in a row cut through the middle of its own
+   text, which reads as a rendering fault rather than as more below. */
 th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   text-align: left;
   font-size: var(--fs-micro);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--fg-mute);
   font-weight: 600;
-  padding: 0 var(--s3) var(--s2);
+  padding: var(--s2) var(--s3);
+  background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
 
@@ -548,6 +559,73 @@ input[type="checkbox"] {
   height: 15px;
 }
 
+/* ── State pill ──────────────────────────────────────────────────────── */
+
+/* A state and, beside it, whatever qualifies that state: how old the
+   reading is, how much of it is still to be processed. They are different
+   facts and neither is allowed to stand in for the other, so they share a
+   pill and a divider rather than a sentence.
+
+   Shared by every view that reports something continuously true, which is
+   why it lives here rather than beside the first view that needed one. */
+.state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s1) var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-size: var(--fs-xs);
+  color: var(--fg-dim);
+}
+
+.state-pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-mute);
+  flex: none;
+}
+
+.state-pill-note {
+  padding-left: var(--s2);
+  border-left: 1px solid var(--line);
+  color: var(--fg-mute);
+}
+
+.state-pill.live {
+  color: var(--ok);
+  border-color: var(--ok-line);
+}
+
+.state-pill.down {
+  color: var(--warn);
+  border-color: var(--warn-line);
+}
+
+/* Recording borrows the header indicator's tone, because a page open at
+   any depth has to read the same thing about the same microphone. */
+.state-pill.recording {
+  color: var(--bad);
+  border-color: var(--bad-line);
+}
+
+.state-pill.live .state-pill-dot { background: var(--ok); }
+.state-pill.recording .state-pill-dot { background: var(--bad); }
+
+/* Something that is still going on stays true between ticks, so it has to
+   say so between them. Nothing else on these views repeats. */
+.state-pill.live .state-pill-dot,
+.state-pill.recording .state-pill-dot {
+  animation: breathe 3.2s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 /* ── Chips and pills ─────────────────────────────────────────────────── */
 
 .chip {
@@ -578,8 +656,11 @@ input[type="checkbox"] {
   color: var(--fg-mute);
 }
 
+/* Enough room to read as deliberate rather than as a rendering failure,
+   and no more. A card holding one sentence should not be the tallest thing
+   on the page. */
 .empty {
-  padding: var(--s6) var(--s4);
+  padding: var(--s5) var(--s4);
   text-align: center;
   color: var(--fg-mute);
   font-size: var(--fs-sm);
@@ -607,8 +688,10 @@ input[type="checkbox"] {
   word-break: break-word;
 }
 
+/* Sized against the window rather than a fixed count of pixels: 420px was
+   half a screen on the machine this runs on and two screens on a laptop. */
 .scroll {
-  max-height: 420px;
+  max-height: min(58vh, 44rem);
   overflow-y: auto;
 }
 

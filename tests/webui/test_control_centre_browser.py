@@ -128,6 +128,46 @@ class TestEveryViewRenders:
         assert not page.console_errors
 
 
+class TestALongTableSaysThereIsMoreBelow:
+    """A table taller than its container used to end in a sliced row.
+
+    Cut through the middle of its own text with nothing pinned above it,
+    that reads as a rendering fault rather than as more below.
+    """
+
+    def test_the_column_headings_stay_put_while_the_rows_scroll(self, page, served):
+        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.evaluate(
+            """async () => {
+                const { api } = await import('/static/js/api.js');
+                api.tools = async () => ({ servers: [], tools: Array.from(
+                    { length: 60 },
+                    (unused, n) => ({
+                        name: `tool${n}`, origin: 'builtin', server: null,
+                        description: 'does a thing', needs_confirmation: false,
+                        last_use: null,
+                    }),
+                )});
+            }"""
+        )
+        page.goto(f"{served}/#/tools")
+        page.wait_for_selector("table th", state="visible")
+
+        page.evaluate(
+            "() => { const s = document.querySelector('.card .scroll');"
+            "  s.scrollTop = s.scrollHeight; }"
+        )
+        page.wait_for_timeout(200)
+
+        heading = page.locator("table th").first
+        assert heading.is_visible()
+        # Still inside the scroll region rather than scrolled off the top.
+        assert heading.bounding_box()["y"] >= (
+            page.locator(".card .scroll").bounding_box()["y"] - 1
+        )
+        assert not page.console_errors
+
+
 class TestLlmRouteLayout:
     """The route view keeps every operational detail inside its own card."""
 
@@ -290,7 +330,7 @@ class TestMotionIsOptional:
             }"""
         )
         page.goto(f"{served}/#/crew")
-        page.wait_for_selector(".crew-state", state="visible")
+        page.wait_for_selector(".state-pill", state="visible")
         try:
             return page.evaluate(
                 """() => [...document.querySelectorAll('*')]
@@ -433,8 +473,8 @@ class TestMissionControl:
     def test_the_reading_says_how_old_it_is(self, page, served):
         self._open(page, served, self.ENTRIES)
 
-        assert page.locator(".crew-state").inner_text().strip()
-        assert page.locator(".crew-checked").inner_text().strip()
+        assert page.locator(".state-pill").inner_text().strip()
+        assert page.locator(".state-pill-age").inner_text().strip()
 
     def test_a_pushed_reading_repaints_without_being_asked_for(self, page, served):
         agents = self._open(page, served, self.ENTRIES)

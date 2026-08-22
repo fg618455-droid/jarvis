@@ -63,7 +63,7 @@ export async function mount(root) {
   state.failuresOnly = false;
   state.seen = new Set();
 
-  const pill = el("span", { class: "crew-state" });
+  const pill = el("span", { class: "state-pill" });
   // The chat panel is built once and left alone by re-renders below —
   // rebuilding it on every reload would drop whatever the user was
   // mid-typing and wipe the conversation so far.
@@ -217,18 +217,18 @@ function paintState(pill, payload) {
       ? t("crew.state.live")
       : t("crew.state.offline");
 
-  pill.className = `crew-state ${live_ ? "live" : "down"}`;
+  pill.className = `state-pill ${live_ ? "live" : "down"}`;
   pill.append(
-    el("span", { class: "crew-state-dot" }),
+    el("span", { class: "state-pill-dot" }),
     el("span", { text: label }),
   );
 
   if (payload.checked_at) {
-    const when = el("span", { class: "crew-checked" });
+    const when = el("span", { class: "state-pill-age" });
     tick(when, payload.checked_at, (seconds) =>
       t("crew.checked", { when: fmt.ago(seconds, t) }),
     );
-    pill.append(el("span", { class: "crew-checked-wrap" }, [when]));
+    pill.append(el("span", { class: "state-pill-note" }, [when]));
   }
 }
 

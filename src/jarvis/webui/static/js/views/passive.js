@@ -17,7 +17,7 @@ import { live } from "../sse.js";
 import { clear, el, empty, toast } from "../ui.js";
 
 export async function mount(root) {
-  const pill = el("span", { class: "crew-state" });
+  const pill = el("span", { class: "state-pill" });
   const toggle = el("button", { class: "btn", type: "button" });
   const card = el("section", { class: "card" });
 
@@ -53,11 +53,11 @@ export async function mount(root) {
    for, so it is said in the frame rather than inside a card. */
 function paintState(pill, payload) {
   clear(pill);
-  pill.className = `crew-state${payload.enabled ? " recording" : ""}`;
+  pill.className = `state-pill${payload.enabled ? " recording" : ""}`;
   pill.append(
-    el("span", { class: "crew-state-dot" }),
+    el("span", { class: "state-pill-dot" }),
     el("span", { text: payload.enabled ? t("passive.on") : t("passive.off") }),
-    el("span", { class: "crew-checked-wrap" }, [
+    el("span", { class: "state-pill-note" }, [
       el("span", { text: t("passive.waiting", { n: payload.undigested_count || 0 }) }),
     ]),
   );

@@ -32,7 +32,9 @@ one file and no view can drift from the rest.
 | Surface | Four depths: the page, a card above it, a well recessed inside a card, and the raised controls within either |
 | Colour | One accent, for what is active, focused, selected, or newly arrived. Three status tones, each with a text, fill, and border value so a chip, a rail, and a meter read the same |
 | Type | An eight-step scale. Headings, labels, and readings are chosen from the ladder rather than per view |
-| Motion | Transitions mark a change of state, never decorate one. `prefers-reduced-motion` disables every animation and transition outright |
+| Motion | Transitions mark a change of state, never decorate one. `prefers-reduced-motion` disables every animation and transition outright, and anything painted from JavaScript, which that rule cannot reach, asks `motionAllowed()` for itself |
+| Overflow | A region that scrolls is sized against the window rather than a fixed count of pixels, and pins its heading above it, so a partly visible row reads as more below rather than as a rendering fault |
+| Shared parts | A component two views use is named for what it is rather than for whichever view needed it first, and lives in `app.css` rather than beside one of them |
 
 The sidebar groups its eleven destinations under three names: what is
 happening now, what the assistant knows, and how the machine is set up. Each
