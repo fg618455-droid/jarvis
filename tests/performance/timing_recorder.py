@@ -1,10 +1,10 @@
 """⏱️ LLM call timing recorder.
 
-Monkey-patches the three entry points in ``jarvis.llm`` (``call_llm_direct``,
-``call_llm_streaming``, ``chat_with_messages``) to record per-call timings
-grouped by the context that issued the call (evaluator, intent judge, tool
-router, etc.). The context is inferred from the caller's ``__qualname__`` on
-the Python call stack, so no instrumentation is needed at the call site.
+Monkey-patches the public helpers in ``jarvis.llm``, the reply engine's chat
+indirection, and ``RoutedBackend.direct`` to record per-call timings grouped
+by the context that issued the call (intent judge, tool router, planner, and
+so on). The context is inferred from the caller's ``__qualname__`` on the
+Python call stack, so no instrumentation is needed at the call site.
 
 Usage:
     with TimingRecorder() as rec:
@@ -25,7 +25,7 @@ from typing import Callable, Optional
 from jarvis import llm as _llm_module
 
 
-# Map caller __qualname__ → graph context name. Matches the 13 contexts in
+# Map caller __qualname__ → graph context name. Mirrors the contexts in
 # docs/llm_contexts.md. Anything not listed gets lumped into "other" so we
 # notice new call sites drift in without us updating the doc.
 #
@@ -38,6 +38,12 @@ _CALLER_TO_CONTEXT: dict[str, str] = {
     "warm_up_reply_prefix": "reply_prefix_warmup",
     # Context 1 — main chat loop uses chat_with_messages
     "run_reply_engine": "main_chat_turn",
+    # Context 7 — tool router
+    "_select_llm": "tool_router",
+    # Context 12 — task-list planner
+    "_plan_query": "planner",
+    # Context 13 — plan step resolver
+    "resolve_next_tool_call": "plan_step_resolver",
     # Context 2 — intent judge (calls via internal helper)
     "IntentJudge.evaluate": "intent_judge",
     "IntentJudge._call_llm": "intent_judge",
@@ -124,7 +130,24 @@ class TimingRecorder:
             # takes a messages list.
             model = ""
             prompt_chars = 0
-            if name == "chat_with_messages":
+            if name == "backend_direct":
+                model = kwargs.get("chat_model") or (
+                    args[1] if len(args) > 1 else ""
+                )
+                sys_p = kwargs.get("system_prompt") or (
+                    args[2] if len(args) > 2 else ""
+                )
+                user_c = kwargs.get("user_content") or (
+                    args[3] if len(args) > 3 else ""
+                )
+                prompt_chars = len(str(sys_p)) + len(str(user_c))
+            elif name == "engine_chat_with_messages":
+                cfg = kwargs.get("cfg") or (args[0] if args else None)
+                model = getattr(cfg, "llm_chat_model", "") if cfg is not None else ""
+                msgs = kwargs.get("messages") or (args[1] if len(args) > 1 else [])
+                if isinstance(msgs, list):
+                    prompt_chars = sum(len(str(m.get("content", ""))) for m in msgs)
+            elif name == "chat_with_messages":
                 model = kwargs.get("chat_model") or (args[1] if len(args) > 1 else "")
                 msgs = kwargs.get("messages") or (args[2] if len(args) > 2 else [])
                 if isinstance(msgs, list):
@@ -143,7 +166,11 @@ class TimingRecorder:
             if isinstance(result, str):
                 response_chars = len(result)
             elif isinstance(result, dict):
-                response_chars = len(str(result.get("content", "")))
+                message = result.get("message")
+                if isinstance(message, dict):
+                    response_chars = len(str(message.get("content", "")))
+                else:
+                    response_chars = len(str(result.get("content", "")))
             else:
                 response_chars = 0
 
@@ -189,6 +216,32 @@ class TimingRecorder:
             wrapped = self._wrap(name, originals[name])
             setattr(_llm_module, name, wrapped)
             self._originals["_sites"].append((_llm_module, name, originals[name]))
+
+        # The reply engine owns a provider-dispatched module-level chat
+        # indirection. It is intentionally not the legacy helper imported
+        # from ``jarvis.llm``, so patch it explicitly when the module is live.
+        engine_module = _sys.modules.get("jarvis.reply.engine")
+        if engine_module is not None:
+            engine_chat = getattr(engine_module, "chat_with_messages", None)
+            if callable(engine_chat):
+                wrapped = self._wrap("engine_chat_with_messages", engine_chat)
+                setattr(engine_module, "chat_with_messages", wrapped)
+                self._originals["_sites"].append(
+                    (engine_module, "chat_with_messages", engine_chat)
+                )
+
+        # Pre-flight contexts use the provider-routed ``direct`` method
+        # rather than the legacy module-level helper. Patching this one
+        # boundary records router, planner, enrichment, and digest calls
+        # without double-counting concrete provider attempts underneath it.
+        from jarvis.llm.route import RoutedBackend
+
+        routed_direct = RoutedBackend.direct
+        wrapped_direct = self._wrap("backend_direct", routed_direct)
+        setattr(RoutedBackend, "direct", wrapped_direct)
+        self._originals["_sites"].append(
+            (RoutedBackend, "direct", routed_direct)
+        )
 
     def _unpatch(self) -> None:
         for mod, name, original in self._originals.get("_sites", []):
