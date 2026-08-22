@@ -100,7 +100,8 @@ class TestImportDiaryEndpoint:
     @pytest.fixture(autouse=True)
     def setup_app(self, tmp_path):
         """Set up Flask test client with a temporary database."""
-        from jarvis.webui.api.memory import get_graph_store
+        from jarvis.memory.graph import GraphMemoryStore
+        from jarvis.webui.api import memory as memory_api
         from tests.webui.conftest import control_centre_client
 
         self.db_path = str(tmp_path / "test.db")
@@ -119,10 +120,18 @@ class TestImportDiaryEndpoint:
         )
         self.db.conn.commit()
 
+        # ``get_graph_store`` is process-global. Patch decorators below alter
+        # ``_get_db_path`` only while a test runs, but a store cached by an
+        # earlier Web UI test would otherwise win and can point at the real
+        # default database. Inject and own the temporary store explicitly.
+        self.graph_store = GraphMemoryStore(self.db_path)
+        memory_api._graph_store = self.graph_store
         self.client = control_centre_client()
 
         yield
         self.db.close()
+        self.graph_store.close()
+        memory_api._graph_store = None
 
     def _parse_ndjson(self, data: bytes) -> list[dict]:
         """Parse newline-delimited JSON from response data."""
@@ -131,7 +140,7 @@ class TestImportDiaryEndpoint:
 
     @patch("jarvis.webui.api.memory._get_db_path")
     @patch("jarvis.webui.api.memory.load_settings")
-    @patch("src.jarvis.memory.graph_ops.call_llm_direct")
+    @patch("jarvis.memory.graph_ops.call_llm_direct")
     def test_import_streams_progress(self, mock_llm, mock_settings, mock_db_path):
         """Should stream start, progress, and complete messages."""
         mock_db_path.return_value = self.db_path
@@ -144,12 +153,11 @@ class TestImportDiaryEndpoint:
         cfg.llm_thinking_enabled = False
         mock_settings.return_value = cfg
 
-        # LLM returns facts for extraction, NONE for placement (writes to root)
+        # Each empty fixed branch accepts its first fact directly, so these
+        # two summaries need one branch-tagged extraction response each.
         mock_llm.side_effect = [
-            '["Likes dark roast coffee"]',  # extract facts from summary 1
-            "NONE",                          # traverse for fact 1 (no children, goes to root)
-            '["Works at Acme Corp"]',        # extract facts from summary 2
-            "NONE",                          # traverse for fact 2
+            '[{"branch": "USER", "fact": "Likes dark roast coffee"}]',
+            '[{"branch": "USER", "fact": "Works at Acme Corp"}]',
         ]
 
         resp = self.client.post("/api/graph/import-diary")
@@ -167,6 +175,8 @@ class TestImportDiaryEndpoint:
 
         complete_msg = next(m for m in messages if m["type"] == "complete")
         assert complete_msg["processed"] == 2
+        assert "dark roast coffee" in self.graph_store.get_node("user").data.lower()
+        assert "acme corp" in self.graph_store.get_node("user").data.lower()
 
     @patch("jarvis.webui.api.memory._get_db_path")
     @patch("jarvis.webui.api.memory.load_settings")
@@ -190,7 +200,7 @@ class TestImportDiaryEndpoint:
 
     @patch("jarvis.webui.api.memory._get_db_path")
     @patch("jarvis.webui.api.memory.load_settings")
-    @patch("src.jarvis.memory.graph_ops.call_llm_direct")
+    @patch("jarvis.memory.graph_ops.call_llm_direct")
     def test_import_continues_on_per_summary_error(self, mock_llm, mock_settings, mock_db_path):
         """If one summary fails, the import should continue with the rest."""
         mock_db_path.return_value = self.db_path
@@ -205,9 +215,8 @@ class TestImportDiaryEndpoint:
 
         # First summary extraction fails, second succeeds
         mock_llm.side_effect = [
-            None,                       # extraction fails for summary 1
-            '["Works at Acme Corp"]',   # extract facts from summary 2
-            "NONE",                     # traverse
+            None,
+            '[{"branch": "USER", "fact": "Works at Acme Corp"}]',
         ]
 
         resp = self.client.post("/api/graph/import-diary")
