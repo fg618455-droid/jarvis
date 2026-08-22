@@ -1173,9 +1173,10 @@ def build_warm_profile(
 def format_warm_profile_block(profile: dict[str, str]) -> str:
     """Render a warm profile dict as a labelled block for the system prompt.
 
-    Returns an empty string when both sections are empty so the caller
-    can append unconditionally without introducing whitespace noise on
-    fresh installs with no accumulated memory.
+    Always renders an explicit verified-memory state.  Small models invent
+    plausible personal details when the memory section is merely absent, so
+    an empty profile is represented by a ``NONE RETRIEVED`` marker rather
+    than by an implicit omission.
 
     The labels deliberately mirror the denial templates small models
     produce under uncertainty ("I don't have information the user has
@@ -1185,17 +1186,36 @@ def format_warm_profile_block(profile: dict[str, str]) -> str:
     """
     user = (profile.get("user") or "").strip()
     directives = (profile.get("directives") or "").strip()
-    if not user and not directives:
-        return ""
 
     sections: list[str] = []
     if user:
         sections.append(
+            "VERIFIED USER MEMORY FOR THIS TURN\n"
             "INFORMATION THE USER HAS SHARED IN PRIOR CONVERSATIONS\n"
             "(their identity, location, tastes, preferences, habits, "
             "history — treat this as known context about the user, not "
             "as new information you need to ask about):\n"
-            f"{user}"
+            f"{user}\n"
+            "GROUNDING: This supplied list is the only authority for claims "
+            "about the user's identity, preferences, habits, activities, "
+            "relationships, location, or history. Use only facts that appear "
+            "above; never invent or complete a plausible detail. When asked "
+            "what you know about the user, open with one supplied fact. Do not "
+            "deny access to persistent memory or claim it is limited to the "
+            "current session."
+        )
+    else:
+        sections.append(
+            "VERIFIED USER MEMORY FOR THIS TURN\n"
+            "MEMORY_RECORD_COUNT: 0 (NONE RETRIEVED)\n"
+            "SELF_QUERY_ACTIONS: disclose only the zero-record result for this "
+            "turn; invite the user to supply what should be remembered; express "
+            "both actions in the required reply language without copying this "
+            "metadata wording.\n"
+            "USER_FACT_CLAIMS: forbidden. Do not claim, infer, or guess identity, "
+            "preferences, habits, activities, relationships, location, or history.\n"
+            "PERSISTENT_MEMORY_STATUS: available; the zero count describes only "
+            "the current retrieval result."
         )
     if directives:
         sections.append(
@@ -1204,4 +1224,12 @@ def format_warm_profile_block(profile: dict[str, str]) -> str:
             "verbatim, in every reply, without being reminded):\n"
             f"{directives}"
         )
+    sections.append(
+        "REPLY LANGUAGE\n"
+        "If the instructions above name a voice language, use that language. "
+        "Otherwise detect the language of the current user's final message. "
+        "Use the resulting language for every word of the natural-language "
+        "reply and do not switch languages. The English metadata in this "
+        "memory block does not determine the reply language."
+    )
     return "\n\n".join(sections)

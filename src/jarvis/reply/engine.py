@@ -178,6 +178,11 @@ def build_reply_prompt_prefix(cfg) -> str:
             "Always respond in the same language the user wrote or spoke in, "
             "matching their language for every reply."
         )
+    parts.append(
+        "Keep the entire natural-language reply in that required language. "
+        "Do not switch languages mid-reply unless the user explicitly asks "
+        "for translation or code-switching."
+    )
     return "\n".join(parts)
 
 
@@ -312,12 +317,31 @@ def _text_tool_call_guidance(allowed_names: list[str]) -> str:
     for small models.
     """
     allowed_name_list = ", ".join(sorted(allowed_names)) if allowed_names else ""
+    real_names = [
+        name for name in allowed_names
+        if name not in {"stop", "toolSearchTool"}
+    ]
+    if real_names:
+        example_name = real_names[0]
+    elif "toolSearchTool" in allowed_names:
+        example_name = "toolSearchTool"
+    elif allowed_names:
+        example_name = allowed_names[0]
+    else:
+        example_name = "ALLOWED_TOOL_NAME"
+
+    if example_name == "webSearch":
+        example_arguments = r'{\"search_query\": \"example query\"}'
+    elif example_name == "toolSearchTool":
+        example_arguments = r'{\"query\": \"describe the needed capability\"}'
+    else:
+        example_arguments = "{}"
+
     return (
         "\nExact tool-call syntax (copy this shape — emit nothing else on a "
         "tool-calling turn):\n"
         'tool_calls: [{"id": "call_1", "type": "function", "function": '
-        '{"name": "webSearch", "arguments": "{\\"search_query\\": '
-        '\\"example query\\"}"}}]\n'
+        f'{{"name": "{example_name}", "arguments": "{example_arguments}"}}}}]\n'
         "Notes:\n"
         "- `arguments` is a JSON STRING (quotes escaped), not a bare object.\n"
         "- Never emit just a tool name by itself (e.g. `webSearch` or `web`) — "
@@ -376,9 +400,11 @@ def _is_malformed_model_output(content: str) -> bool:
 
     lowered = trimmed.lower()
 
-    # Bare tool_calls literal — tool-call syntax emitted as plain text.
-    if lowered.startswith("tool_calls:"):
-        debug_log("  ⚠️ Detected bare tool_calls literal response", "planning")
+    # Tool-call syntax emitted as plain text, either bare or appended after
+    # prose. The latter is a field-captured small-model failure: accepting the
+    # prose prefix would leak the protocol payload directly to the user.
+    if re.search(r"(?mi)^\s*tool_calls\s*:", trimmed):
+        debug_log("  ⚠️ Detected leaked tool_calls literal response", "planning")
         return True
 
     # Gemma-style tool scaffolding leaks: the model sometimes emits its

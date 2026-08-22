@@ -139,6 +139,7 @@ TEST_DESCRIPTIONS = {
     "test_judge_mixed_summary_filters_noise": "Mixed summary: keep novel facts, drop stale weather/recommendations",
     "test_judge_empty_conversation_returns_empty": "Trivial conversations produce no extracted facts",
     "test_open_ended_prompt_grounds_in_graph_context_live": "Open-ended prompt grounds in stored knowledge",
+    "test_empty_memory_does_not_become_a_user_fact_live": "Empty memory never becomes an invented user fact",
 }
 
 
