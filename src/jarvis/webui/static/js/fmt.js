@@ -71,9 +71,19 @@ export function dateTime(epochSeconds) {
   });
 }
 
+const CALENDAR_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/* A calendar day and an instant are different things and are read
+   differently. The diary, the passive record, and the crew's activity all
+   group by day and pass a bare YYYY-MM-DD; parsed as an instant that is UTC
+   midnight, every one of those days is printed as the day before for anyone
+   west of Greenwich. A full timestamp is a moment and is still converted to
+   wherever the reader is. */
 export function date(isoDate) {
   if (!isoDate) return "—";
-  const parsed = new Date(isoDate);
+  const parsed = CALENDAR_DAY.test(isoDate)
+    ? new Date(`${isoDate}T00:00:00`)
+    : new Date(isoDate);
   if (Number.isNaN(parsed.getTime())) return isoDate;
   return parsed.toLocaleDateString(locale(), { dateStyle: "medium" });
 }

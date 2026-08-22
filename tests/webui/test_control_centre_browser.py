@@ -264,6 +264,47 @@ class TestMemoryMaintenance:
         assert page.evaluate("window.__maintenanceCalls") == []
 
 
+class TestCalendarDaysKeepTheirName:
+    """A day is not an instant.
+
+    The diary, the passive record, and the crew's activity all group by
+    calendar day and hand the interface a bare `YYYY-MM-DD`. Read as an
+    instant that is UTC midnight and then printed in local time, every one
+    of those days is renamed to the day before for anyone west of
+    Greenwich. A full timestamp is an instant and must still be converted.
+    """
+
+    def _in_timezone(self, browser, served, zone):
+        context = browser.new_context(timezone_id=zone)
+        page = context.new_page()
+        page.goto(served, wait_until="networkidle")
+        try:
+            return page.evaluate(
+                """async () => {
+                    const fmt = await import('/static/js/fmt.js');
+                    return {
+                        bare: fmt.date('2026-08-22'),
+                        instant: fmt.date('2026-08-22T03:00:00Z'),
+                    };
+                }"""
+            )
+        finally:
+            context.close()
+
+    def test_a_bare_day_reads_the_same_everywhere(self, browser, served):
+        west = self._in_timezone(browser, served, "America/Los_Angeles")
+        east = self._in_timezone(browser, served, "Asia/Tokyo")
+
+        assert "22" in west["bare"], f"the day was renamed: {west['bare']}"
+        assert west["bare"] == east["bare"]
+
+    def test_a_full_timestamp_is_still_converted(self, browser, served):
+        west = self._in_timezone(browser, served, "America/Los_Angeles")
+
+        # 03:00 UTC is the previous evening in Los Angeles.
+        assert "21" in west["instant"], f"an instant stopped converting: {west['instant']}"
+
+
 class TestMissionControl:
     """The crew view against a reading it never has to fetch.
 
