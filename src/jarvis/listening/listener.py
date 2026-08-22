@@ -918,10 +918,24 @@ class VoiceListener(threading.Thread):
                         # Only reject PURE echo — if the heard text is significantly
                         # longer than TTS, it contains user speech mixed with echo
                         # and the intent judge's extraction should be used instead.
+                        judge_query = (intent_judgment.query or "").strip()
                         if last_tts_text:
                             echo_score = fuzz.partial_ratio(
                                 text_lower, last_tts_text.lower()
                             )
+                            query_echo_score = (
+                                fuzz.partial_ratio(
+                                    judge_query.lower(), last_tts_text.lower()
+                                )
+                                if judge_query else 0
+                            )
+                            if query_echo_score >= 70 and echo_score < 70:
+                                debug_log(
+                                    "intent judge query matched the previous TTS while "
+                                    "the heard text did not; using heard text",
+                                    "voice",
+                                )
+                                judge_query = ""
                             tts_words = len(last_tts_text.split())
                             text_words = len(text_lower.split())
                             is_pure_echo = (
@@ -932,10 +946,6 @@ class VoiceListener(threading.Thread):
                                 # Also check judge's extracted query — if it matches
                                 # TTS too, it's genuinely pure echo. If the query is
                                 # different, the judge extracted real user speech.
-                                query_echo_score = fuzz.partial_ratio(
-                                    intent_judgment.query.lower(),
-                                    last_tts_text.lower()
-                                )
                                 if query_echo_score >= 70:
                                     debug_log(f"🔇 Echo in hot window (directed, score={echo_score}): \"{text_lower}\"", "voice")
                                     print(f"  🔇 Heard (echo): \"{text_lower[:50]}{'...' if len(text_lower) > 50 else ''}\"", flush=True)
@@ -955,7 +965,6 @@ class VoiceListener(threading.Thread):
                         # calls (e.g. "…amount now? okay, what is his best
                         # song?" reaching webSearch verbatim). If the judge
                         # returns an empty query (rare), fall back to raw text.
-                        judge_query = (intent_judgment.query or "").strip()
                         hot_query = judge_query or text_lower
                         if judge_query and judge_query.lower() != text_lower:
                             debug_log(
@@ -2723,6 +2732,11 @@ class VoiceListener(threading.Thread):
                             audio, language=language, vad_filter=vad_filter,
                             condition_on_previous_text=not cpu_mode,
                             without_timestamps=cpu_mode,
+                            hotwords=" ".join(dict.fromkeys(filter(None, (
+                                str(getattr(self.cfg, "wake_word", "Jarvis") or "Jarvis")
+                                .strip().capitalize(),
+                                "Vault",
+                            )))),
                         )
                     except TypeError:
                         segments, _info = self.model.transcribe(audio, language=language)

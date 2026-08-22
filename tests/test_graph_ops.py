@@ -1375,6 +1375,7 @@ class TestFormatWarmProfileBlock:
         assert "NONE RETRIEVED" in out
         assert "MEMORY_RECORD_COUNT: 0" in out
         assert "USER_FACT_CLAIMS: forbidden" in out
+        assert "Do not ask for identity as a prerequisite" in out
         assert "detect the language of the current user's final message" in out
         assert out.rstrip().endswith("does not determine the reply language.")
 

@@ -47,6 +47,25 @@ def _assert_grounded_in_memory(response: str, memory_context: str) -> None:
     )
 
 
+def _assert_helpful_empty_memory_disclosure(response: str) -> None:
+    """Judge whether an empty-memory answer is direct rather than evasive."""
+    verdict = call_judge_llm(
+        system_prompt=(
+            "You judge whether an assistant handled an empty personal-memory "
+            "lookup helpfully. A passing answer directly says that no stored "
+            "personal details were found and invites the user to provide details "
+            "to remember. It must not ask who the user is as a prerequisite for "
+            "checking, offer external identity research or verification, redirect "
+            "to another topic, or call the request a joke or command. Reply with "
+            "exactly HELPFUL or UNHELPFUL followed by a brief reason."
+        ),
+        user_prompt=f"ASSISTANT RESPONSE:\n{response}",
+    )
+    assert verdict and verdict.strip().upper().startswith("HELPFUL"), (
+        f"Empty-memory reply was evasive. Judge: {verdict}\nResponse: {response}"
+    )
+
+
 class TestSystemPromptMemoryGrounding:
     @pytest.mark.eval
     @requires_judge_llm
@@ -86,3 +105,4 @@ class TestSystemPromptMemoryGrounding:
             "Illustrative prompt text leaked into the reply as a user fact"
         )
         _assert_grounded_in_memory(response, memory_context="")
+        _assert_helpful_empty_memory_disclosure(response)

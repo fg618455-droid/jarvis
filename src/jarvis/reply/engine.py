@@ -1781,13 +1781,17 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # Start with native tool calling. If the model returns HTTP 400 (tools not supported),
     # we automatically switch to text-based tool calling (markdown fences in system prompt).
     #
-    # For SMALL models we force text-based tool calling from the start. Small models like
-    # gemma4:e2b often emit malformed pseudo-native-tool-call syntax (e.g.
-    # `webSearch{search_query:<|"|>...}` or bare `webSearch()`) that the native-tool parser
-    # can't recognise. The markdown-fence format is explicit in the system prompt, so the
-    # model has a concrete template to follow. Using text tools from the start also avoids
-    # the wasted round-trip and prompt confusion of starting native and falling back mid-turn.
-    use_text_tools = (model_size == ModelSize.SMALL)
+    # Gemma-class SMALL models are the known exception: they emit malformed
+    # pseudo-native syntax such as ``webSearch{...}``, so they start in the
+    # explicit text protocol. Other small models get the native tools API
+    # first. Qwen 2.5, for example, declares native tool support in Ollama;
+    # forcing the text scaffold into every reply degrades its ordinary prose.
+    # A model that rejects native tools still takes the existing HTTP 400
+    # fallback below, so unknown small models fail safely into text mode.
+    _chat_model_name = str(cfg.llm_chat_model or "").strip().lower()
+    use_text_tools = (
+        model_size == ModelSize.SMALL and "gemma" in _chat_model_name
+    )
     debug_log(f"Model size detected: {model_size.value} for {cfg.llm_chat_model} (use_text_tools={use_text_tools})", "planning")
 
     # Compound-query decomposition for small models.
@@ -2146,6 +2150,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     last_candidate_reply: Optional[str] = None
     max_turns = cfg.agentic_max_turns
     turn = 0
+    malformed_retry_used = False
 
     _handoff_reply: Optional[str] = None
 
@@ -2916,7 +2921,33 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             candidate_reply = extracted
             malformed_fallback = False
         elif _is_malformed_json_response(content):
-            debug_log(f"  ⚠️ Malformed content — delivering error reply: '{content[:80]}...'", "planning")
+            if not malformed_retry_used and turn < max_turns:
+                malformed_retry_used = True
+                debug_log(
+                    "malformed model output withheld; retrying once with "
+                    "a protocol correction",
+                    "planning",
+                )
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[Retry instruction: Your previous response was invalid "
+                        "and was not shown to the user. Answer the original request "
+                        "again. Return exactly one valid output: either one exact "
+                        "tool call using an available tool, or a complete "
+                        "natural-language answer. Do not combine prose with tool "
+                        "syntax, do not output protocol labels, and never invent "
+                        "facts that are absent from the supplied context.]"
+                    ),
+                })
+                continue
+
+            debug_log(
+                f"  ⚠️ Malformed content after recovery attempt — "
+                f"delivering error reply: '{content[:80]}...'",
+                "planning",
+            )
             is_small = detect_model_size(cfg.llm_chat_model) == ModelSize.SMALL
             candidate_reply = in_the_voices_language(cfg, (
                 "I had trouble understanding that request. "

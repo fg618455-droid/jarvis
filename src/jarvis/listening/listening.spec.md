@@ -152,7 +152,7 @@ System is waiting for wake word activation.
 **On trigger:**
 1. Start thinking beep immediately and set face state to LISTENING
 2. Wait for utterance to complete (user finishes speaking)
-3. Whisper transcribes after `endpoint_silence_ms` of silence
+3. Whisper transcribes after `endpoint_silence_ms` of silence. The faster-whisper path biases each real utterance with the configured wake word and the product term `Vault` as decoding hotwords; this improves short-name recognition without rewriting accepted transcript text.
 4. A configured wake name with request content at the first or last token dispatches immediately
 5. A standalone configured wake name speaks the configured acknowledgement and opens one request capture
 6. An interior wake name goes to the intent judge and dispatches only an accepted query
@@ -185,7 +185,7 @@ After TTS finishes, allow wake-word-free follow-up.
 
 **Behaviour:** Speech first passes through an early fuzzy echo check (rapidfuzz `partial_ratio`, threshold 70, with word-count guard to avoid catching mixed echo+speech). Pure echo is silently rejected **without calling the intent judge** — this keeps echo rejection instant and prevents it from blocking the audio loop. The hot window timer is **not** reset on echo rejection. Non-echo speech is sent to the intent judge, but if the judge rejects it, the rejection is overridden — all non-echo speech in the hot window is accepted as a follow-up query.
 
-**Mixed echo+speech handling:** Speaker tails can remain in the acoustic path immediately after playback. The word-count guard lets a longer post-playback chunk reach the intent judge, which extracts the user's actual query. Post-judge echo checks verify that the extracted query is not itself echo before rejecting.
+**Mixed echo+speech handling:** Speaker tails can remain in the acoustic path immediately after playback. The word-count guard lets a longer post-playback chunk reach the intent judge, which extracts the user's actual query. Post-judge echo checks verify that the extracted query is not itself echo before rejecting. If the extracted query matches the previous TTS while the newly heard text does not, the extraction is treated as an echo-selection error and the heard text is dispatched instead. Jarvis's previous answer can therefore never replace distinct new speech.
 
 **Early salvage for echo-prefixed follow-ups:** Before the early fuzzy check rejects a chunk as pure echo, the listener calls `cleanup_leading_echo` to strip any TTS-tail prefix. If exact-word cleanup fails, the listener falls back to `salvage_after_echo_tail`, which scans heard-text word boundaries right-to-left for the rightmost fuzzy match against the TTS tail. A surviving remainder of at least `EchoDetector.min_salvage_words` words replaces the transcript segment and is treated as the user's follow-up.
 
