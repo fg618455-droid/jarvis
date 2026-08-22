@@ -264,6 +264,52 @@ class TestMemoryMaintenance:
         assert page.evaluate("window.__maintenanceCalls") == []
 
 
+class TestMotionIsOptional:
+    """Nothing that moves is load-bearing.
+
+    Mission Control uses motion for two things: a heartbeat on the reading
+    and a one-shot mark on a line that has just arrived. Both are read
+    somewhere else in text as well, so switching them off costs nothing.
+    Asserting it here keeps a later animation from sneaking past the rule.
+    """
+
+    def _animations(self, browser, served, **context_args):
+        context = browser.new_context(**context_args)
+        page = context.new_page()
+        # The test server has no crew endpoint, and a state the view reports
+        # as unreachable has nothing to beat for.
+        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.evaluate(
+            """async () => {
+                const { api } = await import('/static/js/api.js');
+                api.crew = async () => ({
+                    configured: true, reachable: true, checked_at: 1755800000,
+                    entries: [], agents: [], daily: [],
+                });
+            }"""
+        )
+        page.goto(f"{served}/#/crew")
+        page.wait_for_selector(".crew-state", state="visible")
+        try:
+            return page.evaluate(
+                """() => [...document.querySelectorAll('*')]
+                    .map(node => getComputedStyle(node).animationName)
+                    .filter(name => name && name !== 'none')"""
+            )
+        finally:
+            context.close()
+
+    def test_a_reader_who_asked_for_less_motion_gets_none(self, browser, served):
+        moving = self._animations(browser, served, reduced_motion="reduce")
+
+        assert moving == [], f"still animating: {sorted(set(moving))}"
+
+    def test_and_a_reader_who_did_not_still_sees_the_heartbeat(self, browser, served):
+        moving = self._animations(browser, served, reduced_motion="no-preference")
+
+        assert "breathe" in moving
+
+
 class TestCalendarDaysKeepTheirName:
     """A day is not an instant.
 
