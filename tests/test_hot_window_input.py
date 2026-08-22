@@ -483,6 +483,27 @@ class TestEchoAndUserSpeechInSameChunk:
         listener.state_manager.stop()
 
     @patch("builtins.print")
+    def test_judge_cannot_replace_new_speech_with_previous_tts(self, _print):
+        """A judge query that is only Jarvis's last reply is discarded."""
+        listener, _ = _create_listener(echo_tolerance=0.02)
+        previous_reply = (
+            "Interessanter Witz, aber leider kann ich das nicht herausfinden."
+        )
+        listener.echo_detector.track_tts_start(previous_reply)
+        listener.echo_detector.track_tts_finish()
+        listener.state_manager.start_conversation()
+        _install_intent_judge(listener, _make_judgment(
+            directed=True,
+            query=previous_reply,
+        ))
+
+        heard = "Doch, kannst du tatsächlich, du musst nur im Vault schauen."
+        listener._process_transcript(heard, utterance_energy=0.01)
+
+        assert _accepted_query(listener).lower() == heard.lower()
+        listener.state_manager.stop()
+
+    @patch("builtins.print")
     def test_judge_echo_reasoning_overridden_for_mixed_content_in_hot_window(self, _print):
         """When the intent judge says 'not directed' with echo reasoning but the
         utterance overlaps the hot window and text is longer than TTS (mixed

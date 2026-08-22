@@ -1368,14 +1368,24 @@ class TestBuildWarmProfile:
 class TestFormatWarmProfileBlock:
     """format_warm_profile_block uses denial-template mirroring."""
 
-    def test_empty_profile_returns_empty_string(self):
-        assert format_warm_profile_block({"user": "", "directives": ""}) == ""
+    def test_empty_profile_returns_explicit_absence_marker(self):
+        out = format_warm_profile_block({"user": "", "directives": ""})
+
+        assert "VERIFIED USER MEMORY FOR THIS TURN" in out
+        assert "NONE RETRIEVED" in out
+        assert "MEMORY_RECORD_COUNT: 0" in out
+        assert "USER_FACT_CLAIMS: forbidden" in out
+        assert "Do not ask for identity as a prerequisite" in out
+        assert "detect the language of the current user's final message" in out
+        assert out.rstrip().endswith("does not determine the reply language.")
 
     def test_user_only_omits_directives_heading(self):
         out = format_warm_profile_block({"user": "Name is Baris.", "directives": ""})
         assert "INFORMATION THE USER HAS SHARED" in out
         assert "STANDING INSTRUCTIONS" not in out
         assert "Baris" in out
+        assert "only authority for claims" in out
+        assert "Do not deny access to persistent memory" in out
 
     def test_directives_only_omits_user_heading(self):
         out = format_warm_profile_block({"user": "", "directives": "Reply briefly."})
@@ -1393,4 +1403,6 @@ class TestFormatWarmProfileBlock:
         assert out.index("INFORMATION THE USER") < out.index("STANDING INSTRUCTIONS")
 
     def test_whitespace_only_treated_as_empty(self):
-        assert format_warm_profile_block({"user": "   \n", "directives": "\t"}) == ""
+        out = format_warm_profile_block({"user": "   \n", "directives": "\t"})
+
+        assert "NONE RETRIEVED" in out

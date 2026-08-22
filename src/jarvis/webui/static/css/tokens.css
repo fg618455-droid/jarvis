@@ -4,10 +4,17 @@
    than the rule: one accent, used for what is active, focused, selected,
    or newly learned. Everything else is graphite and a 1px line.
 
+   Every colour, size, and duration the interface uses is named here. A view
+   that needs a shade it cannot find should gain a token rather than a
+   literal, so the whole instrument can be retuned from one file.
+
    Fonts are the system stack. Nothing here reaches the network. */
 
 :root {
+  /* Surfaces, from the page backwards to the deepest well. A card sits
+     above the page; a feed or a table sits inside the card, below it. */
   --bg: #0d0e11;
+  --surface-inset: #101216;
   --surface: #14161b;
   --surface-2: #191c22;
   --surface-3: #1e222a;
@@ -22,13 +29,36 @@
   --accent-soft: rgba(125, 211, 252, 0.12);
   --accent-line: rgba(125, 211, 252, 0.35);
 
+  /* Status. Each tone carries a fill and a border alongside its text
+     colour, because a chip, a rail, and a meter all need the same reading
+     at three different weights. */
   --ok: #4ade80;
+  --ok-soft: rgba(74, 222, 128, 0.12);
+  --ok-line: rgba(74, 222, 128, 0.3);
+
   --warn: #fbbf24;
+  --warn-soft: rgba(251, 191, 36, 0.12);
+  --warn-line: rgba(251, 191, 36, 0.3);
+
   --bad: #f87171;
+  --bad-soft: rgba(248, 113, 113, 0.12);
+  --bad-line: rgba(248, 113, 113, 0.3);
 
   --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
   --mono: ui-monospace, "Cascadia Mono", "Consolas", "SF Mono", monospace;
 
+  /* Type scale. Eight steps, so a heading, a label, and a reading are
+     picked from a ladder rather than chosen one view at a time. */
+  --fs-micro: 11px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 24px;
+  --fs-3xl: 34px;
+
+  --s0: 2px;
   --s1: 4px;
   --s2: 8px;
   --s3: 12px;
@@ -45,6 +75,9 @@
 
   --t-fast: 120ms ease-out;
   --t-view: 200ms ease-out;
+  /* Long enough that a reading which arrived while you were looking
+     elsewhere is still marked when you look back. */
+  --t-glow: 2400ms;
 
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
 }

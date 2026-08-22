@@ -39,6 +39,11 @@ from .utils.location import get_location_context, is_location_available
 # Global instances for coordination between modules
 _global_dialogue_memory: Optional[DialogueMemory] = None
 _global_stop_requested: bool = False
+# Set by request_restart() alongside _global_stop_requested, so the same
+# generation-ending shutdown path runs either way; main()'s loop reads this
+# once a generation has finished tearing down, to decide whether to start
+# another one or let the process actually end.
+_global_restart_requested: bool = False
 _warm_profile_graph_listener = None  # registered callback, kept for shutdown unregister
 _global_tts_engine = None  # TTS engine reference for face animation polling
 _global_dictation_engine = None  # Dictation engine reference for history UI
@@ -94,6 +99,19 @@ def request_stop() -> None:
     """Request the daemon to stop gracefully."""
     global _global_stop_requested
     _global_stop_requested = True
+
+
+def request_restart() -> None:
+    """Request the daemon to tear down and start a fresh generation in place.
+
+    Shares the exact shutdown path ``request_stop()`` triggers (the same
+    diary save, the same component teardown); only ``main()``'s loop
+    behaves differently afterwards, starting a new generation instead of
+    returning.
+    """
+    global _global_restart_requested
+    _global_restart_requested = True
+    request_stop()
 
 
 def set_diary_update_callbacks(
@@ -751,10 +769,31 @@ def _check_and_update_diary(
 def main(smoke_test: bool = False) -> None:
     """Main daemon entry point.
 
+    Runs generations in a loop: each generation initialises every
+    component fresh and tears them all back down on stop. A generation
+    that stopped because of ``request_restart()`` starts another one in
+    the same process; every other stop returns. The caller (a bare
+    ``python -m jarvis.daemon``, or the desktop app's subprocess/thread)
+    sees one call that takes longer to return, not a process replaced.
+
     Args:
         smoke_test: If True, initialise all components, print a success
             marker, and return without entering the main event loop.
             Used by CI smoke tests to verify the build is not broken.
+    """
+    global _global_restart_requested
+    while True:
+        _run_daemon_generation(smoke_test=smoke_test)
+        if not _global_restart_requested:
+            return
+        _global_restart_requested = False
+        print("🔄 Restarting Jarvis...", flush=True)
+
+
+def _run_daemon_generation(smoke_test: bool = False) -> None:
+    """Initialise every component, run until stopped, then tear down.
+
+    See ``main()`` for the loop that calls this again on restart.
     """
     global _global_dialogue_memory, _global_stop_requested, _global_tts_engine, _global_dictation_engine
     global _warm_profile_graph_listener
@@ -957,6 +996,10 @@ def main(smoke_test: bool = False) -> None:
             auto_detect=cfg.location_auto_detect,
             resolve_cgnat_public_ip=cfg.location_cgnat_resolve_public_ip,
             location_cache_minutes=cfg.location_cache_minutes,
+            manual_city=cfg.location_manual_city,
+            manual_region=cfg.location_manual_region,
+            manual_country=cfg.location_manual_country,
+            manual_timezone=cfg.location_manual_timezone,
         )
         if location_context == "Location: Unknown":
             print("📍 Location detection not available", flush=True)

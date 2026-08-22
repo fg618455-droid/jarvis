@@ -28,11 +28,18 @@ export async function mount(root) {
     disabled: true,
     onclick: () => save(),
   });
+  const restartButton = el("button", {
+    class: "btn",
+    type: "button",
+    text: t("settings.restartNow"),
+    onclick: () => restart(),
+  });
   const changeCount = el("span", { class: "muted" });
   const bar = el("div", { class: "settings-bar" }, [
     el("span", { class: "muted", text: `${t("settings.file")}: ${payload.path}` }),
     el("span", { class: "spacer" }),
     changeCount,
+    restartButton,
     saveButton,
   ]);
 
@@ -196,6 +203,42 @@ export async function mount(root) {
       toast(error.message, "bad");
       saveButton.disabled = false;
     }
+  }
+
+  async function restart() {
+    if (!window.confirm(t("settings.restartConfirm"))) return;
+    restartButton.disabled = true;
+    saveButton.disabled = true;
+    toast(t("settings.restarting"));
+    try {
+      await api.restart();
+    } catch {
+      // The connection can drop before the response arrives once the
+      // generation actually tears down; that is the expected shape of
+      // a restart, not a failure worth surfacing.
+    }
+    await waitForRestart();
+  }
+
+  async function waitForRestart() {
+    // Give the daemon a moment to actually start tearing down before
+    // polling, so the first health check does not just hit the
+    // still-running old generation and report "back" immediately.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      try {
+        await api.health();
+        toast(t("settings.restartBack"));
+        location.reload();
+        return;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+    toast(t("settings.restartFailed"), "bad");
+    restartButton.disabled = false;
+    saveButton.disabled = changes.size === 0;
   }
 
   paintNav();

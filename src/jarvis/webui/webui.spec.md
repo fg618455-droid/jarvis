@@ -20,6 +20,25 @@ and settings. The daemon serves it in-process.
 5. **Read live, write through the same doors.** Mutations go through the
    same functions the voice path calls, including the security gate.
 
+## Visual language
+
+Every colour, type size, spacing step, and duration the interface uses is
+named in `static/css/tokens.css`. A view that needs a shade it cannot find
+gains a token rather than a literal, so the whole instrument is retuned from
+one file and no view can drift from the rest.
+
+| Group | Rule |
+|---|---|
+| Surface | Four depths: the page, a card above it, a well recessed inside a card, and the raised controls within either |
+| Colour | One accent, for what is active, focused, selected, or newly arrived. Three status tones, each with a text, fill, and border value so a chip, a rail, and a meter read the same |
+| Type | An eight-step scale. Headings, labels, and readings are chosen from the ladder rather than per view |
+| Motion | Transitions mark a change of state, never decorate one. `prefers-reduced-motion` disables every animation and transition outright |
+
+The sidebar groups its ten destinations under three names: what is happening
+now, what the assistant knows, and how the machine is set up. Each group is
+an ARIA group carrying that name, so the structure is available to a screen
+reader and not only to the eye.
+
 ## Runtime
 
 | Aspect | Behaviour |
@@ -112,12 +131,13 @@ allowed; reading one back is not.
 | `GET /api/tools`, `POST /api/tools/refresh` | The tool catalogue, MCP server state, rediscovery |
 | `GET /api/security`, `/api/security/pending`, `POST /api/security/decide` | The confirmation policy, what is waiting, and the answer |
 | `GET /api/system` | GPU, resident models, speech configuration, paths, process |
+| `POST /api/system/restart` | Ask the daemon to tear down and start a fresh generation in place |
 | `GET/PUT /api/settings` | Every editable config field, and writes to it |
 | `GET /api/llm/routes` | FAST, CHAT, and PRIVATE chains with masked credentials and persisted health state; performs no outbound request |
 | `POST /api/llm/routes/probe` | User-triggered model catalogue and credential probe |
 | `POST /api/llm/routes/reset` | Clear persisted cooldowns and process-local invalid-key marks |
 | `PUT /api/llm/routes` | Validate and replace generic route configuration while preserving unchanged masked credentials |
-| `GET /api/crew` | Recent activity from a NAS-hosted agent crew, a per-agent success/failure/partial tally, and a 14-day daily activity count |
+| `GET /api/crew` | One reading of the NAS-hosted agent crew: recent activity, the agent roster with its tallies, a 14-day daily activity count, and when the reading was taken |
 | `POST /api/crew/chat` | Relay one message to one crew agent and return its reply |
 
 `POST /api/chat` runs one turn at a time, and the turn it waits for may not
@@ -134,6 +154,28 @@ because both write the same file: only non-default values are stored, and
 keys the registry does not describe survive untouched. A credential is sent
 back masked, and a masked value returned unchanged leaves the stored one
 alone, so saving a form never overwrites a secret with its own mask.
+
+The Settings view carries a restart control alongside Save, always available
+rather than conditional on a changed field, because config the daemon read
+at start-up (models named, the webui's own bind settings, anything else the
+running objects captured once) only takes effect on a fresh generation.
+`POST /api/system/restart` calls `jarvis.daemon.request_restart()`, which
+shares `request_stop()`'s exact shutdown path and then starts another
+generation in the same process rather than letting it end — see "Restarting
+in place" below. The endpoint returns before that happens; the page polls
+`/api/health` until it answers again, then reloads.
+
+### Restarting in place
+
+The daemon's `main()` runs generations in a loop rather than exiting after
+one. A generation that stopped because of `request_restart()` starts
+another one in the same process and thread (or subprocess, however this
+run was launched); every other stop returns from `main()` as before. No
+process is replaced and no new one is spawned, so a supervisor watching
+this process (the desktop tray's `daemon_process`/`daemon_thread`, or
+nothing at all for a bare terminal launch) sees one long call rather than
+an exit — the tray's crash/stopped-unexpectedly handling never fires for a
+requested restart.
 
 ## LLM routes view
 
@@ -225,23 +267,89 @@ daemon holds no direct route to that machine's database or its chat engine;
 it calls a small NAS-side HTTP endpoint for both, guarded by a shared key
 sent as `X-Crew-Key`.
 
-The NAS is not always on. `GET /api/crew` distinguishes three states rather
-than collapsing them into one empty view:
+The NAS is not always on. A reading distinguishes three states rather than
+collapsing them into one empty view:
 
 | State | Reported as | Shown as |
 |---|---|---|
 | No endpoint configured | `configured: false` | A message pointing at Settings |
 | Endpoint configured, no answer within the request timeout | `configured: true, reachable: false` | A message saying the NAS is not answering |
-| Endpoint answered | `configured: true, reachable: true`, plus `entries`, `agents` and `daily` | A 14-day activity heatmap, agent cards with per-status tallies, and a table of recent activity |
+| Endpoint answered | `configured: true, reachable: true`, plus `entries`, `agents` and `daily` | The activity ribbon, the agent roster, and the activity feed |
 
 A connection failure, a timeout, and a reply that fails to parse as JSON are
 all treated the same: `reachable: false`. The view never fabricates a
 reading it does not have.
 
-`daily` buckets `entries` by calendar day in UTC over a fixed trailing
-14-day window, zero-filled for days with no activity, oldest first. The
-window stays a fixed width regardless of how busy or quiet the crew has
-been, so the heatmap never resizes on its own.
+### Taking the reading
+
+The daemon takes one reading for everyone watching and publishes it as a
+`crew` event, rather than each open page asking the NAS on its own timer.
+Two tabs would otherwise mean twice the traffic to a device that is often
+asleep, and no page could tell how old the answer in front of it had become.
+
+The poller contacts nothing unless a crew endpoint is configured **and** the
+event bus has at least one subscriber. With the control centre closed there
+is no outbound request at all. A reading that fails is logged and dropped;
+the poller is never allowed to die, because Mission Control already has an
+honest way to say the NAS is not answering.
+
+`GET /api/crew` takes the same reading on demand, so a page that has just
+opened is correct before the next tick rather than blank until it.
+
+### What a reading carries
+
+| Field | Meaning |
+|---|---|
+| `checked_at` | When this reading was taken, as epoch seconds. Present in every state, including the two that reach nothing |
+| `entries` | The activity log as the NAS returns it, newest first |
+| `daily` | `entries` bucketed by calendar day in UTC over a fixed trailing 14-day window, zero-filled, oldest first, each day split by outcome as well as totalled. A fixed width regardless of how busy the crew has been, so the ribbon never resizes on its own |
+| `agents` | One entry per agent: per-status tallies, `total`, `last_at`, `last_status`, and `daily` as bare counts positioned against the same days as the reply's own `daily` |
+
+Status and freshness are separate facts. A tally is only as true as the
+moment it was read, so `checked_at` is reported alongside it rather than
+folded into it, and the view states the age of what it is showing.
+
+The `agents` list is the configured roster (`crew_agents`), in that order,
+followed by any agent that logged work without being listed. The activity
+log only names agents that have done something, so without a roster an idle
+agent would vanish and read as though it never existed; an agent with no
+entries is reported with zero counts and a null `last_at`, which the view
+shows as quiet. An unlisted agent is appended rather than dropped, because
+hiding real activity is the worse failure.
+
+### What the view shows
+
+Three bands, over one reading:
+
+| Band | Holds |
+|---|---|
+| Summary | How much of the roster is working, the fortnight's total, the success rate, and how long ago the last thing happened. Under them, fourteen days as bars stacked by outcome |
+| Roster | One card per agent: last outcome, how long ago, its own fourteen days, and the share that succeeded. A card selects that agent |
+| Activity | The log as a feed on a single rail, grouped by day, each entry carrying its full text rather than a truncated column |
+
+The feed can be narrowed to one agent, to failures, or to both. Filtering
+never asks for anything: it selects from the reading already on the page,
+and says how much of it is showing.
+
+### What "live" means here
+
+An agent logs a line when it *finishes* something. Nothing in the log says
+what an agent is doing right now, so the view does not imply that it knows.
+What is genuinely live is shown and nothing else is:
+
+- **Freshness.** How long ago the reading was taken, counted up every
+  second, beside a state that never stands in for it.
+- **Recency.** How long ago each agent last worked, and each entry, on the
+  same second-by-second count.
+- **Arrival.** An entry whose id was not in the previous reading is marked
+  once, for as long as the glow lasts, and never again. A first load marks
+  nothing, because everything would be marked and the signal would mean
+  nothing.
+- **Silence.** An agent with nothing in the window is dimmed and says so.
+
+Nothing else on this view moves. A marker that pulses without a change of
+state behind it is decoration, and decoration on an operations view reads
+as information that is not there.
 
 ### Chat relay
 
@@ -273,3 +381,4 @@ written to this daemon's own storage.
 | `webui_open_browser` | bool | `false` | Open the interface at daemon start |
 | `crew_api_url` | str | `""` | Base URL of the NAS crew endpoint. Empty hides the Mission Control view |
 | `crew_api_key` | str | `""` | Shared key sent as `X-Crew-Key` |
+| `crew_agents` | list | The seven crew roles | Who Mission Control shows, in display order. Emptying it restores the default rather than hiding the crew |

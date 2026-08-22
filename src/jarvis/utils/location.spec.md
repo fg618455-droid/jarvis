@@ -17,6 +17,16 @@ This specification documents the location detection module (`src/jarvis/utils/lo
 | `location_ip_address` | str \| null | `null` | Manually configured public IP. Takes precedence over auto-detection when set. |
 | `location_cgnat_resolve_public_ip` | bool | `true` | When a CGNAT address (100.64.0.0/10) is detected, attempt a single DNS query to OpenDNS to resolve the true public IP. Disable to prevent any external DNS query. |
 | `location_cache_minutes` | int | `60` | TTL for cached location lookups persisted to disk. |
+| `location_manual_city` | str \| null | `null` | Manual city override. Set alongside or instead of `location_manual_country` to bypass IP geolocation entirely. |
+| `location_manual_region` | str \| null | `null` | Optional state/region shown alongside the manual city. |
+| `location_manual_country` | str \| null | `null` | Manual country override. Sufficient on its own to trigger the override even without a city. |
+| `location_manual_timezone` | str \| null | `null` | IANA timezone reported alongside the manual location. |
+
+### Manual Override
+
+An IP address resolves to whichever city or region the owning ISP registered the address block under. For a rural or overseas connection this is often a distant hub rather than where the connection is actually used, and no choice of detection method changes that: the database entry for the whole IP block is what's imprecise, not the IP that was looked up.
+
+Setting `location_manual_city` or `location_manual_country` bypasses IP geolocation entirely: no IP is resolved (no UPnP, socket heuristic, or OpenDNS query runs), no GeoIP database is queried, and no result is cached. `get_location_info` returns the configured fields directly. The override needs at least a city or a country; region and timezone are optional additions on top of either. It has no effect on tools that need coordinates (e.g. `getWeather`), which continue to use IP-based geolocation for latitude/longitude.
 
 ### IP Resolution Chain
 
@@ -61,9 +71,10 @@ Two independent caches exist, each with in-memory and on-disk tiers:
 
 | Function | Returns | Description |
 |----------|---------|-------------|
-| `get_location_info(ip_address, *, config_ip, auto_detect, resolve_cgnat_public_ip, location_cache_minutes)` | `dict` | Core lookup. Returns location fields or `{"error": ...}`. |
-| `get_location_context(*, config_ip, auto_detect, resolve_cgnat_public_ip, location_cache_minutes)` | `str` | Formatted string like `"Location: London, England, United Kingdom (Europe/London)"` or `"Location: Unknown"`. |
-| `get_detailed_location_info(ip_address, *, config_ip, auto_detect, resolve_cgnat_public_ip, location_cache_minutes)` | `dict` | Extends `get_location_info` with computed `coordinates` and `formatted_address` fields. |
+| `get_location_info(ip_address, *, config_ip, auto_detect, resolve_cgnat_public_ip, location_cache_minutes, manual_city, manual_region, manual_country, manual_timezone)` | `dict` | Core lookup. Returns the manual override fields if `manual_city` or `manual_country` is set, otherwise location fields from IP geolocation or `{"error": ...}`. |
+| `get_location_context(*, config_ip, auto_detect, resolve_cgnat_public_ip, location_cache_minutes, manual_city, manual_region, manual_country, manual_timezone)` | `str` | Formatted string like `"Location: London, England, United Kingdom (Europe/London)"` or `"Location: Unknown"`. |
+| `get_location_context_with_timezone(*, config_ip, auto_detect, resolve_cgnat_public_ip, location_cache_minutes, manual_city, manual_region, manual_country, manual_timezone)` | `tuple[str, str \| None]` | The formatted context string plus the IANA timezone in one lookup. |
+| `get_detailed_location_info(ip_address, *, config_ip, auto_detect, resolve_cgnat_public_ip, location_cache_minutes, manual_city, manual_region, manual_country, manual_timezone)` | `dict` | Extends `get_location_info` with computed `coordinates` and `formatted_address` fields. |
 | `is_location_available()` | `bool` | `True` if geoip2 is importable and the database file exists. |
 | `setup_location_database()` | `bool` | Checks database availability and prints setup instructions if missing. |
 
@@ -83,7 +94,9 @@ Two independent caches exist, each with in-memory and on-disk tiers:
 
 ### Integration Points
 
-- **Daemon** (`src/jarvis/daemon.py`): Calls `get_location_context` at startup using config values.
-- **Reply Engine** (`src/jarvis/reply/engine.py`): Refreshes location context each agentic turn via `get_location_context`.
-- **Setup Wizard** (`src/desktop_app/setup_wizard.py`): Uses `get_location_context` and `get_location_info` for status display and IP validation. Skips the location page entirely when `location_enabled=false`. Uses the OpenDNS resolver (not an external website) for the "Detect My IP" button. IP validation reuses the core `_is_private_ip` and `_is_cgnat_ip` helpers.
-- **Settings UI** (`src/desktop_app/settings_window.py`): Exposes all five config keys as toggleable fields.
+- **Daemon** (`src/jarvis/daemon.py`): Calls `get_location_context` at startup using config values, including the manual override.
+- **Reply Engine** (`src/jarvis/reply/engine.py`): Refreshes location context each agentic turn via `get_location_context_with_timezone`, including the manual override.
+- **Time tool** (`src/jarvis/tools/builtin/time_tool.py`): Uses `get_location_context_with_timezone` for the user's own local time when no place is named, including the manual override.
+- **Weather tool** (`src/jarvis/tools/builtin/weather.py`): Uses `get_location_info` for coordinates. Does not pass the manual override through — a city/country name has no latitude/longitude, so weather geocoding continues to rely on IP-based geolocation regardless of the override.
+- **Setup Wizard** (`src/desktop_app/setup_wizard.py`): Uses `get_location_context` and `get_location_info` for status display and IP validation, including the manual override. Skips the location page entirely when `location_enabled=false`. Uses the OpenDNS resolver (not an external website) for the "Detect My IP" button. IP validation reuses the core `_is_private_ip` and `_is_cgnat_ip` helpers.
+- **Settings UI** (`src/desktop_app/settings_window.py`): Exposes all nine config keys as toggleable fields, metadata-driven via `config_metadata.py`.

@@ -54,6 +54,22 @@ def _make_cfg(**overrides):
     return types.SimpleNamespace(**base)
 
 
+def test_engine_live_time_location_string_uses_manual_override():
+    """The reply engine's system-prompt line reflects the manual override, not GeoIP."""
+    from jarvis.reply.engine import _live_time_location_string
+
+    cfg = _make_cfg(
+        location_auto_detect=True,
+        location_manual_city="Chiang Mai",
+        location_manual_country="Thailand",
+        location_manual_timezone="Asia/Bangkok",
+    )
+    with patch("jarvis.utils.location._get_external_ip_automatically") as mock_auto:
+        line = _live_time_location_string(cfg)
+    mock_auto.assert_not_called()
+    assert "Chiang Mai, Thailand" in line
+
+
 def test_get_location_context_disabled_flag():
     cfg = _make_cfg(location_enabled=False)
     # Direct call should be 'Location: Unknown' since we bypass engine wrapper
@@ -115,3 +131,97 @@ def test_auto_detect_rejects_private_ip_from_opendns():
          patch("jarvis.utils.location._resolve_public_ip_via_opendns", return_value="192.168.1.1"):
         result = _get_external_ip_automatically()
         assert result is None
+
+
+def test_manual_city_override_skips_ip_geolocation_entirely():
+    """A manual city bypasses auto-detection, config IP, and the GeoIP database."""
+    from jarvis.utils.location import get_location_info
+
+    with patch("jarvis.utils.location._get_external_ip_automatically") as mock_auto, \
+         patch("jarvis.utils.location.geoip2") as mock_geoip2:
+        result = get_location_info(
+            auto_detect=True,
+            manual_city="Chiang Mai",
+            manual_country="Thailand",
+            manual_timezone="Asia/Bangkok",
+        )
+        mock_auto.assert_not_called()
+        mock_geoip2.database.Reader.assert_not_called()
+
+    assert result == {
+        "city": "Chiang Mai",
+        "country": "Thailand",
+        "timezone": "Asia/Bangkok",
+    }
+
+
+def test_manual_country_only_override_is_also_sufficient():
+    """A country alone is enough to trigger the override (city is optional)."""
+    from jarvis.utils.location import get_location_info
+
+    result = get_location_info(manual_country="Thailand")
+    assert result == {"country": "Thailand"}
+
+
+def test_manual_override_formats_into_the_usual_location_context_string():
+    from jarvis.utils.location import get_location_context
+
+    context = get_location_context(
+        manual_city="Chiang Mai",
+        manual_region="Chiang Mai Province",
+        manual_country="Thailand",
+    )
+    assert context == "Location: Chiang Mai, Chiang Mai Province, Thailand"
+
+
+def test_manual_override_timezone_flows_through_the_timezone_helper():
+    from jarvis.utils.location import get_location_context_with_timezone
+
+    context, tz_name = get_location_context_with_timezone(
+        manual_city="Chiang Mai",
+        manual_country="Thailand",
+        manual_timezone="Asia/Bangkok",
+    )
+    assert context == "Location: Chiang Mai, Thailand, (Asia/Bangkok)"
+    assert tz_name == "Asia/Bangkok"
+
+
+def test_without_a_manual_override_behaviour_is_unchanged():
+    """No manual_* kwargs given at all falls through to normal IP-based lookup."""
+    from jarvis.utils.location import get_location_info
+
+    with patch("jarvis.utils.location._get_local_network_ip", return_value=None):
+        result = get_location_info(auto_detect=False)
+        assert "error" in result
+
+
+def test_location_manual_override_defaults_none_from_a_real_config_file(tmp_path, monkeypatch):
+    """load_settings() must wire the four manual override keys, not just accept them as stray keys."""
+    import json
+
+    from jarvis.config import load_settings
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({}), encoding="utf-8")
+    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
+
+    cfg = load_settings()
+    assert cfg.location_manual_city is None
+    assert cfg.location_manual_region is None
+    assert cfg.location_manual_country is None
+    assert cfg.location_manual_timezone is None
+
+    config_path.write_text(
+        json.dumps({
+            "location_manual_city": "Chiang Mai",
+            "location_manual_region": "Chiang Mai Province",
+            "location_manual_country": "Thailand",
+            "location_manual_timezone": "Asia/Bangkok",
+        }),
+        encoding="utf-8",
+    )
+    cfg = load_settings()
+    assert cfg.location_manual_city == "Chiang Mai"
+    assert cfg.location_manual_region == "Chiang Mai Province"
+    assert cfg.location_manual_country == "Thailand"
+    assert cfg.location_manual_timezone == "Asia/Bangkok"

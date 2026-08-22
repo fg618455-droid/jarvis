@@ -431,6 +431,18 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("location_cgnat_resolve_public_ip", "CGNAT Resolve",
       "Resolve public IP when behind CGNAT",
       "location", "bool")
+    f("location_manual_city", "Manual City Override",
+      "Set your real city to skip IP geolocation (fixes ISPs that register your address under the wrong town)",
+      "location", "str", nullable=True)
+    f("location_manual_region", "Manual Region Override",
+      "Optional state/region shown alongside the manual city",
+      "location", "str", nullable=True)
+    f("location_manual_country", "Manual Country Override",
+      "Set your real country to skip IP geolocation",
+      "location", "str", nullable=True)
+    f("location_manual_timezone", "Manual Timezone Override",
+      "IANA timezone (e.g. Asia/Bangkok) to use alongside the manual location",
+      "location", "str", nullable=True)
 
     # --- Features ---
     f("web_search_enabled", "Web Search",
@@ -493,11 +505,23 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("crew_api_key", "Crew API Key",
       "Shared key the NAS endpoint expects in its X-Crew-Key header",
       "crew", "password", nullable=True)
+    f("crew_agents", "Crew Roster",
+      "The agents Mission Control shows, one per line, in display order. An "
+      "agent with nothing in the activity log is shown as quiet rather than "
+      "hidden. Agents that log work without being listed are still shown",
+      "crew", "list")
     f("crew_telegram_chat_id", "Crew Telegram Chat ID",
       "Chat ID of the crew's Telegram group, used by askCrew to delegate a "
       "task. Sent with the bot configured under Security → Telegram, which "
       "must also be a member of that group. Empty disables askCrew",
       "crew", "str", nullable=True)
+    f("crew_handoff_enabled", "Automatic Crew Handoff",
+      "Hand a slow local reply to the crew on its own, once it has run past "
+      "the deadline, instead of only when askCrew is explicitly requested. "
+      "Still asks for confirmation like any askCrew call, and that wait is "
+      "not yet bounded to the deadline, so a delegation with nobody free to "
+      "confirm can sit at the full confirmation timeout before it gives up",
+      "crew", "bool")
 
     # --- Advanced ---
     f("echo_tolerance", "Echo Tolerance",

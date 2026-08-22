@@ -115,6 +115,10 @@ class MockConfig:
     location_auto_detect: bool = False
     location_cgnat_resolve_public_ip: bool = False
     location_cache_minutes: int = 60
+    location_manual_city: Optional[str] = None
+    location_manual_region: Optional[str] = None
+    location_manual_country: Optional[str] = None
+    location_manual_timezone: Optional[str] = None
     dialogue_memory_timeout: int = 300
     llm_thinking_enabled: bool = False
     intent_judge_thinking_enabled: bool = False
@@ -129,6 +133,7 @@ class MockConfig:
     telegram_chat_id: str = ""
     telegram_api_base_url: str = "https://api.telegram.org"
     telegram_chat_enabled: bool = False
+    crew_handoff_enabled: bool = False
 
     def __post_init__(self) -> None:
         # Mirror ``load_settings``: when the provider-aware fields are

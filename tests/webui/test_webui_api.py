@@ -465,6 +465,23 @@ class TestSystem:
         config = next(entry for entry in body["paths"] if entry["label"] == "config")
         assert Path(config["path"]) == elsewhere
 
+    def test_restart_requires_the_write_header(self, client):
+        response = client.post("/api/system/restart", headers=HEADERS)
+
+        assert response.status_code == 403
+
+    def test_restart_asks_the_daemon_to_restart(self, client, monkeypatch):
+        from unittest.mock import MagicMock
+
+        mock_request_restart = MagicMock()
+        monkeypatch.setattr("jarvis.daemon.request_restart", mock_request_restart)
+
+        response = client.post("/api/system/restart", headers=WRITE_HEADERS)
+
+        assert response.status_code == 200
+        assert response.get_json() == {"restarting": True}
+        mock_request_restart.assert_called_once()
+
 
 class TestTheStreamCarriesEveryEvent:
     """The browser subscribes to named events, one listener per kind.

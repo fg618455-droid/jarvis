@@ -92,6 +92,12 @@ def _mirrors_the_user(prefix: str) -> bool:
 class TestReplyPromptLanguageConstraint:
     """What the prompt says about response language, for every TTS setting."""
 
+    def test_language_constraint_forbids_mid_reply_switching(self):
+        prefix = build_reply_prompt_prefix(_Cfg(tts_engine="system"))
+
+        assert "entire natural-language reply" in prefix
+        assert "Do not switch languages mid-reply" in prefix
+
     def test_named_voice_pins_the_reply_to_that_language(self, tmp_path):
         path = _write_voice(
             tmp_path,

@@ -121,6 +121,8 @@ export const api = {
     }),
 
   system: () => request("/api/system"),
+  restart: () => request("/api/system/restart", { method: "POST" }),
+  health: () => request("/api/health"),
   logs: (limit = 200) => request(`/api/logs?limit=${limit}`),
 
   crew: (limit = 200) => request(`/api/crew?limit=${limit}`),

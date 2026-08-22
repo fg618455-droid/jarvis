@@ -733,6 +733,18 @@ class TestCpuOptimisations:
         assert call_kwargs["without_timestamps"] is False
         assert call_kwargs["condition_on_previous_text"] is True
 
+    def test_transcription_biases_assistant_and_vault_product_terms(self):
+        """Short product names must be supplied to faster-whisper as hotwords."""
+        listener, mock_model = self._create_listener_for_transcribe_test("cuda")
+        listener.cfg.wake_word = "jarvis"
+        listener.cfg.wake_aliases = []
+
+        listener._finalize_utterance()
+
+        hotwords = mock_model.transcribe.call_args[1]["hotwords"].split()
+        assert "Jarvis" in hotwords
+        assert "Vault" in hotwords
+
 
 class TestRepetitiveHallucinationDetectionExtended:
     """Additional tests for Whisper hallucination detection."""

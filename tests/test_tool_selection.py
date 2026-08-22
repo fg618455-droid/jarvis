@@ -432,6 +432,21 @@ class TestEmbeddingStrategy:
 class TestLLMStrategy:
 
     @pytest.mark.unit
+    def test_router_uses_the_main_chat_context_size(self):
+        """One shared model must not reload between 4K routing and 8K chat."""
+        backend = _llm_backend(return_value="none")
+
+        select_tools(
+            "hello",
+            _builtin(), {},
+            strategy=ToolSelectionStrategy.LLM,
+            llm_backend=backend,
+            llm_model="shared-chat-and-fast-model",
+        )
+
+        assert backend.direct.call_args.kwargs["num_ctx"] == 8192
+
+    @pytest.mark.unit
     def test_parses_comma_separated_response(self):
         backend = _llm_backend(return_value="webSearch, getWeather")
         result = select_tools(

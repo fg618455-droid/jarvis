@@ -7,17 +7,35 @@ import { Router } from "./router.js";
 import { live } from "./sse.js";
 import { ICONS, el, icon, toast } from "./ui.js";
 
-const VIEWS = [
-  { name: "overview", icon: ICONS.overview },
-  { name: "memory", icon: ICONS.memory },
-  { name: "conversation", icon: ICONS.conversation },
-  { name: "tools", icon: ICONS.tools },
-  { name: "security", icon: ICONS.security },
-  { name: "system", icon: ICONS.system },
-  { name: "logs", icon: ICONS.logs },
-  { name: "llm", icon: ICONS.llm },
-  { name: "crew", icon: ICONS.crew },
-  { name: "settings", icon: ICONS.settings },
+/* Ten destinations in one column read as a list to be searched. Grouped by
+   what they are for, they read as a map: what is happening now, what the
+   assistant knows, and how the machine is set up. */
+const NAV_GROUPS = [
+  {
+    name: "live",
+    views: [
+      { name: "overview", icon: ICONS.overview },
+      { name: "conversation", icon: ICONS.conversation },
+      { name: "crew", icon: ICONS.crew },
+    ],
+  },
+  {
+    name: "knowledge",
+    views: [
+      { name: "memory", icon: ICONS.memory },
+      { name: "tools", icon: ICONS.tools },
+    ],
+  },
+  {
+    name: "operations",
+    views: [
+      { name: "security", icon: ICONS.security },
+      { name: "llm", icon: ICONS.llm },
+      { name: "system", icon: ICONS.system },
+      { name: "logs", icon: ICONS.logs },
+      { name: "settings", icon: ICONS.settings },
+    ],
+  },
 ];
 
 const ROUTES = {
@@ -63,20 +81,29 @@ function buildSidebar(router) {
   dom.sidebar.replaceChildren();
   navButtons.clear();
 
-  for (const view of VIEWS) {
-    const badge = el("span", { class: "badge" });
-    const button = el(
-      "button",
-      {
-        class: "nav-item",
-        type: "button",
-        onclick: () => router.go(view.name),
-      },
-      [icon(view.icon), el("span", { class: "text", text: t(`nav.${view.name}`) }), badge],
-    );
-    button._badge = badge;
-    navButtons.set(view.name, button);
-    dom.sidebar.append(button);
+  for (const group of NAV_GROUPS) {
+    const label = t(`nav.group.${group.name}`);
+    const section = el("div", { class: "nav-group", role: "group", "aria-label": label }, [
+      el("span", { class: "nav-group-label", text: label }),
+    ]);
+
+    for (const view of group.views) {
+      const badge = el("span", { class: "badge" });
+      const button = el(
+        "button",
+        {
+          class: "nav-item",
+          type: "button",
+          onclick: () => router.go(view.name),
+        },
+        [icon(view.icon), el("span", { class: "text", text: t(`nav.${view.name}`) }), badge],
+      );
+      button._badge = badge;
+      navButtons.set(view.name, button);
+      section.append(button);
+    }
+
+    dom.sidebar.append(section);
   }
 
   const foot = el("div", { class: "sidebar-foot", id: "sidebar-foot" });

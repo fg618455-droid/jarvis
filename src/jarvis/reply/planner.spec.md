@@ -184,6 +184,11 @@ The engine consumes the plan in two phases.
   tool-call reliability.
 - The chat model still runs the final synthesis turn so the reply is
   phrased in the daemon's voice using its own profile and persona.
+- When automatic crew handoff is available, `plan_query` and the LLM path
+  of `resolve_next_tool_call` receive only the time remaining to the
+  3-second decision point. Concrete resolver fast paths remain local and
+  deterministic, then the engine checks the same trace before executing
+  the resolved tool.
 
 ### resolve_next_tool_call
 

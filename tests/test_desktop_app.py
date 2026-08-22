@@ -1502,6 +1502,52 @@ class TestDaemonSmokeTest:
             )
 
 
+class TestDaemonRestart:
+    """main() loops in place when a restart is requested mid-generation."""
+
+    def test_main_runs_a_single_generation_when_no_restart_is_requested(self):
+        from unittest.mock import patch
+
+        import jarvis.daemon as daemon_mod
+
+        with patch.object(daemon_mod, "_run_daemon_generation") as mock_generation:
+            daemon_mod.main(smoke_test=True)
+
+        mock_generation.assert_called_once_with(smoke_test=True)
+        assert daemon_mod._global_restart_requested is False
+
+    def test_main_starts_another_generation_after_a_requested_restart(self):
+        from unittest.mock import patch
+
+        import jarvis.daemon as daemon_mod
+
+        calls = []
+
+        def fake_generation(smoke_test=False):
+            calls.append(smoke_test)
+            if len(calls) == 1:
+                daemon_mod._global_restart_requested = True
+
+        with patch.object(daemon_mod, "_run_daemon_generation", side_effect=fake_generation):
+            daemon_mod.main()
+
+        assert len(calls) == 2
+        assert daemon_mod._global_restart_requested is False
+
+    def test_request_restart_sets_both_the_restart_and_stop_flags(self):
+        import jarvis.daemon as daemon_mod
+
+        daemon_mod._global_stop_requested = False
+        daemon_mod._global_restart_requested = False
+        try:
+            daemon_mod.request_restart()
+            assert daemon_mod._global_restart_requested is True
+            assert daemon_mod.is_stop_requested() is True
+        finally:
+            daemon_mod._global_stop_requested = False
+            daemon_mod._global_restart_requested = False
+
+
 class TestDesktopSmokeTest:
     """Tests for the --smoke-test flag on the desktop app entry point."""
 

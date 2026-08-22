@@ -53,6 +53,13 @@ DEFAULT_FAST_MODEL = "gemma4:e2b"
 # a local instance keeps confirmation traffic off a third party's machine.
 DEFAULT_TELEGRAM_API_BASE_URL = "https://api.telegram.org"
 
+# The agent crew running on the NAS, in the order Mission Control shows it.
+# Names are held upper case because that is how the crew's own logger writes
+# them, and a roster that disagrees with the log matches nothing.
+DEFAULT_CREW_AGENTS = (
+    "JARVIS", "DEV", "RESEARCH", "ASSISTANT", "SCHULE", "SCRIBE", "REACH",
+)
+
 
 def get_supported_model_ids() -> set[str]:
     """Get set of supported model IDs for quick lookup."""
@@ -145,6 +152,8 @@ class Settings:
     crew_api_url: str
     crew_api_key: str
     crew_telegram_chat_id: str
+    crew_agents: list[str]
+    crew_handoff_enabled: bool
 
     # Screen Capture
     allowlist_bundles: list[str]
@@ -288,6 +297,14 @@ class Settings:
     location_ip_address: str | None
     location_auto_detect: bool
     location_cgnat_resolve_public_ip: bool
+    # Manual place override. GeoIP resolves an IP to whichever city the
+    # ISP registered the address block under, which for rural or overseas
+    # connections is often a distant hub, not the real place. Setting a
+    # city or country here bypasses IP geolocation entirely.
+    location_manual_city: str | None
+    location_manual_region: str | None
+    location_manual_country: str | None
+    location_manual_timezone: str | None
 
     # Web Search
     web_search_enabled: bool
@@ -744,6 +761,16 @@ def get_default_config() -> Dict[str, Any]:
         "crew_api_url": "",
         "crew_api_key": "",
         "crew_telegram_chat_id": "",
+        # Who the crew is. The activity log only names agents that have
+        # logged something, so without a roster an idle agent disappears
+        # from Mission Control and reads as though it never existed.
+        "crew_agents": list(DEFAULT_CREW_AGENTS),
+        # Off by default: the automatic deadline handoff still routes
+        # through askCrew's always-on confirmation requirement with no
+        # bound of its own, so an unattended escalation can sit on the
+        # full confirmation timeout before falling through to a refusal
+        # rather than an answer. Explicit askCrew calls are unaffected.
+        "crew_handoff_enabled": False,
 
         # Screen Capture
         "allowlist_bundles": [
@@ -888,6 +915,14 @@ def get_default_config() -> Dict[str, Any]:
         # When behind CGNAT (100.64.0.0/10), attempt a privacy-light external DNS query to discover true public IP.
         # Uses a single OpenDNS resolver lookup of myip.opendns.com over DNS (no HTTP services). Disable to avoid any external request.
         "location_cgnat_resolve_public_ip": True,
+
+        # Manual place override. Set a city or country to skip IP geolocation
+        # entirely, e.g. when the ISP registers the IP block under a different
+        # city than where the connection is actually used.
+        "location_manual_city": None,
+        "location_manual_region": None,
+        "location_manual_country": None,
+        "location_manual_timezone": None,
 
         # Web Search
         "web_search_enabled": True,
@@ -1184,6 +1219,14 @@ def load_settings() -> Settings:
     location_ip_address = None if location_ip_address_val in (None, "", "null") else str(location_ip_address_val)
     location_auto_detect = bool(merged.get("location_auto_detect", True))
     location_cgnat_resolve_public_ip = bool(merged.get("location_cgnat_resolve_public_ip", True))
+
+    def _clean_str(value: object) -> str | None:
+        return None if value in (None, "", "null") else str(value)
+
+    location_manual_city = _clean_str(merged.get("location_manual_city"))
+    location_manual_region = _clean_str(merged.get("location_manual_region"))
+    location_manual_country = _clean_str(merged.get("location_manual_country"))
+    location_manual_timezone = _clean_str(merged.get("location_manual_timezone"))
     web_search_enabled = bool(merged.get("web_search_enabled", True))
     brave_search_api_key = str(merged.get("brave_search_api_key", "") or "").strip()
     wikipedia_fallback_enabled = bool(merged.get("wikipedia_fallback_enabled", True))
@@ -1277,6 +1320,14 @@ def load_settings() -> Settings:
     crew_api_url = str(merged.get("crew_api_url", "") or "").strip().rstrip("/")
     crew_api_key = str(merged.get("crew_api_key", "") or "").strip()
     crew_telegram_chat_id = str(merged.get("crew_telegram_chat_id", "") or "").strip()
+    # An empty roster would hide the whole crew, which is never what someone
+    # clearing a text box meant, so it falls back to the known seven.
+    crew_agents = [
+        str(name).strip().upper()
+        for name in (merged.get("crew_agents") or [])
+        if str(name).strip()
+    ] or list(DEFAULT_CREW_AGENTS)
+    crew_handoff_enabled = bool(merged.get("crew_handoff_enabled", False))
 
     return Settings(
         # Database & Storage
@@ -1326,9 +1377,11 @@ def load_settings() -> Settings:
         webui_open_browser=webui_open_browser,
 
         # Mission Control
+        crew_agents=crew_agents,
         crew_api_url=crew_api_url,
         crew_api_key=crew_api_key,
         crew_telegram_chat_id=crew_telegram_chat_id,
+        crew_handoff_enabled=crew_handoff_enabled,
 
         # Screen Capture
         allowlist_bundles=allowlist_bundles,
@@ -1423,6 +1476,10 @@ def load_settings() -> Settings:
         location_ip_address=location_ip_address,
         location_auto_detect=location_auto_detect,
         location_cgnat_resolve_public_ip=location_cgnat_resolve_public_ip,
+        location_manual_city=location_manual_city,
+        location_manual_region=location_manual_region,
+        location_manual_country=location_manual_country,
+        location_manual_timezone=location_manual_timezone,
 
         # Web Search
         web_search_enabled=web_search_enabled,
