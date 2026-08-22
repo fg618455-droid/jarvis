@@ -112,6 +112,7 @@ allowed; reading one back is not.
 | `GET /api/tools`, `POST /api/tools/refresh` | The tool catalogue, MCP server state, rediscovery |
 | `GET /api/security`, `/api/security/pending`, `POST /api/security/decide` | The confirmation policy, what is waiting, and the answer |
 | `GET /api/system` | GPU, resident models, speech configuration, paths, process |
+| `POST /api/system/restart` | Ask the daemon to tear down and start a fresh generation in place |
 | `GET/PUT /api/settings` | Every editable config field, and writes to it |
 | `GET /api/llm/routes` | FAST, CHAT, and PRIVATE chains with masked credentials and persisted health state; performs no outbound request |
 | `POST /api/llm/routes/probe` | User-triggered model catalogue and credential probe |
@@ -133,6 +134,28 @@ because both write the same file: only non-default values are stored, and
 keys the registry does not describe survive untouched. A credential is sent
 back masked, and a masked value returned unchanged leaves the stored one
 alone, so saving a form never overwrites a secret with its own mask.
+
+The Settings view carries a restart control alongside Save, always available
+rather than conditional on a changed field, because config the daemon read
+at start-up (models named, the webui's own bind settings, anything else the
+running objects captured once) only takes effect on a fresh generation.
+`POST /api/system/restart` calls `jarvis.daemon.request_restart()`, which
+shares `request_stop()`'s exact shutdown path and then starts another
+generation in the same process rather than letting it end — see "Restarting
+in place" below. The endpoint returns before that happens; the page polls
+`/api/health` until it answers again, then reloads.
+
+### Restarting in place
+
+The daemon's `main()` runs generations in a loop rather than exiting after
+one. A generation that stopped because of `request_restart()` starts
+another one in the same process and thread (or subprocess, however this
+run was launched); every other stop returns from `main()` as before. No
+process is replaced and no new one is spawned, so a supervisor watching
+this process (the desktop tray's `daemon_process`/`daemon_thread`, or
+nothing at all for a bare terminal launch) sees one long call rather than
+an exit — the tray's crash/stopped-unexpectedly handling never fires for a
+requested restart.
 
 ## LLM routes view
 

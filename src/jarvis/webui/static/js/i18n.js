@@ -237,6 +237,11 @@ const STRINGS = {
     "settings.secretSet": "set",
     "settings.secretUnset": "not set",
     "settings.file": "File",
+    "settings.restartNow": "🔄 Restart Jarvis",
+    "settings.restartConfirm": "Restart Jarvis now? The current conversation and any in-progress turn will end.",
+    "settings.restarting": "Restarting… this page will reconnect once Jarvis is back.",
+    "settings.restartBack": "Jarvis is back.",
+    "settings.restartFailed": "Restart did not complete in time. Check the daemon manually.",
 
     "llm.title": "LLM routes",
     "llm.lead": "Ordered fallback chains. Endpoints are contacted only by Jarvis calls or an explicit probe.",
@@ -523,6 +528,11 @@ const STRINGS = {
     "settings.secretSet": "gesetzt",
     "settings.secretUnset": "nicht gesetzt",
     "settings.file": "Datei",
+    "settings.restartNow": "🔄 Jarvis neu starten",
+    "settings.restartConfirm": "Jarvis jetzt neu starten? Das aktuelle Gespräch und ein laufender Durchgang werden dabei beendet.",
+    "settings.restarting": "Neustart läuft… diese Seite verbindet sich neu, sobald Jarvis wieder da ist.",
+    "settings.restartBack": "Jarvis ist wieder da.",
+    "settings.restartFailed": "Neustart nicht rechtzeitig abgeschlossen. Bitte den Daemon manuell prüfen.",
 
     "llm.title": "LLM-Routen",
     "llm.lead": "Geordnete Ausweichketten. Endpunkte werden nur durch Jarvis-Aufrufe oder eine ausdrückliche Prüfung kontaktiert.",

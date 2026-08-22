@@ -173,6 +173,22 @@ def read_process() -> dict:
     return reading
 
 
+@bp.route("/system/restart", methods=["POST"])
+def restart() -> Response:
+    """Tear down every component and start a fresh generation in the same process.
+
+    Returns before the restart happens: the daemon's main loop notices the
+    request on its next poll (at most a second later), runs the same
+    shutdown path a normal stop takes, then reinitialises. A page open
+    against this server will see the connection drop and can poll
+    ``/api/health`` to know when the new generation is ready.
+    """
+    from jarvis.daemon import request_restart
+
+    request_restart()
+    return jsonify({"restarting": True})
+
+
 @bp.route("/system")
 def system() -> Response:
     """Everything the technical view shows, in one reading."""
