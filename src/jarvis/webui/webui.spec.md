@@ -199,6 +199,22 @@ never HTML. The ring holds at most 500 entries and returns at most 500 entries
 per request. Credential-like values are redacted before they enter the ring
 and are redacted again by the normal response safety layer.
 
+An entry carries a time, a category, and a message, and nothing else. It has
+no severity, so the view invents none: no line is coloured as though it were
+a failure, because the ring has no way of knowing that it is. The two
+dimensions an entry actually has are what the view offers.
+
+| Control | Behaviour |
+|---|---|
+| Category | The categories present in the log, and only those, so the row never offers a filter that would empty the view |
+| Search | Narrows on the message text as it is typed |
+| Follow | Keeps the newest entry in view. It follows the reader as well as the button: scrolling back turns it off, and scrolling to the end turns it on again, because scrolling back is how someone says they are reading rather than watching |
+
+Each line puts its time and category in fixed columns so both can be skipped
+over, which is how a log is read. Filtering never asks for anything: it
+selects from the entries already on the page and says how much of the log is
+showing.
+
 The view is intentionally diagnostic rather than a full terminal mirror. It
 contains events emitted through `jarvis.debug.debug_log`, including listening,
 model, and route diagnostics, while the desktop face remains the everyday

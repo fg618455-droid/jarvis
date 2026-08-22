@@ -774,6 +774,132 @@ class TestPassiveRecordHasItsOwnHome:
         assert page.evaluate("window.__switched") == [False]
 
 
+class TestTheDiagnosticLogIsReadable:
+    """The log is the surface for "what did it actually do".
+
+    It carries a timestamp, a category and a message, and nothing else. It
+    has no severity, so the view invents none: what it can sort by is the
+    category, and what it can narrow by is the text.
+    """
+
+    ENTRIES = [
+        {"timestamp": 1_755_800_000, "category": "voice",
+         "message": "voice socket opened"},
+        {"timestamp": 1_755_800_001, "category": "webui",
+         "message": "crew poller reading every 10s"},
+        {"timestamp": 1_755_800_002, "category": "tts",
+         "message": "Voice language resolved: German"},
+        {"timestamp": 1_755_800_003, "category": "voice",
+         "message": "<script>alert(1)</script> frames accepted"},
+    ]
+
+    def _open(self, page, served, entries=None):
+        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.evaluate(
+            """async (entries) => {
+                const { api } = await import('/static/js/api.js');
+                window.__entries = entries;
+                api.logs = async () => ({ entries: window.__entries });
+            }""",
+            self.ENTRIES if entries is None else entries,
+        )
+        page.goto(f"{served}/#/logs")
+        page.wait_for_selector(".log-line", state="visible")
+
+    def test_every_entry_is_a_row_rather_than_one_block_of_text(self, page, served):
+        self._open(page, served)
+
+        assert page.locator(".log-line").count() == 4
+        assert page.locator("pre").count() == 0
+        assert not page.console_errors
+
+    def test_the_categories_offered_are_the_ones_actually_in_the_log(
+        self, page, served,
+    ):
+        self._open(page, served)
+
+        offered = page.locator(".log-filters .chip").all_inner_texts()
+
+        assert offered[0] == "All"
+        assert set(offered[1:]) == {"voice", "webui", "tts"}
+
+    def test_choosing_a_category_narrows_the_log(self, page, served):
+        self._open(page, served)
+
+        page.get_by_role("button", name="voice", exact=True).click()
+        page.wait_for_timeout(200)
+
+        assert page.locator(".log-line").count() == 2
+        assert set(page.locator(".log-category").all_inner_texts()) == {"voice"}
+
+    def test_searching_narrows_the_log_and_says_how_much_is_showing(
+        self, page, served,
+    ):
+        self._open(page, served)
+
+        page.fill(".log-search", "German")
+        page.wait_for_timeout(300)
+
+        assert page.locator(".log-line").count() == 1
+        assert "1" in page.locator(".log-shown").inner_text()
+
+    def test_a_search_that_matches_nothing_says_so(self, page, served):
+        self._open(page, served)
+
+        page.fill(".log-search", "nothing whatsoever")
+        page.wait_for_timeout(300)
+
+        assert page.locator(".log-line").count() == 0
+        assert page.get_by_text("Nothing here matches the filter.").is_visible()
+
+    def test_what_was_logged_is_rendered_as_text(self, page, served):
+        self._open(page, served)
+
+        assert page.get_by_text(
+            "<script>alert(1)</script> frames accepted", exact=True
+        ).is_visible()
+        assert page.locator("main script").count() == 0
+
+    def test_following_keeps_the_newest_entry_in_view(self, page, served):
+        many = [
+            {"timestamp": 1_755_800_000 + n, "category": "voice",
+             "message": f"entry number {n}"}
+            for n in range(120)
+        ]
+        self._open(page, served, many)
+        page.wait_for_timeout(300)
+
+        at_bottom = page.evaluate(
+            """() => { const w = document.querySelector('.log-well');
+                 return w.scrollHeight - w.scrollTop - w.clientHeight < 40; }"""
+        )
+
+        assert at_bottom, "the newest entry is not in view while following"
+
+    def test_turning_following_off_leaves_the_log_where_you_put_it(
+        self, page, served,
+    ):
+        many = [
+            {"timestamp": 1_755_800_000 + n, "category": "voice",
+             "message": f"entry number {n}"}
+            for n in range(120)
+        ]
+        self._open(page, served, many)
+        page.get_by_role("button", name="Follow").click()
+        page.evaluate("() => { document.querySelector('.log-well').scrollTop = 0; }")
+
+        # A new entry lands and the poll picks it up.
+        page.evaluate(
+            """() => window.__entries = [...window.__entries, {
+                timestamp: 1755800200, category: 'voice', message: 'entry number 999',
+            }]"""
+        )
+        page.wait_for_timeout(2600)
+
+        assert page.evaluate("() => document.querySelector('.log-well').scrollTop") < 40
+        assert page.locator(".log-line").count() == 121
+
+
 class TestStreamingApiClient:
     @pytest.mark.parametrize(
         ("method_name", "path"),
