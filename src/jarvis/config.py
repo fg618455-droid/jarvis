@@ -53,6 +53,13 @@ DEFAULT_FAST_MODEL = "gemma4:e2b"
 # a local instance keeps confirmation traffic off a third party's machine.
 DEFAULT_TELEGRAM_API_BASE_URL = "https://api.telegram.org"
 
+# The agent crew running on the NAS, in the order Mission Control shows it.
+# Names are held upper case because that is how the crew's own logger writes
+# them, and a roster that disagrees with the log matches nothing.
+DEFAULT_CREW_AGENTS = (
+    "JARVIS", "DEV", "RESEARCH", "ASSISTANT", "SCHULE", "SCRIBE", "REACH",
+)
+
 
 def get_supported_model_ids() -> set[str]:
     """Get set of supported model IDs for quick lookup."""
@@ -145,6 +152,7 @@ class Settings:
     crew_api_url: str
     crew_api_key: str
     crew_telegram_chat_id: str
+    crew_agents: list[str]
 
     # Screen Capture
     allowlist_bundles: list[str]
@@ -743,6 +751,10 @@ def get_default_config() -> Dict[str, Any]:
         "crew_api_url": "",
         "crew_api_key": "",
         "crew_telegram_chat_id": "",
+        # Who the crew is. The activity log only names agents that have
+        # logged something, so without a roster an idle agent disappears
+        # from Mission Control and reads as though it never existed.
+        "crew_agents": list(DEFAULT_CREW_AGENTS),
 
         # Screen Capture
         "allowlist_bundles": [
@@ -1273,6 +1285,13 @@ def load_settings() -> Settings:
     crew_api_url = str(merged.get("crew_api_url", "") or "").strip().rstrip("/")
     crew_api_key = str(merged.get("crew_api_key", "") or "").strip()
     crew_telegram_chat_id = str(merged.get("crew_telegram_chat_id", "") or "").strip()
+    # An empty roster would hide the whole crew, which is never what someone
+    # clearing a text box meant, so it falls back to the known seven.
+    crew_agents = [
+        str(name).strip().upper()
+        for name in (merged.get("crew_agents") or [])
+        if str(name).strip()
+    ] or list(DEFAULT_CREW_AGENTS)
 
     return Settings(
         # Database & Storage
@@ -1322,6 +1341,7 @@ def load_settings() -> Settings:
         webui_open_browser=webui_open_browser,
 
         # Mission Control
+        crew_agents=crew_agents,
         crew_api_url=crew_api_url,
         crew_api_key=crew_api_key,
         crew_telegram_chat_id=crew_telegram_chat_id,

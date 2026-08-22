@@ -117,7 +117,7 @@ allowed; reading one back is not.
 | `POST /api/llm/routes/probe` | User-triggered model catalogue and credential probe |
 | `POST /api/llm/routes/reset` | Clear persisted cooldowns and process-local invalid-key marks |
 | `PUT /api/llm/routes` | Validate and replace generic route configuration while preserving unchanged masked credentials |
-| `GET /api/crew` | Recent activity from a NAS-hosted agent crew, a per-agent success/failure/partial tally, and a 14-day daily activity count |
+| `GET /api/crew` | One reading of the NAS-hosted agent crew: recent activity, the agent roster with its tallies, a 14-day daily activity count, and when the reading was taken |
 
 `POST /api/chat` runs one turn at a time, and the turn it waits for may not
 be its own. Voice, the desktop chat window and this endpoint all reach the
@@ -224,23 +224,55 @@ route to that machine's database; it calls a small read-only HTTP endpoint
 the NAS exposes for this purpose, guarded by a shared key sent as
 `X-Crew-Key`. Nothing in this codebase writes to that endpoint.
 
-The NAS is not always on. `GET /api/crew` distinguishes three states rather
-than collapsing them into one empty view:
+The NAS is not always on. A reading distinguishes three states rather than
+collapsing them into one empty view:
 
 | State | Reported as | Shown as |
 |---|---|---|
 | No endpoint configured | `configured: false` | A message pointing at Settings |
 | Endpoint configured, no answer within the request timeout | `configured: true, reachable: false` | A message saying the NAS is not answering |
-| Endpoint answered | `configured: true, reachable: true`, plus `entries`, `agents` and `daily` | A 14-day activity heatmap, agent cards with per-status tallies, and a table of recent activity |
+| Endpoint answered | `configured: true, reachable: true`, plus `entries`, `agents` and `daily` | The activity ribbon, the agent roster, and the activity feed |
 
 A connection failure, a timeout, and a reply that fails to parse as JSON are
 all treated the same: `reachable: false`. The view never fabricates a
 reading it does not have.
 
-`daily` buckets `entries` by calendar day in UTC over a fixed trailing
-14-day window, zero-filled for days with no activity, oldest first. The
-window stays a fixed width regardless of how busy or quiet the crew has
-been, so the heatmap never resizes on its own.
+### Taking the reading
+
+The daemon takes one reading for everyone watching and publishes it as a
+`crew` event, rather than each open page asking the NAS on its own timer.
+Two tabs would otherwise mean twice the traffic to a device that is often
+asleep, and no page could tell how old the answer in front of it had become.
+
+The poller contacts nothing unless a crew endpoint is configured **and** the
+event bus has at least one subscriber. With the control centre closed there
+is no outbound request at all. A reading that fails is logged and dropped;
+the poller is never allowed to die, because Mission Control already has an
+honest way to say the NAS is not answering.
+
+`GET /api/crew` takes the same reading on demand, so a page that has just
+opened is correct before the next tick rather than blank until it.
+
+### What a reading carries
+
+| Field | Meaning |
+|---|---|
+| `checked_at` | When this reading was taken, as epoch seconds. Present in every state, including the two that reach nothing |
+| `entries` | The activity log as the NAS returns it, newest first |
+| `daily` | `entries` bucketed by calendar day in UTC over a fixed trailing 14-day window, zero-filled, oldest first, each day split by outcome as well as totalled. A fixed width regardless of how busy the crew has been, so the ribbon never resizes on its own |
+| `agents` | One entry per agent: per-status tallies, `total`, `last_at`, `last_status`, and `daily` as bare counts positioned against the same days as the reply's own `daily` |
+
+Status and freshness are separate facts. A tally is only as true as the
+moment it was read, so `checked_at` is reported alongside it rather than
+folded into it, and the view states the age of what it is showing.
+
+The `agents` list is the configured roster (`crew_agents`), in that order,
+followed by any agent that logged work without being listed. The activity
+log only names agents that have done something, so without a roster an idle
+agent would vanish and read as though it never existed; an agent with no
+entries is reported with zero counts and a null `last_at`, which the view
+shows as quiet. An unlisted agent is appended rather than dropped, because
+hiding real activity is the worse failure.
 
 ## Configuration
 
@@ -253,3 +285,4 @@ been, so the heatmap never resizes on its own.
 | `webui_open_browser` | bool | `false` | Open the interface at daemon start |
 | `crew_api_url` | str | `""` | Base URL of the NAS crew endpoint. Empty hides the Mission Control view |
 | `crew_api_key` | str | `""` | Shared key sent as `X-Crew-Key` |
+| `crew_agents` | list | The seven crew roles | Who Mission Control shows, in display order. Emptying it restores the default rather than hiding the crew |

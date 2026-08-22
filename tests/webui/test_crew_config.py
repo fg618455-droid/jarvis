@@ -12,7 +12,7 @@ from jarvis.config import get_default_config, load_settings
 from jarvis.config_metadata import FIELD_METADATA
 
 
-CREW_KEYS = ("crew_api_url", "crew_api_key")
+CREW_KEYS = ("crew_api_url", "crew_api_key", "crew_agents")
 
 
 def _load_with(tmp_path, monkeypatch, values):
@@ -65,3 +65,28 @@ class TestRealConfigFile:
         cfg = _load_with(tmp_path, monkeypatch, {"crew_api_key": "  abc DEF  "})
 
         assert cfg.crew_api_key == "abc DEF"
+
+
+class TestTheRoster:
+    def test_the_default_roster_is_the_crew_that_runs_on_the_nas(
+        self, tmp_path, monkeypatch,
+    ):
+        cfg = _load_with(tmp_path, monkeypatch, {})
+
+        assert cfg.crew_agents == [
+            "JARVIS", "DEV", "RESEARCH", "ASSISTANT", "SCHULE", "SCRIBE", "REACH",
+        ]
+
+    def test_a_configured_roster_replaces_the_default(self, tmp_path, monkeypatch):
+        cfg = _load_with(tmp_path, monkeypatch, {"crew_agents": ["dev", "  research  "]})
+
+        assert cfg.crew_agents == ["DEV", "RESEARCH"]
+
+    def test_an_emptied_roster_falls_back_rather_than_hiding_the_crew(
+        self, tmp_path, monkeypatch,
+    ):
+        cfg = _load_with(tmp_path, monkeypatch, {"crew_agents": []})
+
+        assert cfg.crew_agents == [
+            "JARVIS", "DEV", "RESEARCH", "ASSISTANT", "SCHULE", "SCRIBE", "REACH",
+        ]

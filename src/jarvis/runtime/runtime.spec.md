@@ -95,7 +95,15 @@ time and memory whatever the watcher does.
 | `discarded` | An utterance is thrown away |
 | `passive` | The passive-capture switch flips, or a line is written down |
 | `conversation` | A wake-word-free conversation starts or ends |
+| `crew` | A reading of the NAS-hosted agent crew is taken |
 | `error` | An error is recorded |
+
+Every kind but `crew` comes from the voice path. `crew` is published by the
+control centre's own poller, which is the one publisher the assistant does
+not drive. It rides this bus rather than a channel of its own because every
+page is already listening here, and a second stream would be a second
+connection to keep alive for the same purpose. See
+`../webui/webui.spec.md`.
 
 ## Passive capture
 

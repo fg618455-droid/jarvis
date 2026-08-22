@@ -36,6 +36,8 @@ from flask import Flask, jsonify, request, send_from_directory
 from jarvis.debug import debug_log
 from jarvis.security.web_confirm import get_web_confirmations
 
+from .crew_stream import CrewPoller
+
 
 UI_HEADER = "X-Jarvis-UI"
 TOKEN_HEADER = "X-Jarvis-Token"
@@ -162,6 +164,7 @@ class WebUIServer:
         self.cfg = cfg
         self._server = None
         self._thread: Optional[threading.Thread] = None
+        self.crew_poller: Optional["CrewPoller"] = None
 
     @property
     def url(self) -> str:
@@ -186,10 +189,17 @@ class WebUIServer:
         # The confirmation channel is only honest about being available
         # while there is a page that could show a request.
         get_web_confirmations().set_serving(True)
+        # The crew reading belongs to the interface, not to the assistant:
+        # it starts when there is somewhere to show it and stops with it.
+        self.crew_poller = CrewPoller()
+        self.crew_poller.start()
         debug_log(f"webui listening on {self.cfg.host}:{self.cfg.port}", "webui")
 
     def stop(self, timeout: float = 3.0) -> None:
         get_web_confirmations().set_serving(False)
+        if self.crew_poller is not None:
+            self.crew_poller.stop()
+            self.crew_poller = None
         if self._server is not None:
             try:
                 self._server.shutdown()

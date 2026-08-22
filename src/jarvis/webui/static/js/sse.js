@@ -60,6 +60,7 @@ export class LiveStream {
       "discarded",
       "passive",
       "conversation",
+      "crew",
       "error",
       "confirmation",
       "confirmation_resolved",
