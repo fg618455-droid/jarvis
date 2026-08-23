@@ -481,6 +481,10 @@ def _build_field_metadata() -> List[FieldMeta]:
       "Opt in to bounded semantic browser and Windows application control. "
       "Consequential actions still require individual confirmation",
       "features", "bool")
+    f("system_management_enabled", "System Management",
+      "Opt in to structured package, broader file and named Windows settings management. "
+      "Mutating actions still require individual confirmation",
+      "features", "bool")
     f("tune_enabled", "Startup Tune",
       "Play startup sound",
       "features", "bool")

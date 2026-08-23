@@ -12,7 +12,7 @@ An unavailable confirmation path never permits execution.
 | Level | Behaviour |
 |-------|-----------|
 | `off` | Valid tools execute without confirmation. This level is intended for controlled development only. |
-| `critical` | Every MCP tool, `deleteMeal`, `askCrew`, `browserInteract`, `desktopInteract`, their consequential inner actions, and `localFiles` write, append, or delete operations require confirmation. |
+| `critical` | Every MCP tool, `deleteMeal`, `askCrew`, `browserInteract`, `desktopInteract`, their consequential inner actions, `localFiles` write, append, or delete operations, and mutating `systemManager` operations require confirmation. |
 | `paranoid` | Every valid built-in and MCP tool requires confirmation. |
 
 The default level is `critical`. An unknown level is treated as `critical`.
@@ -53,6 +53,15 @@ into a no-op at the default level. Structured action arguments name the concrete
 application or domain, control, task, and bounded non-secret text. A refusal
 stops the loop. Secret-entry actions are refused by the tool before the gate is
 called, so they cannot be approved accidentally.
+
+`systemManager` is operation-aware like `localFiles`. Inspection operations
+(`listInstalledPackages`, `listFiles`, `readFile`, `getDarkMode`, and
+`getPowerPlan`) run without confirmation at `critical`. Package installation
+or removal, file write, append or deletion, and named setting changes require
+confirmation. The tool independently hard-denies protected operating-system
+paths before action I/O, so neither approval nor `security_level = off` can
+make those paths reachable. The full boundary is defined in
+`../tools/builtin/system_manager.spec.md`.
 
 ## Synchronous execution boundary
 

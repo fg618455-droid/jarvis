@@ -136,6 +136,7 @@ class MockConfig:
     telegram_chat_enabled: bool = False
     crew_handoff_enabled: bool = False
     computer_interaction_enabled: bool = False
+    system_management_enabled: bool = False
 
     def __post_init__(self) -> None:
         # Mirror ``load_settings``: when the provider-aware fields are

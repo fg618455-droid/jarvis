@@ -218,6 +218,7 @@ class Settings:
     memory_lookup_acknowledgement: str
     low_power_mode: bool
     computer_interaction_enabled: bool
+    system_management_enabled: bool
 
     # Echo Detection
     echo_tolerance: float
@@ -858,6 +859,7 @@ def get_default_config() -> Dict[str, Any]:
         # Powerful semantic browser/UIA control is opt-in until it has been
         # verified on the user's real browser and Windows applications.
         "computer_interaction_enabled": False,
+        "system_management_enabled": False,
         "echo_tolerance": 0.3,  # Time tolerance for echo detection timing
 
         # Audio Wake Word Detection
@@ -1159,6 +1161,7 @@ def load_settings() -> Settings:
     computer_interaction_enabled = bool(
         merged.get("computer_interaction_enabled", False)
     )
+    system_management_enabled = bool(merged.get("system_management_enabled", False))
     echo_tolerance = float(merged.get("echo_tolerance", 0.3))
 
     # Fast tier — the small, warm model behind the real-time classification
@@ -1505,6 +1508,7 @@ def load_settings() -> Settings:
         memory_lookup_acknowledgement=memory_lookup_acknowledgement,
         low_power_mode=low_power_mode,
         computer_interaction_enabled=computer_interaction_enabled,
+        system_management_enabled=system_management_enabled,
         echo_tolerance=echo_tolerance,
         # Fast tier (voice intent, tool routing, quick classifications)
         fast_model=fast_model,

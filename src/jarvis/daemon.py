@@ -33,6 +33,7 @@ from .memory.conversation import DialogueMemory, update_diary_from_dialogue_memo
 from .output.tts import create_tts_engine
 from .tools.registry import (
     configure_computer_interaction_tools,
+    configure_system_management_tool,
     configure_vault_search_tool,
     initialize_mcp_tools,
 )
@@ -810,6 +811,7 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
     cfg = load_settings()
     configure_vault_search_tool(cfg)
     configure_computer_interaction_tools(cfg)
+    configure_system_management_tool(cfg)
     db = Database(cfg.db_path, cfg.sqlite_vss_path)
     # Expose cfg + db so the text-chat submission path shares the same store
     # and config as the voice listener (one conversation, one config).

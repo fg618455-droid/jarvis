@@ -19,6 +19,10 @@ _CRITICAL_BUILTINS = frozenset({
 })
 _CRITICAL_ACTION_PREFIXES = ("browserInteract.", "desktopInteract.")
 _LOCAL_FILE_MUTATIONS = frozenset({"write", "append", "delete"})
+_SYSTEM_MANAGER_MUTATIONS = frozenset({
+    "installpackage", "uninstallpackage", "writefile", "appendfile", "deletefile",
+    "setdarkmode", "setpowerplan",
+})
 
 
 class ConfirmationChannel(Protocol):
@@ -148,6 +152,12 @@ class SecurityGate:
             # the gate has to read it exactly the same way.
             operation = action_args.get("operation")
             return isinstance(operation, str) and operation.strip().casefold() in _LOCAL_FILE_MUTATIONS
+        if action_name == "systemManager":
+            operation = action_args.get("operation")
+            return (
+                isinstance(operation, str)
+                and operation.strip().casefold() in _SYSTEM_MANAGER_MUTATIONS
+            )
         return False
 
     def _request_confirmation(self, action_name: str, action_args: dict[str, Any]) -> bool:

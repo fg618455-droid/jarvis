@@ -16,6 +16,7 @@ from .weather import WeatherTool
 from .time_tool import TimeTool
 from .stop import StopTool
 from .open_on_computer import OpenOnComputerTool
+from .system_manager import SystemManagerTool
 from .ask_crew import AskCrewTool
 
 # Import supporting functions that may still be used elsewhere
@@ -33,5 +34,6 @@ __all__ = [
     'TimeTool',
     'StopTool',
     'OpenOnComputerTool',
+    'SystemManagerTool',
     'AskCrewTool',
 ]

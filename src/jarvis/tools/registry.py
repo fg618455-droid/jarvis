@@ -27,6 +27,7 @@ from .builtin.tool_search import ToolSearchTool
 from .builtin.ask_crew import AskCrewTool
 from .builtin.browser_interact import BrowserInteractTool
 from .builtin.desktop_interact import DesktopInteractTool
+from .builtin.system_manager import SystemManagerTool
 from .types import ToolExecutionResult
 from ..config import Settings
 from .external.mcp_client import MCPClient
@@ -74,6 +75,15 @@ def configure_computer_interaction_tools(cfg) -> None:
         if isinstance(browser_tool, BrowserInteractTool):
             browser_tool.close()
         BUILTIN_TOOLS.pop("desktopInteract", None)
+
+
+def configure_system_management_tool(cfg) -> None:
+    """Register structured system management only after explicit opt-in."""
+    if getattr(cfg, "system_management_enabled", False):
+        if not isinstance(BUILTIN_TOOLS.get("systemManager"), SystemManagerTool):
+            BUILTIN_TOOLS["systemManager"] = SystemManagerTool()
+    else:
+        BUILTIN_TOOLS.pop("systemManager", None)
 
 # Global MCP tools cache
 _mcp_tools_cache: Dict[str, "ToolSpec"] = {}
