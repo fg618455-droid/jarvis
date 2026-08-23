@@ -283,6 +283,38 @@ def test_browser_tool_enforces_its_action_cap(mock_config) -> None:
     assert [kind for kind, _args in browser.calls].count("browser_scroll") == 2
 
 
+def test_browser_tool_translates_a_playwright_failure_into_a_clean_message(mock_config) -> None:
+    from playwright.sync_api import Error as PlaywrightError
+
+    browser = _FakeBrowser()
+
+    def failing_dispatch(kind: str, args: dict):
+        browser.calls.append((kind, args))
+        if kind == "browser_snapshot":
+            return {"url": "https://example.test", "text": "page", "controls": []}
+        raise PlaywrightError(
+            "Locator.click: Timeout 30000ms exceeded.\n"
+            "Call log:\n"
+            "  - waiting for locator(\"a, button\").nth(44)\n"
+            "    - retrying click action\n" + ("      - waiting 500ms\n" * 50)
+        )
+
+    browser.dispatch = failing_dispatch
+    tool = BrowserInteractTool(
+        controller=browser,
+        resolver=_resolver({"kind": "browser_click", "args": {"ref": "b1-1"}, "risk": "ordinary"}),
+    )
+
+    result = tool.run({"task": "Click the link"}, _ctx(mock_config))
+
+    assert result.success is False
+    assert result.error_code == ToolErrorCode.EXECUTION_FAILED.value
+    assert result.error_message is not None
+    assert len(result.error_message) < 200
+    assert "Call log" not in result.error_message
+    assert "waiting 500ms" not in result.error_message
+
+
 def test_browser_tool_history_records_a_short_outcome_not_the_next_snapshot(mock_config) -> None:
     browser = _FakeBrowser()
     histories = []

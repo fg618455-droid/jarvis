@@ -66,6 +66,8 @@ Malformed, empty, or contract-invalid resolver output triggers one repair call w
 
 The gate action name is `desktopInteract.<action>`. Important actions, confirmation requests and refusals, inspection counts, and cap exits are auditable through `debug_log` without logging secret values.
 
+A UIA/COM failure inside the action loop (a stale element, a native call frame, a localised system error) is caught and reduced to its first line before it reaches `ToolExecutionResult`. The full text goes to `technical_details` only.
+
 ### What desktopInteract is NOT
 
 - Not an application launcher. A request that only starts an application belongs to `openOnComputer`.

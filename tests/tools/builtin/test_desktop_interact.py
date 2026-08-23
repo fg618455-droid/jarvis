@@ -268,6 +268,35 @@ def test_desktop_tool_confirms_setting_text_with_concrete_context(mock_config) -
     assert ("desktop_set_text", {"control_id": "c1-1", "text": "hello"}) in desktop.calls
 
 
+def test_desktop_tool_translates_a_uia_failure_into_a_clean_message(mock_config) -> None:
+    desktop = _FakeDesktop()
+
+    def failing_dispatch(kind: str, args: dict):
+        desktop.calls.append((kind, args))
+        if kind == "desktop_invoke":
+            raise RuntimeError(
+                "COMError(-2147220991, 'Der Vorgang ist aufgrund eines "
+                "geänderten Zustands des Objekts nicht mehr gültig.', "
+                "(None, None, None, 0, None))\n" + ("  at native call frame\n" * 40)
+            )
+        return {"ok": True}
+
+    desktop.dispatch = failing_dispatch
+    tool = DesktopInteractTool(
+        controller=desktop,
+        resolver=_resolver({"kind": "desktop_invoke", "args": {"control_id": "c1-1"}, "risk": "ordinary"}),
+    )
+
+    result = tool.run({"application": "Notepad", "task": "Click Save"}, _ctx(mock_config))
+
+    assert result.success is False
+    assert result.error_code == ToolErrorCode.EXECUTION_FAILED.value
+    assert result.error_message is not None
+    assert len(result.error_message) < 200
+    assert "COMError" not in result.error_message
+    assert "native call frame" not in result.error_message
+
+
 def _two_tab_desktop() -> _FakeDesktop:
     desktop = _FakeDesktop()
     desktop.controls = {

@@ -56,6 +56,8 @@ Resolver output receives a second deterministic validation pass. Unknown action 
 
 The gate action name is `browserInteract.<action>`. The arguments remain structured data so desktop, web, Telegram, and voice channels render them through the existing confirmation conventions. Important actions, confirmation requests and refusals, snapshots, and loop-cap exits are sent to `debug_log` without logging secret values.
 
+A Playwright failure inside the action loop (a timeout, a locator resolving to nothing, an intercepted click) is caught and reduced to its first line before it reaches `ToolExecutionResult`. Playwright's own error text carries a full retry call log, which is valuable in `technical_details` and unusable as a user-facing message.
+
 ### What browserInteract is NOT
 
 - Not a way to run JavaScript or evaluate code in the page.

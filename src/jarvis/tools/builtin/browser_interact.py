@@ -462,6 +462,11 @@ class BrowserInteractTool(Tool):
             observation: Any = self._snapshot_or_empty()
         except BrowserUnsupported as exc:
             return ToolExecutionResult.failure(ToolErrorCode.UNSUPPORTED, str(exc), phase="preflight")
+        # Playwright is confirmed importable at this point (the snapshot above
+        # already used it), so this is safe to bind once for the loop's except
+        # clause below rather than re-importing on every action.
+        from playwright.sync_api import Error as PlaywrightError
+
         origin_domain = (urlparse(str(observation.get("url") or "")).hostname or "").casefold()
         gate = SecurityGate.get_or_create(context.cfg)
         context.user_print("🌐 Browser interaction started.")
@@ -547,11 +552,17 @@ class BrowserInteractTool(Tool):
                 )
             except BrowserUnsupported as exc:
                 return ToolExecutionResult.failure(ToolErrorCode.UNSUPPORTED, str(exc), phase="preflight")
-            except (BrowserInteractionError, ValueError, KeyError) as exc:
+            except (BrowserInteractionError, ValueError, KeyError, PlaywrightError) as exc:
+                # Playwright's own errors carry a multi-line call log (retry
+                # attempts, intercepting elements, full selectors) that is
+                # invaluable in a debug log and unusable as a user-facing
+                # message. Keep the first line only; the rest goes to
+                # technical_details, which is not shown to the user.
+                first_line = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
                 return ToolExecutionResult.failure(
                     ToolErrorCode.EXECUTION_FAILED,
                     "The browser action could not be completed.",
-                    technical_details=f"{type(exc).__name__}: {exc}",
+                    technical_details=f"{type(exc).__name__}: {first_line}",
                 )
             history.append(compact_action_history_entry(kind, action_args, result))
 

@@ -731,11 +731,20 @@ class DesktopInteractTool(Tool):
                     "The desktop control reference is stale or outside the selected window.",
                     technical_details=str(exc),
                 )
-            except (DesktopInteractionError, ValueError, KeyError) as exc:
+            except Exception as exc:
+                # pywinauto surfaces raw COM/UIA errors (native call frames,
+                # localised system text) that are useful in a debug log and
+                # unusable as a user-facing message. Keep the first line
+                # only; the rest goes to technical_details, which is not
+                # shown to the user. The bare Exception here is deliberate:
+                # this is the final boundary before returning to the caller,
+                # and every more specific desktop failure is already caught
+                # above.
+                first_line = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
                 return ToolExecutionResult.failure(
                     ToolErrorCode.EXECUTION_FAILED,
                     "The desktop action could not be completed.",
-                    technical_details=f"{type(exc).__name__}: {exc}",
+                    technical_details=f"{type(exc).__name__}: {first_line}",
                 )
             history.append(compact_action_history_entry(kind, action_args, result))
 
