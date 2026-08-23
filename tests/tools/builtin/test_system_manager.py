@@ -213,6 +213,35 @@ class TestFiles:
         write.assert_not_called()
         run.assert_not_called()
 
+    def test_bare_unc_share_root_is_treated_as_an_absolute_path(
+        self, tool, mock_config
+    ) -> None:
+        share_root = r"\\localhost\Users"
+        with patch.object(
+            Path, "resolve", autospec=True, return_value=Path(share_root)
+        ), patch.object(Path, "is_dir", autospec=True, return_value=True), patch.object(
+            Path, "iterdir", autospec=True, return_value=[]
+        ) as iterdir:
+            result = tool.run({"operation": "listFiles", "path": share_root}, _ctx(mock_config))
+
+        assert result.success is True
+        iterdir.assert_called_once()
+
+    def test_bare_unc_admin_share_root_is_still_hard_denied(
+        self, tool, mock_config
+    ) -> None:
+        with patch.object(Path, "resolve", autospec=True) as resolve, patch.object(
+            Path, "unlink", autospec=True
+        ) as unlink:
+            result = tool.run(
+                {"operation": "deleteFile", "path": r"\\localhost\C$"}, _ctx(mock_config)
+            )
+
+        assert result.success is False
+        assert "hard-denied" in (result.reply_text or "").casefold()
+        resolve.assert_not_called()
+        unlink.assert_not_called()
+
     def test_resolved_alias_into_a_hard_denied_root_is_refused(
         self, tool, mock_config
     ) -> None:

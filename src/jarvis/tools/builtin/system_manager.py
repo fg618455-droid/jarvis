@@ -92,6 +92,20 @@ def _is_hard_denied_path(value: str) -> bool:
     return False
 
 
+_UNC_ROOT_RE = re.compile(r"^\\\\[^\\]+\\[^\\]+\\?$")
+
+
+def _is_unc_root(value: str) -> bool:
+    """A bare ``\\\\host\\share`` has no path component past the share name.
+
+    ``ntpath.isabs()`` reports ``False`` for this exact shape (it requires at
+    least one path segment after the share to recognise the path as
+    absolute), which would otherwise make every UNC share root spuriously
+    fail the absolute-path check before the hard-deny check ever runs.
+    """
+    return bool(_UNC_ROOT_RE.match(value))
+
+
 def _has_ambiguous_windows_syntax(value: str) -> bool:
     """Reject Windows aliases whose spelling does not uniquely name a path."""
     drive, tail = ntpath.splitdrive(value)
@@ -235,7 +249,7 @@ class SystemManagerTool(Tool):
         if raw_path != raw_path.strip() or _has_ambiguous_windows_syntax(raw_path):
             debug_log(f"systemManager refused ambiguous path syntax: {raw_path!r}", "security")
             return self._failure("The path uses ambiguous Windows syntax and is refused.")
-        if not (ntpath.isabs(raw_path) or os.path.isabs(raw_path)):
+        if not (ntpath.isabs(raw_path) or os.path.isabs(raw_path) or _is_unc_root(raw_path)):
             return self._failure("A file action requires an absolute path.")
         if _is_hard_denied_path(raw_path):
             debug_log(f"systemManager hard-deny refused path: {raw_path}", "security")
