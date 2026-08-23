@@ -1106,10 +1106,15 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # come out concrete ("getWeather location='Paris'") so the direct-exec
     # fast path parses without needing the resolver LLM round-trip.
     context_hint = _build_enrichment_context_hint(cfg, recent_messages)
+    _strategy_config_value = getattr(cfg, "tool_selection_strategy", "llm")
     try:
-        strategy = ToolSelectionStrategy(getattr(cfg, "tool_selection_strategy", "llm"))
+        strategy = ToolSelectionStrategy(_strategy_config_value)
     except ValueError:
         strategy = ToolSelectionStrategy.LLM
+    _strategy_is_explicit_llm = bool(
+        isinstance(_strategy_config_value, str)
+        and _strategy_config_value.strip().lower() == ToolSelectionStrategy.LLM.value
+    )
     # Hot-window cache: router output for the same redacted query and
     # tool catalogue is reused within one conversation. Catalogue
     # signature includes builtin + MCP tool names so a mid-window MCP
@@ -1779,6 +1784,32 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # allow-list mid-loop when the initial routing turned out too narrow.
     if "toolSearchTool" not in allowed_tools:
         allowed_tools.append("toolSearchTool")
+    # A narrowed LLM-router selection containing a real tool is a structural
+    # signal that this reply needs external work. It is deliberately derived
+    # from tool availability, never from words in the query or eventual
+    # prose. ALL is availability-only, keyword matching is deliberately broad,
+    # and embedding selection returns a minimum top-k even without a confident
+    # semantic match. None is strong enough to turn an optional tool into a
+    # mandatory call.
+    _router_real_tools = [
+        name for name in routed_tools
+        if name not in {"stop", "toolSearchTool"}
+    ]
+    _routed_full_catalog = (
+        len(routed_tools) == len(_full_catalog_names)
+        and set(routed_tools) == set(_full_catalog_names)
+    )
+    _plan_is_memory_only = bool(
+        plan_demands_memory
+        and not tool_names_in_plan(action_plan, _full_catalog_names)
+    )
+    _router_requires_external_work = bool(
+        strategy == ToolSelectionStrategy.LLM
+        and _strategy_is_explicit_llm
+        and _router_real_tools
+        and not _routed_full_catalog
+        and not _plan_is_memory_only
+    )
     _selected_preview = ", ".join(allowed_tools[:8]) + (
         f" (+{len(allowed_tools) - 8} more)" if len(allowed_tools) > 8 else ""
     )
@@ -2195,6 +2226,18 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     max_turns = cfg.agentic_max_turns
     turn = 0
     malformed_retry_used = False
+    zero_tool_retry_used = False
+    # Names whose implementations actually ran in this reply. Assistant
+    # prose and emitted tool-call syntax are not evidence; the name only
+    # enters this list immediately before dispatch.
+    executed_tool_names: list[str] = []
+
+    def _grounding_tool_has_run() -> bool:
+        """Whether an external-work tool, rather than loop control, ran."""
+        return any(
+            name not in {"stop", "toolSearchTool"}
+            for name in executed_tool_names
+        )
 
     _handoff_reply: Optional[str] = None
 
@@ -2290,6 +2333,17 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 _say(sentence)
 
         return segmenter, listener
+
+    def _stream_speech_for_turn():
+        """Buffer a router-positive turn until tool grounding is known.
+
+        Token streaming is irreversible. If prose is going to be withheld by
+        the zero-tool gate below, passing it to TTS while it is generated
+        would still expose the false success by voice.
+        """
+        if _router_requires_external_work and not _grounding_tool_has_run():
+            return None, None
+        return _stream_speech()
 
     def _say(sentence: str) -> None:
         """Hand one finished sentence to the speech path.
@@ -2438,6 +2492,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                                     }
                                 ],
                             })
+                            executed_tool_names.append(_name)
                             _plan_result = run_tool_with_retries(
                                 db=db,
                                 cfg=cfg,
@@ -2533,7 +2588,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         # tools API not supported).
         _dump_tools_schema = None if use_text_tools else tools_json_schema
         _chat_model = cfg.llm_chat_model
-        _segmenter, _on_token = _stream_speech()
+        _segmenter, _on_token = _stream_speech_for_turn()
         try:
             _chat_timeout_sec = float(
                 getattr(cfg, 'llm_chat_timeout_sec', 45.0)
@@ -2575,7 +2630,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             use_text_tools = True
             messages[0] = {"role": "system", "content": _build_initial_system_message()}
             _update_system_message_with_context(messages)
-            _segmenter, _on_token = _stream_speech()
+            _segmenter, _on_token = _stream_speech_for_turn()
             _fallback_timeout_sec = float(
                 getattr(cfg, 'llm_chat_timeout_sec', 45.0)
             )
@@ -2772,6 +2827,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 continue
 
             # Execute tool
+            executed_tool_names.append(tool_name)
             result = run_tool_with_retries(
                 db=db,
                 cfg=cfg,
@@ -3049,6 +3105,66 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         else:
             candidate_reply = content
             malformed_fallback = False
+
+        # The router made a positive, narrowed selection for external work,
+        # yet no tool implementation ran. A prose answer in that state is
+        # structurally ungrounded regardless of how plausible or specific it
+        # sounds. Withhold it once and force the model back through the
+        # existing discovery escape hatch. If the model ignores the repair,
+        # replace the repeated claim with an honest failure rather than
+        # delivering an unqualified success.
+        if (
+            not malformed_fallback
+            and candidate_reply
+            and _router_requires_external_work
+            and not _grounding_tool_has_run()
+        ):
+            if not zero_tool_retry_used and turn < max_turns:
+                zero_tool_retry_used = True
+                debug_log(
+                    "zero-tool final withheld; router selected external work "
+                    "but no grounding tool ran, forcing escape-hatch retry",
+                    "planning",
+                )
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[Grounding required: Your previous prose reply was "
+                        "not shown to the user because the tool router found "
+                        "that this request needs external work, but no tool "
+                        "actually ran. Treat every claimed result in that "
+                        "reply as unverified and do not repeat it. Call a "
+                        "fitting available tool now. If the current tools "
+                        "cannot perform or verify the requested work, call "
+                        "toolSearchTool with a short self-contained "
+                        "description of the needed capability, then use a "
+                        "tool it surfaces. Only report an external result "
+                        "after a tool returns evidence. If the work cannot "
+                        "be completed, say so honestly.]"
+                    ),
+                })
+                continue
+
+            debug_log(
+                "zero-tool final rejected after escape-hatch retry; "
+                "delivering explicit unverified-result fallback",
+                "planning",
+            )
+            candidate_reply = in_the_voices_language(
+                cfg,
+                "I couldn't verify the requested external state or complete "
+                "the requested action, so I can't confirm that result.",
+            )
+        elif (
+            not malformed_fallback
+            and candidate_reply
+            and not _grounding_tool_has_run()
+        ):
+            debug_log(
+                "zero-tool final accepted; router supplied no narrowed "
+                "external-work signal",
+                "planning",
+            )
 
         reply = candidate_reply
         last_candidate_reply = candidate_reply

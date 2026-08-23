@@ -146,46 +146,59 @@ def _make_tool_runner(capture: ToolCallCapture, responder):
 
 
 class TestPrematureProseNudge:
-    """The evaluator must nudge the agent back into a tool call when the
-    router's pre-seeded tool could directly perform the action but the model
-    opened with prose."""
+    """The structural zero-tool gate must nudge the agent back into a tool
+    call when the router selected external work but the model opened with
+    prose."""
 
     @pytest.mark.eval
     @requires_judge_llm
-    @pytest.mark.xfail(
-        reason=(
-            "Plumbing verified in unit tests (tests/test_engine_tool_search_loop.py, "
-            "tests/test_evaluator.py). Live behaviour on gemma4:e2b is flaky: "
-            "the small model sometimes refuses in prose despite the nudge. "
-            "Tracked for iterative prompt tuning; architecture ships as-is."
-        ),
-        strict=False,
-    )
     def test_navigate_prose_gets_nudged_into_tool_call(
         self, mock_config, eval_db, eval_dialogue_memory
     ):
-        from jarvis.reply.engine import run_reply_engine
+        from jarvis.reply import engine as engine_mod
 
         _configure(mock_config)
         capture = ToolCallCapture()
+        real_chat = engine_mod.chat_with_messages
+        chat_turn = 0
+
+        def premature_prose_then_live_model(*args, **kwargs):
+            nonlocal chat_turn
+            chat_turn += 1
+            if chat_turn == 1:
+                return {
+                    "message": {
+                        "role": "assistant",
+                        "content": "The YouTube homepage is open.",
+                    }
+                }
+            return real_chat(*args, **kwargs)
 
         def _respond(name, args):
-            if name == "chrome-devtools__navigate_page":
+            if name == "openOnComputer":
                 return MOCK_NAV_SUCCESS
             if name == "toolSearchTool":
                 return MOCK_TOOLSEARCH_NAV
             return "OK"
 
-        router = _make_router_stub(["chrome-devtools__navigate_page", "stop"])
+        router = _make_router_stub(["openOnComputer", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
         with patch("jarvis.reply.engine.select_tools", side_effect=router), \
+             patch(
+                 "jarvis.reply.engine.plan_query",
+                 return_value=["Reply to the user."],
+             ), \
              patch("jarvis.reply.engine.run_tool_with_retries", side_effect=runner), \
+             patch(
+                 "jarvis.reply.engine.chat_with_messages",
+                 side_effect=premature_prose_then_live_model,
+             ), \
              patch(
                  "jarvis.reply.engine.get_location_context_with_timezone",
                  return_value=("Location: Kensington, UK", None),
              ):
-            reply = run_reply_engine(
+            reply = engine_mod.run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
                 text="Open the YouTube homepage.",
                 dialogue_memory=eval_dialogue_memory,
@@ -196,9 +209,9 @@ class TestPrematureProseNudge:
         print(f"   tool calls: {names}")
         print(f"   reply: {(reply or '')[:160]}...")
 
-        assert "chrome-devtools__navigate_page" in names, (
-            "Evaluator should have nudged the model into calling "
-            "chrome-devtools__navigate_page. "
+        assert "openOnComputer" in names, (
+            "The zero-tool grounding gate should have nudged the model into calling "
+            "openOnComputer. "
             f"Tools actually called: {names}. Reply: {(reply or '')[:200]!r}"
         )
 

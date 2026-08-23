@@ -32,6 +32,357 @@ def _assistant_content(text: str):
     return {"message": {"role": "assistant", "content": text}}
 
 
+_FABRICATED_CALCULATOR_REPLY = (
+    'Das Produkt von 7 und 6 beträgt 42. Auf der Anzeige erscheint es als "42".'
+)
+
+
+def test_zero_tool_live_state_claim_is_withheld_and_replaced(
+    mock_config, db, dialogue_memory
+):
+    """A router-positive turn cannot ship an external-state claim when the
+    chat model ignored every tool, including the discovery escape hatch."""
+    from jarvis.reply import engine as engine_mod
+
+    mock_config.ollama_chat_model = "qwen2.5:7b-ctx8k"
+    mock_config.llm_chat_model = "qwen2.5:7b-ctx8k"
+    mock_config.planner_enabled = False
+    mock_config.agentic_max_turns = 3
+    mock_config.tool_selection_strategy = "llm"
+
+    chat_messages: list[list[dict]] = []
+    spoken: list[str] = []
+    logged: list[str] = []
+
+    def fake_chat(*args, **kwargs):
+        chat_messages.append([dict(message) for message in kwargs["messages"]])
+        on_token = kwargs.get("on_token")
+        if on_token is not None:
+            on_token(_FABRICATED_CALCULATOR_REPLY)
+        return _assistant_content(_FABRICATED_CALCULATOR_REPLY)
+
+    with patch.object(engine_mod, "chat_with_messages", side_effect=fake_chat), \
+         patch.object(
+             engine_mod,
+             "select_tools",
+             return_value=["openOnComputer", "stop"],
+         ), \
+         patch.object(
+             engine_mod,
+             "run_tool_with_retries",
+             side_effect=AssertionError("the fake model made no tool call"),
+         ), \
+         patch.object(
+             engine_mod,
+             "debug_log",
+             side_effect=lambda message, _area: logged.append(str(message)),
+         ):
+        reply = engine_mod.run_reply_engine(
+            db=db,
+            cfg=mock_config,
+            tts=None,
+            text=(
+                "In der bereits geöffneten Calculator-App: berechne 7 mal 6, "
+                "indem du auf die Zahlen- und Operator-Buttons klickst, und sag "
+                "mir dann das angezeigte Ergebnis."
+            ),
+            dialogue_memory=dialogue_memory,
+            on_speech_segment=spoken.append,
+        )
+
+    assert reply != _FABRICATED_CALCULATOR_REPLY
+    assert reply and "can't confirm" in reply.lower()
+    assert len(chat_messages) >= 2, "the engine should force a corrective turn"
+    assert any(
+        "toolSearchTool" in str(message.get("content", ""))
+        for message in chat_messages[1]
+    ), "the corrective turn must point at the discovery escape hatch"
+    assert spoken == [], "withheld ungrounded prose must not leak through TTS"
+    assert any(
+        "zero-tool" in message and "withheld" in message for message in logged
+    ), "the structural decision point must be written to debug_log"
+
+
+@pytest.mark.parametrize(
+    ("query", "answer"),
+    [
+        ("Hello there", "Hello!"),
+        ("Tell me a joke", "Why did the byte cross the bus?"),
+        ("What is 7 times 6?", "42"),
+        ("Which colour feels calming to you?", "I like quiet blues."),
+    ],
+)
+def test_legitimate_zero_tool_reply_passes_through(
+    mock_config, db, dialogue_memory, query, answer
+):
+    """Router-confirmed conversation and pure reasoning need no tool proof."""
+    from jarvis.reply import engine as engine_mod
+
+    mock_config.ollama_chat_model = "qwen2.5:7b-ctx8k"
+    mock_config.llm_chat_model = "qwen2.5:7b-ctx8k"
+    mock_config.planner_enabled = False
+    mock_config.tool_selection_strategy = "llm"
+
+    with patch.object(
+        engine_mod, "chat_with_messages", return_value=_assistant_content(answer)
+    ) as chat, patch.object(
+        engine_mod, "select_tools", return_value=["stop"]
+    ), patch.object(
+        engine_mod,
+        "run_tool_with_retries",
+        side_effect=AssertionError("ordinary conversation must not call tools"),
+    ):
+        reply = engine_mod.run_reply_engine(
+            db=db,
+            cfg=mock_config,
+            tts=None,
+            text=query,
+            dialogue_memory=dialogue_memory,
+        )
+
+    assert reply == answer
+    assert chat.call_count == 1
+
+
+@pytest.mark.parametrize(
+    ("strategy", "selection_kind"),
+    [
+        ("all", "narrowed"),
+        ("keyword", "narrowed"),
+        ("embedding", "narrowed"),
+        ("llm", "full_catalogue"),
+    ],
+)
+def test_non_semantic_router_shapes_do_not_gate_zero_tool_replies(
+    mock_config, db, dialogue_memory, strategy, selection_kind
+):
+    """Availability and fall-open shapes are not positive relevance signals."""
+    from jarvis.reply import engine as engine_mod
+
+    mock_config.ollama_chat_model = "qwen2.5:7b-ctx8k"
+    mock_config.llm_chat_model = "qwen2.5:7b-ctx8k"
+    mock_config.planner_enabled = False
+    mock_config.tool_selection_strategy = strategy
+
+    selected = (
+        ["openOnComputer", "stop"]
+        if selection_kind == "narrowed"
+        else list(engine_mod.BUILTIN_TOOLS.keys())
+    )
+    answer = "A direct answer that needs no external observation."
+
+    with patch.object(
+        engine_mod, "chat_with_messages", return_value=_assistant_content(answer)
+    ) as chat, patch.object(
+        engine_mod, "select_tools", return_value=selected
+    ):
+        reply = engine_mod.run_reply_engine(
+            db=db,
+            cfg=mock_config,
+            tts=None,
+            text="Share a general thought.",
+            dialogue_memory=dialogue_memory,
+        )
+
+    assert reply == answer
+    assert chat.call_count == 1
+
+
+def test_memory_only_plan_is_grounded_without_a_callable_tool(
+    mock_config, db, dialogue_memory
+):
+    """Memory enrichment is external evidence even though it is not a tool."""
+    from jarvis.reply import engine as engine_mod
+
+    mock_config.ollama_chat_model = "qwen2.5:7b-ctx8k"
+    mock_config.llm_chat_model = "qwen2.5:7b-ctx8k"
+    mock_config.tool_selection_strategy = "llm"
+    mock_config.memory_digest_enabled = False
+
+    answer = "Your stored project note says the launch is Friday."
+    with patch.object(
+        engine_mod, "select_tools", return_value=["webSearch", "stop"]
+    ), patch.object(
+        engine_mod,
+        "plan_query",
+        return_value=["searchMemory topic='project launch'", "Reply to the user."],
+    ), patch.object(
+        engine_mod,
+        "extract_search_params_for_memory",
+        return_value={"keywords": [], "questions": []},
+    ), patch.object(
+        engine_mod, "chat_with_messages", return_value=_assistant_content(answer)
+    ) as chat:
+        reply = engine_mod.run_reply_engine(
+            db=db,
+            cfg=mock_config,
+            tts=None,
+            text="What do my project launch notes say?",
+            dialogue_memory=dialogue_memory,
+        )
+
+    assert reply == answer
+    assert chat.call_count == 1
+
+
+def test_zero_tool_gate_recovers_via_toolsearchtool_then_desktop_interact(
+    mock_config, db, dialogue_memory
+):
+    """A challenged turn may widen the allow-list and use the surfaced tool."""
+    from jarvis.reply import engine as engine_mod
+    from jarvis.tools.builtin.desktop_interact import DesktopInteractTool
+    from jarvis.tools.types import ToolExecutionResult
+
+    mock_config.ollama_chat_model = "qwen2.5:7b-ctx8k"
+    mock_config.llm_chat_model = "qwen2.5:7b-ctx8k"
+    mock_config.planner_enabled = False
+    mock_config.agentic_max_turns = 5
+    mock_config.tool_selection_strategy = "llm"
+
+    invoked_tools: list[str] = []
+
+    def fake_tool_runner(db, cfg, tool_name, tool_args, **kwargs):
+        invoked_tools.append(tool_name)
+        if tool_name == "toolSearchTool":
+            return ToolExecutionResult(
+                success=True,
+                reply_text=(
+                    "desktopInteract: Inspect and operate an already-open "
+                    "desktop application."
+                ),
+                error_message=None,
+            )
+        if tool_name == "desktopInteract":
+            return ToolExecutionResult(
+                success=True,
+                reply_text="Calculator display inspected after button clicks: 42",
+                error_message=None,
+            )
+        raise AssertionError(f"unexpected tool call: {tool_name}")
+
+    chat_responses = iter(
+        [
+            _assistant_content(_FABRICATED_CALCULATOR_REPLY),
+            _assistant_tool_call(
+                "toolSearchTool",
+                {"query": "operate buttons in an already-open desktop app"},
+                call_id="search_1",
+            ),
+            _assistant_tool_call(
+                "desktopInteract",
+                {"task": "Click 7, multiply, 6, equals, then read the display"},
+                call_id="desktop_1",
+            ),
+            _assistant_content(_FABRICATED_CALCULATOR_REPLY),
+        ]
+    )
+
+    with patch.object(
+        engine_mod, "chat_with_messages", side_effect=lambda *a, **kw: next(chat_responses)
+    ), patch.object(
+        engine_mod,
+        "select_tools",
+        return_value=["openOnComputer", "stop"],
+    ), patch.object(
+        engine_mod, "run_tool_with_retries", side_effect=fake_tool_runner
+    ), patch.dict(
+        engine_mod.BUILTIN_TOOLS,
+        {"desktopInteract": DesktopInteractTool()},
+    ):
+        reply = engine_mod.run_reply_engine(
+            db=db,
+            cfg=mock_config,
+            tts=None,
+            text=(
+                "In der bereits geöffneten Calculator-App: berechne 7 mal 6 "
+                "durch Klicks und lies das Ergebnis ab."
+            ),
+            dialogue_memory=dialogue_memory,
+        )
+
+    assert invoked_tools == ["toolSearchTool", "desktopInteract"]
+    assert reply == _FABRICATED_CALCULATOR_REPLY
+
+
+def test_tool_search_alone_does_not_ground_a_claim_about_external_state(
+    mock_config, db, dialogue_memory
+):
+    """Discovery without invoking the surfaced tool is still ungrounded."""
+    from jarvis.reply import engine as engine_mod
+    from jarvis.tools.builtin.desktop_interact import DesktopInteractTool
+    from jarvis.tools.types import ToolExecutionResult
+
+    mock_config.ollama_chat_model = "qwen2.5:7b-ctx8k"
+    mock_config.llm_chat_model = "qwen2.5:7b-ctx8k"
+    mock_config.planner_enabled = False
+    mock_config.agentic_max_turns = 4
+    mock_config.tool_selection_strategy = "llm"
+
+    invoked_tools: list[str] = []
+    spoken: list[str] = []
+
+    def fake_tool_runner(db, cfg, tool_name, tool_args, **kwargs):
+        invoked_tools.append(tool_name)
+        assert tool_name == "toolSearchTool"
+        return ToolExecutionResult(
+            success=True,
+            reply_text=(
+                "desktopInteract: Inspect and operate an already-open "
+                "desktop application."
+            ),
+            error_message=None,
+        )
+
+    chat_responses = iter(
+        [
+            _assistant_content(_FABRICATED_CALCULATOR_REPLY),
+            _assistant_tool_call(
+                "toolSearchTool",
+                {"query": "operate buttons in an already-open desktop app"},
+                call_id="search_only",
+            ),
+            _assistant_content(_FABRICATED_CALCULATOR_REPLY),
+        ]
+    )
+
+    def fake_chat(*args, **kwargs):
+        response = next(chat_responses)
+        content = response["message"].get("content") or ""
+        on_token = kwargs.get("on_token")
+        if content and on_token is not None:
+            on_token(content)
+        return response
+
+    with patch.object(
+        engine_mod, "chat_with_messages", side_effect=fake_chat
+    ), patch.object(
+        engine_mod,
+        "select_tools",
+        return_value=["openOnComputer", "stop"],
+    ), patch.object(
+        engine_mod, "run_tool_with_retries", side_effect=fake_tool_runner
+    ), patch.dict(
+        engine_mod.BUILTIN_TOOLS,
+        {"desktopInteract": DesktopInteractTool()},
+    ):
+        reply = engine_mod.run_reply_engine(
+            db=db,
+            cfg=mock_config,
+            tts=None,
+            text=(
+                "In der bereits geöffneten Calculator-App: berechne 7 mal 6 "
+                "durch Klicks und lies das Ergebnis ab."
+            ),
+            dialogue_memory=dialogue_memory,
+            on_speech_segment=spoken.append,
+        )
+
+    assert invoked_tools == ["toolSearchTool"]
+    assert reply != _FABRICATED_CALCULATOR_REPLY
+    assert reply and "can't confirm" in reply.lower()
+    assert spoken == []
+
+
 def test_loop_merges_toolsearchtool_results_into_allowlist(
     mock_config, db, dialogue_memory
 ):

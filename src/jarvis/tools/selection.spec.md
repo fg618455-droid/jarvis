@@ -88,6 +88,8 @@ def select_tools(
 
 Called from the reply engine (Step 6) before `generate_tools_json_schema()` and `generate_tools_description()`. The returned list replaces the current `allowed_tools = list(BUILTIN_TOOLS.keys())`.
 
+A narrowed result from the LLM strategy containing at least one tool other than `stop` and `toolSearchTool` is also the reply engine's structural signal that external work is relevant. If no tool implementation runs and the chat model attempts to finish in prose, the engine withholds that prose once and directs the next turn to a fitting tool or `toolSearchTool`. This signal is not inferred from words in the request or reply. The `all`, keyword, and embedding strategies are excluded: `all` expresses availability, and embedding always returns a minimum top-k even without a confident semantic match. A result equal to the complete catalogue is also excluded as a fallback shape. A selection containing only `stop` or no tools, and a planner result requiring memory enrichment but no callable tool, leave legitimate zero-tool replies unchanged.
+
 ### Configuration
 
 - Key: `tool_selection_strategy`

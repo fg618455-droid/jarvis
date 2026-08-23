@@ -244,8 +244,10 @@ The engine consumes the plan in two phases.
 
 - The planner does not re-plan mid-turn. If the emitted plan is wrong,
   the engine still progresses via the chat model's native tool calls.
-  When the chat model produces natural-language content the loop
-  terminates immediately.
+  Natural-language content terminates unless the router made a narrowed
+  positive tool selection and no tool implementation ran. That structural
+  state takes the reply engine's single zero-tool correction turn, which may
+  invoke `toolSearchTool`; it does not cause the planner to run again.
 - The planner does not validate semantic correctness of the plan; it
   trusts the model to produce sensible steps and relies on the
   resolver's schema-level guard to reject unknown tools.
