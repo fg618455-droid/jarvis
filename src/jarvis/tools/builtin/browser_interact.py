@@ -13,7 +13,9 @@ from ..base import Tool, ToolContext
 from ..types import ToolErrorCode, ToolExecutionResult
 from .interaction_resolver import (
     VALID_RISKS,
+    add_done_grounding_feedback,
     compact_action_history_entry,
+    done_is_grounded,
     resolve_semantic_action,
 )
 
@@ -47,7 +49,7 @@ _ACTION_CONTRACT = """
 - browser_read {ref?: ref from the latest snapshot}
 - browser_back {}
 - browser_close {}
-- done {summary: short user-facing outcome}
+- done {summary?: factual answer from the immediately preceding browser_read; omit for action-only completion}
 """.strip()
 
 
@@ -481,6 +483,9 @@ class BrowserInteractTool(Tool):
                 )
             kind, action_args, risk = decision["kind"], decision["args"], decision["risk"]
             if kind == "done":
+                if not done_is_grounded("browser", decision, history):
+                    observation = add_done_grounding_feedback("browser", observation)
+                    continue
                 summary = action_args.get("summary") or "Browser interaction completed."
                 return ToolExecutionResult(success=True, reply_text=summary)
 

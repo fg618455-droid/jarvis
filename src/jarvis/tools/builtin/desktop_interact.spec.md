@@ -11,6 +11,7 @@ Act on named controls in one already-running native Windows application through 
 - **Registration**: present only while `computer_interaction_enabled` is true. The setting defaults to false.
 - **Platform**: Windows only. `pywinauto==0.6.9` is pinned in both requirements files. The Windows launchers install `requirements.txt` and stop instead of starting Jarvis if dependency installation fails. pywinauto is imported lazily, and an unavailable package or platform returns `unsupported` without breaking daemon startup.
 - **Loop**: at most eight actions per tool call. Reaching the cap returns `timeout`.
+- **Output**: a factual completion summary after a grounded read, or the fixed `Desktop interaction completed.` message after action-only completion.
 
 The internal UIA adapter exposes exactly:
 
@@ -47,6 +48,14 @@ A deterministic validator replaces every resolver-supplied window reference with
 
 Malformed, empty, or contract-invalid resolver output triggers one repair call with the same bounded observation and an explicit JSON-only correction. A second invalid output fails closed. The repair and final failure are written to `debug_log`.
 
+### Grounded completion
+
+- A `done` with a non-empty summary is a factual UI answer. It is accepted only when the immediately preceding executed action was `desktop_read`.
+- Listing, inspection, and find results locate controls but do not ground a factual completion summary. A factual `done` after any of those actions is rejected.
+- Rejection consumes the current slot in the existing eight-action budget. The next resolver turn receives explicit feedback that it must read the actual UI state before answering.
+- An action-only task finishes with `done {}`. The tool supplies its fixed completion message, so invoking, setting, selecting, toggling, and scrolling do not require an unrelated read.
+- Accepted read-grounded completions, accepted action-only completions, and rejected ungrounded completions are recorded in `debug_log`.
+
 ### Tab scoping
 
 - A window with more than one named `TabItem` is treated as a multi-document window.
@@ -78,6 +87,6 @@ A UIA/COM failure inside the action loop (a stale element, a native call frame, 
 
 ### Testing
 
-`tests/tools/builtin/test_desktop_interact.py` mocks the pywinauto/UIA boundary and checks all nine adapter methods, opaque IDs, window and process scoping, expiry, elevation refusal, exact UIA method calls, tab detection, tab ambiguity refusal, active-tab re-verification, tab-aware confirmation, per-action confirmation, and secret refusal. `tests/tools/builtin/test_interaction_resolver.py` uses a moderately complex Notepad fixture with 300 descendants, including 55 named controls and 20 tabs, to enforce an 18,000-character resolver payload ceiling. The tests do not require an open Windows application.
+`tests/tools/builtin/test_desktop_interact.py` mocks the pywinauto/UIA boundary and checks all nine adapter methods, opaque IDs, window and process scoping, expiry, elevation refusal, exact UIA method calls, tab detection, tab ambiguity refusal, active-tab re-verification, tab-aware confirmation, grounded and rejected completion, per-action confirmation, and secret refusal. `tests/tools/builtin/test_interaction_resolver.py` uses a moderately complex Notepad fixture with 300 descendants, including 55 named controls and 20 tabs, to enforce an 18,000-character resolver payload ceiling and retained grounding feedback. The tests do not require an open Windows application.
 
-A manual test still needs Felix at the machine: start Notepad separately, enable computer interaction, then ask Jarvis to type text and save it. Verify named-control discovery, text confirmation, save confirmation, and the native Save dialog without using coordinates or keystrokes.
+A manual test still needs Felix at the machine: start Calculator separately, enable computer interaction, then ask Jarvis to compute 7 times 6 by clicking the number and operator buttons and report the displayed result. When Jarvis reports 42, Calculator's UIA display must actually show 42; otherwise Jarvis must report that it could not complete the calculation.

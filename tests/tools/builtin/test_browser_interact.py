@@ -198,6 +198,8 @@ class _FakeBrowser:
         self.calls.append((kind, args))
         if kind == "browser_snapshot":
             return {"url": "https://example.test", "text": "page", "controls": []}
+        if kind == "browser_read":
+            return {"text": "42"}
         return {"ok": True}
 
 
@@ -219,7 +221,7 @@ def test_browser_tool_confirms_a_consequential_click_with_concrete_context(mock_
         controller=browser,
         resolver=_resolver(
             {"kind": "browser_click", "args": {"ref": "b1-1"}, "risk": "consequential"},
-            {"kind": "done", "args": {"summary": "Sent."}, "risk": "read_only"},
+            {"kind": "done", "args": {}, "risk": "read_only"},
         ),
     )
 
@@ -231,6 +233,58 @@ def test_browser_tool_confirms_a_consequential_click_with_concrete_context(mock_
     })]
     assert browser.calls[0][0] == "browser_snapshot"
     assert browser.calls[1] == ("browser_click", {"ref": "b1-1"})
+
+
+def test_browser_tool_forces_another_turn_when_done_claims_an_unread_value(
+    mock_config, monkeypatch,
+) -> None:
+    browser = _FakeBrowser()
+    observations = []
+    logs = []
+    monkeypatch.setattr(
+        "jarvis.tools.builtin.interaction_resolver.debug_log",
+        lambda message, category: logs.append((message, category)),
+    )
+    decisions = iter([
+        {"kind": "browser_snapshot", "args": {}, "risk": "read_only"},
+        {"kind": "done", "args": {"summary": "The result is 42."}, "risk": "read_only"},
+        {"kind": "browser_read", "args": {}, "risk": "read_only"},
+        {"kind": "done", "args": {"summary": "The displayed result is 42."}, "risk": "read_only"},
+    ])
+
+    def resolver(_cfg, _task, observation, _history):
+        observations.append(observation)
+        return next(decisions)
+
+    result = BrowserInteractTool(
+        controller=browser,
+        resolver=resolver,
+        max_actions=4,
+    ).run({"task": "Read the displayed result"}, _ctx(mock_config))
+
+    assert result.success is True
+    assert result.reply_text == "The displayed result is 42."
+    assert ("browser_read", {}) in browser.calls
+    assert "resolver_feedback" in observations[2]
+    assert any("forced resolver to continue" in message for message, _category in logs)
+    assert any("accepted grounded done kind=read" in message for message, _category in logs)
+
+
+def test_browser_tool_accepts_done_immediately_after_a_real_read(mock_config) -> None:
+    browser = _FakeBrowser()
+    tool = BrowserInteractTool(
+        controller=browser,
+        resolver=_resolver(
+            {"kind": "browser_read", "args": {}, "risk": "read_only"},
+            {"kind": "done", "args": {"summary": "The displayed result is 42."}, "risk": "read_only"},
+        ),
+    )
+
+    result = tool.run({"task": "Read the displayed result"}, _ctx(mock_config))
+
+    assert result.success is True
+    assert result.reply_text == "The displayed result is 42."
+    assert ("browser_read", {}) in browser.calls
 
 
 def test_browser_tool_stops_when_action_confirmation_is_declined(mock_config) -> None:
@@ -320,7 +374,7 @@ def test_browser_tool_history_records_a_short_outcome_not_the_next_snapshot(mock
     histories = []
     decisions = iter([
         {"kind": "browser_scroll", "args": {"direction": "down", "amount": 1}, "risk": "read_only"},
-        {"kind": "done", "args": {"summary": "Finished."}, "risk": "read_only"},
+        {"kind": "done", "args": {}, "risk": "read_only"},
     ])
 
     def resolver(_cfg, _task, _observation, history):

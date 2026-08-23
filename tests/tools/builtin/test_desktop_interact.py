@@ -237,6 +237,10 @@ class _FakeDesktop:
         if kind == "desktop_select":
             for tab in self.tabs:
                 tab["active"] = tab["control_id"] == args["control_id"]
+        if kind == "desktop_find":
+            return [{"control_id": "c1-1", **self.controls["c1-1"]}]
+        if kind == "desktop_read":
+            return {"text": "42"}
         return {"ok": True}
 
 
@@ -254,7 +258,7 @@ def test_desktop_tool_confirms_setting_text_with_concrete_context(mock_config) -
         controller=desktop,
         resolver=_resolver(
             {"kind": "desktop_set_text", "args": {"control_id": "c1-1", "text": "hello"}, "risk": "consequential"},
-            {"kind": "done", "args": {"summary": "Typed."}, "risk": "read_only"},
+            {"kind": "done", "args": {}, "risk": "read_only"},
         ),
     )
 
@@ -266,6 +270,64 @@ def test_desktop_tool_confirms_setting_text_with_concrete_context(mock_config) -
         "task": "Type hello", "text": "hello",
     })]
     assert ("desktop_set_text", {"control_id": "c1-1", "text": "hello"}) in desktop.calls
+
+
+def test_desktop_tool_forces_another_turn_when_done_claims_an_unread_value(
+    mock_config, monkeypatch,
+) -> None:
+    desktop = _FakeDesktop()
+    observations = []
+    logs = []
+    monkeypatch.setattr(
+        "jarvis.tools.builtin.interaction_resolver.debug_log",
+        lambda message, category: logs.append((message, category)),
+    )
+    decisions = iter([
+        {"kind": "desktop_find", "args": {"name": "Display"}, "risk": "read_only"},
+        {"kind": "done", "args": {"summary": "The result is 42."}, "risk": "read_only"},
+        {"kind": "desktop_read", "args": {"control_id": "c1-1"}, "risk": "read_only"},
+        {"kind": "done", "args": {"summary": "The displayed result is 42."}, "risk": "read_only"},
+    ])
+
+    def resolver(_cfg, _task, observation, _history):
+        observations.append(observation)
+        return next(decisions)
+
+    result = DesktopInteractTool(
+        controller=desktop,
+        resolver=resolver,
+        max_actions=4,
+    ).run(
+        {"application": "Notepad", "task": "Read the displayed result"},
+        _ctx(mock_config),
+    )
+
+    assert result.success is True
+    assert result.reply_text == "The displayed result is 42."
+    assert ("desktop_read", {"control_id": "c1-1"}) in desktop.calls
+    assert "resolver_feedback" in observations[2]
+    assert any("forced resolver to continue" in message for message, _category in logs)
+    assert any("accepted grounded done kind=read" in message for message, _category in logs)
+
+
+def test_desktop_tool_accepts_done_immediately_after_a_real_read(mock_config) -> None:
+    desktop = _FakeDesktop()
+    tool = DesktopInteractTool(
+        controller=desktop,
+        resolver=_resolver(
+            {"kind": "desktop_read", "args": {"control_id": "c1-1"}, "risk": "read_only"},
+            {"kind": "done", "args": {"summary": "The displayed result is 42."}, "risk": "read_only"},
+        ),
+    )
+
+    result = tool.run(
+        {"application": "Notepad", "task": "Read the displayed result"},
+        _ctx(mock_config),
+    )
+
+    assert result.success is True
+    assert result.reply_text == "The displayed result is 42."
+    assert ("desktop_read", {"control_id": "c1-1"}) in desktop.calls
 
 
 def test_desktop_tool_translates_a_uia_failure_into_a_clean_message(mock_config) -> None:
@@ -345,7 +407,7 @@ def test_desktop_tool_selects_named_tab_and_includes_it_in_confirmation(mock_con
         resolver=_resolver(
             {"kind": "desktop_select", "args": {"control_id": "c1-2"}, "risk": "ordinary"},
             {"kind": "desktop_set_text", "args": {"control_id": "c1-3", "text": "milk"}, "risk": "consequential"},
-            {"kind": "done", "args": {"summary": "Typed."}, "risk": "read_only"},
+            {"kind": "done", "args": {}, "risk": "read_only"},
         ),
     )
 

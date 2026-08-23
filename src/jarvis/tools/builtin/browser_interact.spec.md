@@ -11,7 +11,7 @@ Act inside web pages through Playwright's semantic page surface. The tool is for
 - **Registration**: present only while `computer_interaction_enabled` is true. The setting defaults to false.
 - **Lifecycle**: repeated enabled configuration reuses the live controller. Disabling the capability closes any Jarvis-owned browser before unregistering the tools.
 - **Loop**: at most eight actions per tool call. The loop observes the current page, resolves one action, validates it, confirms it when required, executes it, and observes again. Reaching the cap returns `timeout`.
-- **Output**: the resolver's short completion summary on success. Missing or unsafe actions return a stable `ToolExecutionResult` failure rather than falling through to a broader mechanism.
+- **Output**: a factual completion summary after a grounded read, or the fixed `Browser interaction completed.` message after action-only completion. Missing or unsafe actions return a stable `ToolExecutionResult` failure rather than falling through to a broader mechanism.
 
 The internal Playwright adapter exposes exactly:
 
@@ -44,6 +44,14 @@ The CHAT-tier resolver sees the user's task, up to eight compact prior action re
 
 Resolver output receives a second deterministic validation pass. Unknown action kinds, unexpected argument shapes, selectors, coordinates, scripts, JavaScript, and command fields are rejected. Malformed, empty, or contract-invalid output triggers one repair call with the same bounded observation and an explicit JSON-only correction. A second invalid output fails closed for the tool call. The repair and final failure are written to `debug_log`.
 
+### Grounded completion
+
+- A `done` with a non-empty summary is a factual UI answer. It is accepted only when the immediately preceding executed action was `browser_read`.
+- A snapshot locates and bounds page content but does not ground a factual completion summary. `browser_snapshot` followed by a factual `done` is rejected.
+- Rejection consumes the current slot in the existing eight-action budget. The next resolver turn receives explicit feedback that it must read the actual UI state before answering.
+- An action-only task finishes with `done {}`. The tool supplies its fixed completion message, so clicking, filling, scrolling, navigation, and closing do not require an unrelated read.
+- Accepted read-grounded completions, accepted action-only completions, and rejected ungrounded completions are recorded in `debug_log`.
+
 ### Security
 
 `browserInteract` is a critical built-in, so the outer registry gate confirms its first invocation at the default security level. The loop adds a separate confirmation for every consequential action through `SecurityGate.confirm()`:
@@ -69,6 +77,6 @@ A Playwright failure inside the action loop (a timeout, a locator resolving to n
 
 ### Testing
 
-`tests/tools/builtin/test_browser_interact.py` mocks the Playwright boundary and checks all eight adapter methods, headed isolated startup, URL-scheme refusal, snapshot generations, stale refs, exact clicks and fills, scrolling, reading, back, close, compact action history, per-action confirmation, secret refusal, and the action cap. `tests/tools/builtin/test_interaction_resolver.py` uses a DuckDuckGo-scale fixture with 200 controls and large text and tree fields to enforce an 18,000-character resolver payload ceiling and the one-shot JSON repair. The tests never require a real browser.
+`tests/tools/builtin/test_browser_interact.py` mocks the Playwright boundary and checks all eight adapter methods, headed isolated startup, URL-scheme refusal, snapshot generations, stale refs, exact clicks and fills, scrolling, reading, back, close, compact action history, grounded and rejected completion, per-action confirmation, secret refusal, and the action cap. `tests/tools/builtin/test_interaction_resolver.py` uses a DuckDuckGo-scale fixture with 200 controls and large text and tree fields to enforce an 18,000-character resolver payload ceiling, retained grounding feedback, and the one-shot JSON repair. The tests never require a real browser.
 
 A manual test still needs Felix at the machine: enable computer interaction and ask Jarvis to open YouTube and play the second result. Verify that a visible isolated Chromium window opens, ordinary in-domain navigation works, and consequential or cross-domain actions show concrete confirmations.

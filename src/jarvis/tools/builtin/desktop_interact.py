@@ -14,7 +14,9 @@ from ..base import Tool, ToolContext
 from ..types import ToolErrorCode, ToolExecutionResult
 from .interaction_resolver import (
     VALID_RISKS,
+    add_done_grounding_feedback,
     compact_action_history_entry,
+    done_is_grounded,
     resolve_semantic_action,
 )
 
@@ -47,7 +49,7 @@ even if that tab is already active. Do not choose a tab when its name is ambiguo
 - desktop_toggle {control_id: ref supplied by inspect/find}
 - desktop_scroll {target_id: current window/control ref, direction: up|down|left|right, amount: integer 1..10}
 - desktop_read {control_id: ref supplied by inspect/find}
-- done {summary: short user-facing outcome}
+- done {summary?: factual answer from the immediately preceding desktop_read; omit for action-only completion}
 """.strip()
 
 
@@ -608,6 +610,9 @@ class DesktopInteractTool(Tool):
                 )
             kind, action_args, risk = decision["kind"], decision["args"], decision["risk"]
             if kind == "done":
+                if not done_is_grounded("desktop", decision, history):
+                    observation = add_done_grounding_feedback("desktop", observation)
+                    continue
                 summary = action_args.get("summary") or "Desktop interaction completed."
                 return ToolExecutionResult(success=True, reply_text=summary)
 

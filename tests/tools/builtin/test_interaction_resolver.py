@@ -103,6 +103,28 @@ def test_desktop_resolver_payload_stays_bounded_with_complex_notepad_fixture(
     assert all(item["name"] for item in payload["observation"]["controls"])
 
 
+def test_resolver_keeps_done_grounding_feedback_in_bounded_observations(
+    mock_config, monkeypatch,
+) -> None:
+    call = MagicMock(return_value='{"kind":"browser_read","args":{},"risk":"read_only"}')
+    monkeypatch.setattr(interaction_resolver, "call_llm_direct", call)
+    observation = _browser_observation()
+    observation["resolver_feedback"] = "Read the actual UI state before answering."
+
+    result = interaction_resolver.resolve_semantic_action(
+        mock_config,
+        surface="browser",
+        task="Read the result",
+        observation=observation,
+        history=[],
+        action_contract="- browser_read {}\n- done {summary?: text}",
+    )
+
+    payload = json.loads(call.call_args.kwargs["user_content"])
+    assert result is not None
+    assert payload["observation"]["resolver_feedback"] == observation["resolver_feedback"]
+
+
 def test_resolver_retries_once_with_json_correction(mock_config, monkeypatch) -> None:
     call = MagicMock(side_effect=[
         '{"kind":"browser_click","args":{"ref":"b1-1","selector":"#result"},"risk":"ordinary"}',
