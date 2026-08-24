@@ -2,13 +2,23 @@
 Chat Backend Routing Classification Evaluations
 
 Tests that the tool router's reused LLM call (jarvis.tools.selection
-._select_llm) also classifies a turn as needing the local fast route or
-the complex-reasoning route, reusing the SAME response the router already
-produces rather than a second LLM call. This demonstrates the improvement
-behind the "auto" chat_backend_override: a short conversational turn
-should route local, and a turn that clearly needs multi-step reasoning,
-code, or careful structured output should route to the complex-reasoning
-backend.
+._select_llm) also classifies a turn as needing the local fast route, the
+complex-reasoning route, or the crew_chat route, reusing the SAME response
+the router already produces rather than a second LLM call. This demonstrates
+the improvement behind the "auto" chat_backend_override across all three
+legs jointly: a short conversational turn should route local, a turn
+needing careful structured output or front-end-shaped reasoning should
+route to the complex-reasoning backend, and a turn about backend code,
+infrastructure, or systems work should route to the crew.
+
+The LOCAL and HERMES legs discriminate reliably against a small local judge
+(e.g. gemma4:e2b); COMPLEX vs HERMES is a genuinely close call for a model
+that size on some queries, since both read as "needs real thinking" to it.
+A flake on a COMPLEX case here reflects the configured judge's own capacity
+for a subtle three-way split, not a bug in the extraction or routing
+mechanism, which is deterministic and covered separately in
+tests/test_tool_selection.py, tests/test_chat_backend_routing.py, and
+tests/test_engine_chat_backend_routing.py.
 
 Run: .venv/bin/python -m pytest evals/test_chat_backend_routing.py -v
 """
@@ -32,13 +42,12 @@ CHAT_BACKEND_ROUTING_CASES = [
     ),
     pytest.param(
         (
-            "Write me a Python script that scrapes a list of product prices "
-            "from a webpage, stores them in a SQLite database with a schema "
-            "you design, and then explain the tradeoffs of that schema versus "
-            "a normalised multi-table design."
+            "Design a clean, accessible onboarding flow for a mobile app and "
+            "write the SwiftUI code for the first screen, explaining your UX "
+            "reasoning as you go."
         ),
         "complex",
-        id="multi-step coding and design tradeoff task routes complex",
+        id="front-end design and code task routes complex",
     ),
     pytest.param(
         (
@@ -49,14 +58,33 @@ CHAT_BACKEND_ROUTING_CASES = [
         "complex",
         id="in-depth multi-step comparison routes complex",
     ),
+    pytest.param(
+        (
+            "The overnight cron job on the home server keeps failing "
+            "silently. Read through the server logs, find out why it is "
+            "crashing, and fix the script so it retries safely."
+        ),
+        "hermes",
+        id="server log investigation and fix routes hermes",
+    ),
+    pytest.param(
+        (
+            "Set up a CI pipeline that runs our backend test suite, builds a "
+            "Docker image, and deploys it to the staging server on every "
+            "merge to main."
+        ),
+        "hermes",
+        id="infrastructure and deployment task routes hermes",
+    ),
 ]
 
 
 @pytest.mark.eval
 class TestChatBackendRoutingClassification:
     """The router's single LLM call also names a coarse chat-backend
-    preference; this must actually discriminate simple from complex turns
-    for the automatic "auto" override to be worth anything."""
+    preference; this must actually discriminate local, complex, and hermes
+    turns from one another for the automatic "auto" override to be worth
+    anything across all three legs, not just the newest one in isolation."""
 
     @requires_judge_llm
     @pytest.mark.parametrize("query, expected_preference", CHAT_BACKEND_ROUTING_CASES)
