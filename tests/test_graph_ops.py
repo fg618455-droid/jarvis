@@ -5,18 +5,9 @@ All LLM calls are mocked to test the logic independently.
 
 import json
 import re
-import sys
-import types
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
-
-# Mock 'requests' before importing graph_ops (which imports llm which needs requests)
-if "requests" not in sys.modules:
-    sys.modules["requests"] = types.ModuleType("requests")
-    sys.modules["requests"].post = MagicMock()
-    sys.modules["requests"].exceptions = types.ModuleType("requests.exceptions")
-    sys.modules["requests"].exceptions.Timeout = type("Timeout", (Exception,), {})
 
 from src.jarvis.memory.graph import GraphMemoryStore, SPLIT_THRESHOLD
 from src.jarvis.memory.graph import BRANCH_USER, BRANCH_DIRECTIVES, BRANCH_WORLD
