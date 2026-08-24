@@ -1,6 +1,6 @@
 # LLM Backend Specification
 
-The `jarvis.llm` package owns every LLM completion call. Jarvis mainly speaks generic, self-hostable protocols: native Ollama and OpenAI-compatible HTTP. Route configuration contains protocol names, URLs, credentials, model names, tiers, and timeouts. The one named exception is the `claude_subscription` provider, which rides `claude_agent_sdk` against Felix's own Claude Code CLI login rather than a metered API key (see "Claude subscription session" below); every other provider stays vendor-neutral HTTP with no SDK.
+The `jarvis.llm` package owns every LLM completion call. Jarvis mainly speaks generic, self-hostable protocols: native Ollama and OpenAI-compatible HTTP. Route configuration contains protocol names, URLs, credentials, model names, tiers, and timeouts. Two named exceptions carry different shapes: the `claude_subscription` provider rides `claude_agent_sdk` against Felix's own Claude Code CLI login rather than a metered API key (see "Claude subscription session" below), and the `crew_chat` provider is plain vendor-neutral HTTP but reads its endpoint and credential from the existing Mission Control fields (`cfg.crew_api_url` / `cfg.crew_api_key`) rather than its own route entry (see "Crew chat relay" below). Every other provider stays vendor-neutral HTTP with no SDK and no config indirection.
 
 ## Goals
 
@@ -18,6 +18,7 @@ from jarvis.llm import (
     OllamaBackend,
     OpenAICompatibleBackend,
     ClaudeSubscriptionBackend,
+    CrewChatBackend,
     RoutedBackend,
     RequestDeadline,
     Route,
@@ -53,7 +54,7 @@ Function-style Ollama helpers remain available to performance tests and eval scr
 
 ### Tool calling
 
-`ToolsNotSupportedError` means the selected model rejected a supplied native tool schema. It is not a routing signal. `RoutedBackend` passes it to the reply engine, which changes to text-based tool calls without losing the turn. `ClaudeSubscriptionBackend` raises it unconditionally whenever `tools` is supplied, never only on a transient rejection: its session never carries a usable tool (see "Claude subscription session" below), so a native tool schema can never be satisfied.
+`ToolsNotSupportedError` means the selected model rejected a supplied native tool schema. It is not a routing signal. `RoutedBackend` passes it to the reply engine, which changes to text-based tool calls without losing the turn. `ClaudeSubscriptionBackend` raises it unconditionally whenever `tools` is supplied, never only on a transient rejection: its session never carries a usable tool (see "Claude subscription session" below), so a native tool schema can never be satisfied. `CrewChatBackend` raises it the same way, before any request is made: the crew's chat endpoint has no tool-calling concept of its own (see "Crew chat relay" below).
 
 ### Streaming
 
@@ -121,12 +122,12 @@ The main reply loop's Tier.CHAT call (`chat_with_messages` in `src/jarvis/reply/
 
 Two independent sources feed `preferred_provider`, resolved in `chat_with_messages` via `_resolve_preferred_chat_provider`:
 
-- **Manual override** — `cfg.chat_backend_override`. `"auto"` (the default) defers to automatic classification below. Any other value names a route provider (e.g. `"ollama"`, `"claude_subscription"`) to try first for every reply, regardless of that turn's classification. Not validated against configured routes at load time: a forced provider with no matching route is the same ordinary "unavailable" case the chain fallback already handles.
-- **Automatic classification** — only consulted when the override is `"auto"`. The tool router's own LLM call (`jarvis.tools.selection._select_llm`, see `tools/selection.spec.md`) also classifies the turn as `"local"` or `"complex"` in the same response that picks the tool allow-list, so no second LLM call is made. `"local"` maps to `"ollama"`, `"complex"` maps to `"claude_subscription"`. A turn with no classification (non-LLM selection strategy, router failure or timeout, or a response that ignored the instruction) resolves to no preference at all, which is the existing configured chain order unchanged.
+- **Manual override** — `cfg.chat_backend_override`. `"auto"` (the default) defers to automatic classification below. Any other value names a route provider (e.g. `"ollama"`, `"claude_subscription"`, `"crew_chat"`) to try first for every reply, regardless of that turn's classification. Not validated against configured routes at load time: a forced provider with no matching route is the same ordinary "unavailable" case the chain fallback already handles.
+- **Automatic classification** — only consulted when the override is `"auto"`. The tool router's own LLM call (`jarvis.tools.selection._select_llm`, see `tools/selection.spec.md`) also classifies the turn as `"local"`, `"complex"`, or `"hermes"` in the same response that picks the tool allow-list, so no second LLM call is made. `"local"` maps to `"ollama"`, `"complex"` maps to `"claude_subscription"`, `"hermes"` maps to `"crew_chat"`. A turn with no classification (non-LLM selection strategy, router failure or timeout, or a response that ignored the instruction) resolves to no preference at all, which is the existing configured chain order unchanged.
 
 The router's classification travels from the tool-router call site to the chat call within one reply exactly like `routed_tools` does: computed once, reused for every turn of that reply's agentic loop, and carried through a hot-window cache hit alongside the cached tool list so a repeated query does not lose it.
 
-`debug_log` fires when the manual override forces a provider, when automatic classification selects `claude_subscription`, and when a preferred provider has no matching route and the call falls through to the normal chain order.
+`debug_log` fires when the manual override forces a provider, when automatic classification selects `claude_subscription` or `crew_chat`, and when a preferred provider has no matching route and the call falls through to the normal chain order.
 
 ## Embeddings
 
@@ -166,7 +167,7 @@ Each `llm_routes` entry has this shape:
 
 The loader accepts this tiered shape and ignores malformed entries. List order is route order. A credential may be stored directly in `api_key` or referenced by `api_key_env`; environment values are resolved only when the backend is built and are never copied into configuration.
 
-`provider` may also be `"claude_subscription"` (see "Claude subscription session" below). That route carries no `api_key`: `base_url` is still required for shape consistency but is never dialled, so any non-empty placeholder (conventionally `"claude-agent-sdk"`) satisfies it. `claude_subscription` is a `llm_routes`-chain provider only; it is not one of the choices for the single-endpoint `llm_provider` or `embedding_provider` settings, because those apply uniformly to the FAST tier and to embeddings, and a cloud subscription call has no place answering either: FAST needs a warm, low-latency local model, and embeddings must stay on loopback Ollama regardless of billing model. Every configured route entry that resolves to `Tier.PRIVATE` is dropped before a backend is built, for every provider without exception, so a `claude_subscription` route can never reach the private lane even if misconfigured with that tier.
+`provider` may also be `"claude_subscription"` (see "Claude subscription session" below) or `"crew_chat"` (see "Crew chat relay" below). Neither carries a real `base_url`/`api_key`/`model` on its own route entry: `claude_subscription` never dials its `base_url` at all, so any non-empty placeholder (conventionally `"claude-agent-sdk"`) satisfies the shape check; `crew_chat` never dials its `base_url`/`api_key`/`model` either, reusing `cfg.crew_api_url`/`cfg.crew_api_key`/`cfg.crew_chat_agent` instead, so the same non-empty-placeholder convention applies to all three of its fields (conventionally `"crew-chat"`). Both are `llm_routes`-chain providers only; neither is one of the choices for the single-endpoint `llm_provider` or `embedding_provider` settings, because those apply uniformly to the FAST tier and to embeddings, and a cloud subscription or crew relay call has no place answering either: FAST needs a warm, low-latency local model, and embeddings must stay on loopback Ollama regardless of billing model. Every configured route entry that resolves to `Tier.PRIVATE` is dropped before a backend is built, for every provider without exception, so neither route can ever reach the private lane even if misconfigured with that tier.
 
 Config migration version 5 converts priority-based route lists into ordered FAST and CHAT entries. It preserves activation, capabilities, and environment-variable names without reading their values. Existing tiered entries receive the same explicit defaults, and repeated migration is idempotent.
 
@@ -203,12 +204,23 @@ Config migration version 5 converts priority-based route lists into ordered FAST
 - A failed `ResultMessage` (`is_error=True`) or a raised `ClaudeSDKError` maps to the same typed failures in the "Typed provider failures" table: `api_error_status` 401/403 to `AuthError`, 404 to `ModelUnavailableError`, 429 to `RateLimitedError`, anything else (including a missing `claude` CLI) to `ProviderError`. Every path is caught; nothing but these typed exceptions or an assembled string ever leaves the backend.
 - `claude_agent_sdk` is an optional dependency, not listed in `requirements.txt`: it requires `mcp>=1.23.0,<3.0.0`, which conflicts with the `mcp==1.13.1` pin the persistent MCP runtime depends on (`../tools/external/mcp_runtime.spec.md`). The import is lazy and guarded, so the rest of Jarvis is unaffected without it installed, and a `claude_subscription` route used without the package installed fails with a typed `ProviderError` rather than an import crash.
 
+### Crew chat relay
+
+`CrewChatBackend` relays Tier.CHAT turns to the Hermes crew's own chat engine on Felix's NAS, over the same wire shape already working in `jarvis.webui.api.crew`'s `crew_chat()` (Mission Control's own web-UI chat feature, which stays exactly as it is): `POST {crew_api_url}/chat` with `{"agent": ..., "message": ...}` and an `X-Crew-Key` header when `cfg.crew_api_key` is set, relaying back whatever the NAS-side endpoint proxies from the crew's own chat engine. `chat()`'s multi-role `messages` list is flattened into one message string the same way `ClaudeSubscriptionBackend.chat()` flattens for `ClaudeSDKClient.query()`: a system prompt plus a labelled transcript, joined here into the single field the crew endpoint expects rather than sent separately.
+
+`cfg.crew_chat_agent` names which crew specialist answers, from the same fixed roster `askCrew` delegates to. This is a wholly independent path from `askCrew` (`../tools/builtin/ask_crew.spec.md`): `askCrew` stays fire-and-forget over Telegram, and `CrewChatBackend` is a synchronous `LLMBackend` that happens to talk to the same NAS endpoint family. Neither `crew_api_url` nor `crew_chat_agent` being set is a route error the loader rejects; an empty endpoint or agent instead fails closed at request time with a typed `ProviderError`, exactly the same way an empty `askCrew` configuration refuses rather than guessing a channel. `RoutedBackend` treats that `ProviderError` as an ordinary route failure and falls through the rest of the chain, so a half-configured `crew_chat` route can never leave a turn unanswered.
+
+Text generation only, the same posture as `ClaudeSubscriptionBackend`: the crew's chat endpoint has no tool-calling shape of its own, so `chat()` raises `ToolsNotSupportedError` whenever `tools` is supplied, before any request is made. `direct()` and `streaming()` are convenience shapes over the same single HTTP call; `streaming()`'s `on_token` fires once with the whole reply rather than per-token, because the endpoint has no incremental shape to forward. `embed()` always returns `None` and `list_models()` always returns `[]`, the same posture as every backend without those concepts. `warm_up()` is a no-op returning `True`: nothing needs paging in over HTTP.
+
+Typed failures follow the "Typed provider failures" table above, reusing `OpenAICompatibleBackend`'s own status-code mapping rather than reimplementing it: HTTP 401/403 to `AuthError`, 404 to `ModelUnavailableError`, 429 to `RateLimitedError` or `QuotaExhaustedError` depending on the response, anything else to `ProviderError`. A connection failure or timeout is also a `ProviderError`. A missing or blank `reply` field in an otherwise successful response is an empty response, not an exception, so `RoutedBackend` moves on to the next candidate exactly as it would for any backend that produced nothing. No endpoint URL, credential, or response body ever reaches an exception message or a log line.
+
 ## File layout
 
 ```text
 src/jarvis/llm/
 ├── backend.py
 ├── claude_subscription.py
+├── crew_chat.py
 ├── factory.py
 ├── ollama.py
 ├── openai_compatible.py

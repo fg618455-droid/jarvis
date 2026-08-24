@@ -305,6 +305,8 @@ The control centre's **LLM routes** view shows active routes, cooldowns, failure
 
 A CHAT-tier route may instead set `"provider": "claude_subscription"`. It authenticates through an already logged-in `claude` CLI session via `claude_agent_sdk` rather than any API key, so it has no key to fill in — `base_url` is only kept for shape consistency and can be any non-empty placeholder such as `"claude-agent-sdk"`. The session is text-generation only: it never runs a tool of its own, native tool schemas fall back to Jarvis's own text-based tool calling, and every reply still passes through Jarvis's one tool-calling loop and confirmation gate. `claude-agent-sdk` is not installed by default (`pip install claude-agent-sdk` first) because its `mcp` requirement is newer than the version this project pins.
 
+A CHAT-tier route may instead set `"provider": "crew_chat"`, a synchronous relay to a self-hosted Hermes agent crew's own chat engine on your own NAS. It reuses the existing `crew_api_url` / `crew_api_key` fields (Mission Control's own connection) rather than the route's own `base_url` / `api_key` / `model`, which stay shape-only placeholders such as `"crew-chat"`; the new `crew_chat_agent` setting names which crew specialist answers. It is text-generation only, exactly like `claude_subscription`, and is a wholly separate path from the fire-and-forget `askCrew` tool: `askCrew` posts a task into the crew's Telegram channel and never waits for a reply, while `crew_chat` waits and answers the current turn.
+
 To inspect current catalogues and import FCC credentials once:
 
 ```bash

@@ -60,9 +60,11 @@ Note: embedding is **not** the default strategy because nomic-embed-text produce
 
 #### Chat backend preference
 
-The same response also names how much reasoning the turn needs, so a caller can bias which Tier.CHAT backend answers it without a second LLM call (see `../llm/llm.spec.md`, "Chat backend selection"). The prompt instructs the router to append exactly one more word after the tool list: `COMPLEX` for a turn needing multi-step reasoning, code, or careful structured output, or `LOCAL` for everything else, including a simple factual lookup through a tool. Extraction is independent of the tool-name parsing above and tolerant of format drift: a case-insensitive word-boundary match for `local` or `complex` anywhere in the response, taking the last match if more than one appears, and stripped out before the tool list's own `"none"` comparison so a response like `"none LOCAL"` still resolves to the mandatory-only tool result. Word-boundary matching means a real tool name containing the substring (e.g. `localFiles`) is never mistaken for the classification token. Neither the `"none"` short-circuit nor the keyword-strategy fallback (step 7) sees this token, since it is extracted from the raw router response before either path runs.
+The same response also names which Tier.CHAT backend the turn prefers, so a caller can bias backend selection without a second LLM call (see `../llm/llm.spec.md`, "Chat backend selection"). The prompt instructs the router to append exactly one more word after the tool list: `HERMES` for a turn about building, debugging, or maintaining backend code, infrastructure, servers, or data systems — engineering work suited to a background crew with deep tool access; `COMPLEX` for a turn needing multi-step reasoning, careful structured output, or front-end/user-facing design work that is not HERMES-shaped; or `LOCAL` for everything else, including a simple factual lookup through a tool. Extraction is independent of the tool-name parsing above and tolerant of format drift: a case-insensitive word-boundary match for `local`, `complex`, or `hermes` anywhere in the response, taking the last match if more than one appears, and stripped out before the tool list's own `"none"` comparison so a response like `"none LOCAL"` still resolves to the mandatory-only tool result. Word-boundary matching means a real tool name containing the substring (e.g. `localFiles`) is never mistaken for the classification token. Neither the `"none"` short-circuit nor the keyword-strategy fallback (step 7) sees this token, since it is extracted from the raw router response before either path runs.
 
-Only surfaced when the caller passes `chat_backend_signal`, a dict the router populates with `{"preference": "local" | "complex"}`. The key is left absent whenever no classification token is found in the response (including every fallback path in step 7): an absent key is the caller's fail-open signal to leave backend selection at its existing default. Other strategies never populate this dict.
+Only surfaced when the caller passes `chat_backend_signal`, a dict the router populates with `{"preference": "local" | "complex" | "hermes"}`. The key is left absent whenever no classification token is found in the response (including every fallback path in step 7): an absent key is the caller's fail-open signal to leave backend selection at its existing default. Other strategies never populate this dict.
+
+Distinguishing `COMPLEX` from `HERMES` is a judgement the classifying model makes from the turn's own content, not a keyword match against the user's words: a small router model reads both as "needs real thinking" and the split is often close, particularly against the smallest supported chat models. That imprecision degrades gracefully — a `HERMES` turn misclassified as `COMPLEX` still reaches a synchronous cloud backend, just the other one, and the reply engine's own fail-open chain fallback (`../llm/llm.spec.md`, "Chat backend selection") means neither misclassification can leave a turn unanswered.
 
 #### Context-aware routing
 
@@ -90,7 +92,8 @@ def select_tools(
 ) -> List[str]:
     """Return list of tool names relevant to the query. ``chat_backend_signal``,
     when supplied, is populated by the "llm" strategy with
-    ``{"preference": "local" | "complex"}`` — see "Chat backend preference"."""
+    ``{"preference": "local" | "complex" | "hermes"}`` — see "Chat backend
+    preference"."""
 ```
 
 ### Integration
