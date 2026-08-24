@@ -104,6 +104,12 @@ class Settings:
     llm_api_key: str
     llm_chat_model: str
     llm_routes: list[Dict[str, Any]]
+    # "auto" (default) lets automatic per-turn classification and the
+    # configured chain order decide; a specific provider name (e.g.
+    # "ollama", "claude_subscription") forces every reply's Tier.CHAT call
+    # to try that route first, falling back to the normal chain if it is
+    # unavailable. See src/jarvis/llm/llm.spec.md, "Chat backend selection".
+    chat_backend_override: str
     embedding_provider: str  # "" (= same as llm_provider) | "ollama" | "openai_compatible"
     embedding_base_url: str
     embedding_api_key: str
@@ -728,6 +734,7 @@ def get_default_config() -> Dict[str, Any]:
         "llm_api_key": "",
         "llm_chat_model": "",  # falls back to ollama_chat_model when empty
         "llm_routes": [],
+        "chat_backend_override": "auto",
         "embedding_provider": "",  # "" = same as llm_provider
         "embedding_base_url": "",
         "embedding_api_key": "",
@@ -1049,6 +1056,17 @@ def load_settings() -> Settings:
                     if capability in ("chat", "stream", "tools")
                 ] if isinstance(raw.get("capabilities", ["chat", "stream", "tools"]), (list, tuple, set, frozenset)) else ["chat", "stream", "tools"],
             })
+
+    # "auto" (default) leaves Tier.CHAT selection to the configured chain
+    # order plus automatic per-turn classification. Any other value names a
+    # route provider to force for every reply; an invalid type or blank
+    # value falls back to "auto" rather than silently forcing nothing. The
+    # value is not validated against configured routes here: a provider
+    # with no matching route is a normal, already fail-open "unavailable"
+    # case handled by RoutedBackend at call time, not a config error.
+    chat_backend_override = str(merged.get("chat_backend_override", "auto") or "auto").strip().lower()
+    if not chat_backend_override:
+        chat_backend_override = "auto"
 
     # Provider-aware fields. The two field sets are per-provider: the
     # ``ollama_*`` fields are authoritative when the provider is Ollama,
@@ -1419,6 +1437,7 @@ def load_settings() -> Settings:
         llm_api_key=llm_api_key,
         llm_chat_model=llm_chat_model,
         llm_routes=llm_routes,
+        chat_backend_override=chat_backend_override,
         embedding_provider=embedding_provider,
         embedding_base_url=embedding_base_url,
         embedding_api_key=embedding_api_key,

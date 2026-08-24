@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 import threading
 from enum import Enum
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from ..debug import debug_log
 from ..llm import LLMBackend
@@ -60,6 +60,13 @@ _RELATIVE_THRESHOLD = 0.97
 # (gemma4:e2b and similar) sometimes echo the entire catalogue; the cap
 # guarantees the downstream prompt stays compact regardless.
 _LLM_MAX_SELECTED = 5
+
+# Fixed protocol tokens the LLM router is instructed to append after its
+# tool list, naming how much reasoning the turn needs (see _select_llm).
+# These are not natural-language keywords matched against the user's
+# words — they are a closed vocabulary the classifying LLM itself must
+# emit, the same kind of fixed sentinel "none" already is in this router.
+_CHAT_BACKEND_PREFERENCE_RE = re.compile(r"\b(local|complex)\b", re.IGNORECASE)
 
 # Tool descriptions change only when the catalogue changes, while user queries
 # change every turn. Cache only the description vectors so embedding routing
@@ -339,6 +346,7 @@ def _select_llm(
     llm_model: str,
     llm_timeout_sec: float,
     context_hint: Optional[str] = None,
+    chat_backend_signal: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """Ask a lightweight LLM call which tools are relevant.
 
@@ -351,6 +359,14 @@ def _select_llm(
     actual data and judges for itself. Gracefully degrades when the hint is
     missing or partial (e.g. location failed to resolve) — the router simply
     has less context and falls back to tool-selection on content.
+
+    ``chat_backend_signal``, when supplied, is populated with
+    ``{"preference": "local" | "complex"}`` from the SAME response this call
+    already produces, so the reply engine can bias which Tier.CHAT backend
+    answers the turn without a second LLM round-trip. The key is left absent
+    on any fallback path (empty/unparseable response, timeout, exception, or
+    no backend supplied) — an absent key is the caller's fail-open signal to
+    leave backend selection at its existing default.
     """
     catalogue_lines: List[str] = []
     for name, tool in builtin_tools.items():
@@ -381,6 +397,16 @@ def _select_llm(
         "place, confirming an option, answering a clarifying question the "
         "assistant just asked) should route to the tool that answers the "
         "COMBINED intent across turns, not to 'none'. "
+        "After the tool list, add a single space then exactly one more word: "
+        "COMPLEX if answering this turn needs multi-step reasoning, code, or "
+        "careful structured output, or LOCAL for everything else, including "
+        "simple factual lookups through a tool. A single-fact lookup stays "
+        "LOCAL even when it names a future time or date (e.g. 'what's the "
+        "weather tomorrow', 'when is my next meeting') — one fact about one "
+        "moment is not multi-step reasoning. A short conversational "
+        "question is LOCAL even when it picks a tool; a query asking to "
+        "plan, debug, compare in depth, or produce carefully structured "
+        "output is COMPLEX. "
         "Output nothing else — no explanations, no prose, no code fences."
     )
     hint_section = ""
@@ -424,7 +450,8 @@ def _select_llm(
         f"Available tools:\n{catalogue}\n\n"
         f"{hint_section}"
         f"User query: {query}\n\n"
-        "Top tools (comma-separated, max 5, or 'none'):"
+        "Top tools (comma-separated, max 5, or 'none'), then a space and "
+        "LOCAL or COMPLEX:"
     )
 
     try:
@@ -445,7 +472,24 @@ def _select_llm(
         debug_log("LLM tool selection returned empty, falling back to keyword strategy", "planning")
         return _select_keyword(query, builtin_tools, mcp_tools)
 
-    resp_lower = resp.strip().lower()
+    # Extract the trailing routing classification, if present, before doing
+    # any tool-list parsing — it rides in the SAME response as the tool
+    # list rather than a second LLM call, so it must be pulled out without
+    # disturbing the existing tool-name extraction below. Neither "local"
+    # nor "complex" collides with a real tool name (checked against the
+    # catalogue via word-boundary matching), so removing every occurrence
+    # is safe before the "none" comparison and the tool-token scan.
+    _tool_part = resp
+    if chat_backend_signal is not None:
+        _preference_matches = _CHAT_BACKEND_PREFERENCE_RE.findall(resp)
+        if _preference_matches:
+            # Fail-open by default: the key is only set when the router's
+            # response actually named a preference. Reusing this response
+            # is the entire point — no second classification call is made.
+            chat_backend_signal["preference"] = _preference_matches[-1].lower()
+        _tool_part = _CHAT_BACKEND_PREFERENCE_RE.sub(" ", resp)
+
+    resp_lower = _tool_part.strip().strip("|").strip().lower()
     if resp_lower == "none":
         debug_log("LLM tool selection returned 'none' — including only mandatory tools", "planning")
         return [t for t in _ALWAYS_INCLUDED if t in builtin_tools or t in mcp_tools]
@@ -456,7 +500,7 @@ def _select_llm(
     # JSON-ish lists. Strip every punctuation char that can't appear in a tool
     # name before matching, so the extraction is robust to formatting drift.
     _STRIP_CHARS = "'\"`*-_[](){}<>,.:;!?\\ "
-    for token in re.split(r"[,\s]+", resp):
+    for token in re.split(r"[,\s]+", _tool_part):
         clean = token.strip(_STRIP_CHARS)
         if clean in known and clean not in selected:
             selected.append(clean)
@@ -493,6 +537,7 @@ def select_tools(
     embed_model: str = "",
     embed_timeout_sec: float = 10.0,
     context_hint: Optional[str] = None,
+    chat_backend_signal: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """
     Return a list of tool names relevant to *query*.
@@ -511,6 +556,13 @@ def select_tools(
         embed_model:        Embedding model name (needed for "embedding" strategy).
         embed_timeout_sec:  Timeout for embedding calls.
         context_hint:       Optional facts/dialogue surface for the LLM router.
+        chat_backend_signal: Optional dict populated with
+                            ``{"preference": "local" | "complex"}`` when the
+                            "llm" strategy's response names one, so a caller
+                            can bias Tier.CHAT backend selection without a
+                            second LLM call. Ignored by every other strategy;
+                            left untouched on any "llm" strategy fallback
+                            path, which is the fail-open signal.
 
     Returns:
         List of tool name strings.
@@ -534,6 +586,7 @@ def select_tools(
                 query, builtin_tools, mcp_tools,
                 llm_backend, llm_model, llm_timeout_sec,
                 context_hint=context_hint,
+                chat_backend_signal=chat_backend_signal,
             )
         else:
             return _all_tool_names(builtin_tools, mcp_tools)

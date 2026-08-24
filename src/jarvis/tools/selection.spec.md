@@ -51,12 +51,18 @@ Note: embedding is **not** the default strategy because nomic-embed-text produce
 ### LLM Strategy (default)
 
 1. Build a catalogue of `- name: description` lines (descriptions truncated to 120 chars) for every registered tool except always-included ones.
-2. Send through the FAST-tier backend's `direct()` call with a system prompt asking for the **top 5 most relevant** tool names as a comma-separated list. The prompt instructs the router to prefer 1–3 tools for narrow queries and to return `"none"` for greetings/small talk. The request uses `num_ctx=8192`, matching the main Ollama chat runner; when FAST and CHAT resolve to the same model, routing therefore reuses the resident runner instead of forcing Ollama to rebuild it at a different context size between the two calls.
+2. Send through the FAST-tier backend's `direct()` call with a system prompt asking for the **top 5 most relevant** tool names as a comma-separated list, followed by a single classification word. The prompt instructs the router to prefer 1–3 tools for narrow queries and to return `"none"` for greetings/small talk. The request uses `num_ctx=8192`, matching the main Ollama chat runner; when FAST and CHAT resolve to the same model, routing therefore reuses the resident runner instead of forcing Ollama to rebuild it at a different context size between the two calls.
 3. Parse the response, matching tokens against known tool names (unknowns are dropped silently).
 4. Apply a hard `_LLM_MAX_SELECTED` (5) cap regardless of what the router returned, to guard against chatty routers that echo the whole catalogue.
 5. Append always-included tools.
 6. If the router replies `"none"`, return only the always-included tools.
 7. On timeout, empty response, or parse failure (no token in the response matched a known tool name), fall back to the **keyword strategy** rather than to the full catalogue. Reasoning: the catalogue can grow to 30–40 tools once an MCP server like `chrome-devtools` is enabled, and exposing all of them to a small chat model (gemma4:e2b class) overwhelms tool selection, producing empty replies. Keyword scoring narrows on query/name overlap deterministically, and the engine's `toolSearchTool` escape hatch still lets the chat model widen mid-loop if the keyword pick missed.
+
+#### Chat backend preference
+
+The same response also names how much reasoning the turn needs, so a caller can bias which Tier.CHAT backend answers it without a second LLM call (see `../llm/llm.spec.md`, "Chat backend selection"). The prompt instructs the router to append exactly one more word after the tool list: `COMPLEX` for a turn needing multi-step reasoning, code, or careful structured output, or `LOCAL` for everything else, including a simple factual lookup through a tool. Extraction is independent of the tool-name parsing above and tolerant of format drift: a case-insensitive word-boundary match for `local` or `complex` anywhere in the response, taking the last match if more than one appears, and stripped out before the tool list's own `"none"` comparison so a response like `"none LOCAL"` still resolves to the mandatory-only tool result. Word-boundary matching means a real tool name containing the substring (e.g. `localFiles`) is never mistaken for the classification token. Neither the `"none"` short-circuit nor the keyword-strategy fallback (step 7) sees this token, since it is extracted from the raw router response before either path runs.
+
+Only surfaced when the caller passes `chat_backend_signal`, a dict the router populates with `{"preference": "local" | "complex"}`. The key is left absent whenever no classification token is found in the response (including every fallback path in step 7): an absent key is the caller's fail-open signal to leave backend selection at its existing default. Other strategies never populate this dict.
 
 #### Context-aware routing
 
@@ -80,8 +86,11 @@ def select_tools(
     llm_timeout_sec: float = 8.0,
     embed_model: str = "",
     embed_timeout_sec: float = 10.0,
+    chat_backend_signal: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
-    """Return list of tool names relevant to the query."""
+    """Return list of tool names relevant to the query. ``chat_backend_signal``,
+    when supplied, is populated by the "llm" strategy with
+    ``{"preference": "local" | "complex"}`` — see "Chat backend preference"."""
 ```
 
 ### Integration

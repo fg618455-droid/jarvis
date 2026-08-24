@@ -82,3 +82,66 @@ def test_route_api_and_debug_log_never_emit_clear_key(
 
     assert "synthetic-credential" not in response.get_data(as_text=True)
     assert all("synthetic-credential" not in message for message in logged)
+
+
+def test_get_routes_reports_the_default_chat_backend_override(
+    api_client, tmp_path, monkeypatch
+):
+    _write_config(tmp_path, monkeypatch)
+
+    response = api_client.get("/api/llm/routes")
+
+    assert response.get_json()["chat_backend_override"] == "auto"
+
+
+def test_put_chat_backend_override_persists_and_is_reported_back(
+    api_client, tmp_path, monkeypatch
+):
+    path = _write_config(tmp_path, monkeypatch)
+
+    response = api_client.put(
+        "/api/llm/routes/chat-backend-override",
+        json={"chat_backend_override": "claude_subscription"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["chat_backend_override"] == "claude_subscription"
+    stored = json.loads(path.read_text())
+    assert stored["chat_backend_override"] == "claude_subscription"
+
+    follow_up = api_client.get("/api/llm/routes")
+    assert follow_up.get_json()["chat_backend_override"] == "claude_subscription"
+
+
+def test_put_chat_backend_override_blank_resets_to_auto(
+    api_client, tmp_path, monkeypatch
+):
+    path = _write_config(tmp_path, monkeypatch)
+    api_client.put(
+        "/api/llm/routes/chat-backend-override",
+        json={"chat_backend_override": "ollama"},
+    )
+
+    response = api_client.put(
+        "/api/llm/routes/chat-backend-override",
+        json={"chat_backend_override": ""},
+    )
+
+    assert response.get_json()["chat_backend_override"] == "auto"
+    stored = json.loads(path.read_text())
+    assert stored["chat_backend_override"] == "auto"
+
+
+def test_put_chat_backend_override_logs_the_change(
+    api_client, tmp_path, monkeypatch
+):
+    _write_config(tmp_path, monkeypatch)
+    logged = []
+    monkeypatch.setattr("jarvis.webui.api.llm.debug_log", lambda message, area: logged.append(message))
+
+    api_client.put(
+        "/api/llm/routes/chat-backend-override",
+        json={"chat_backend_override": "claude_subscription"},
+    )
+
+    assert any("claude_subscription" in message for message in logged)

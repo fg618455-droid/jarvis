@@ -29,8 +29,48 @@ from ..llm import (
 )
 
 
+# Maps the tool router's coarse per-turn classification (see
+# jarvis.tools.selection._select_llm) to the route provider name that
+# classification prefers. Absent from the map (an unrecognised or missing
+# value) resolves to no preference, i.e. today's unmodified chain order.
+_CHAT_BACKEND_PREFERENCE_TO_PROVIDER = {
+    "local": "ollama",
+    "complex": "claude_subscription",
+}
+
+
+def _resolve_preferred_chat_provider(cfg, chat_backend_preference):
+    """Decide which route provider (if any) this reply's Tier.CHAT call
+    should try first.
+
+    A manual ``cfg.chat_backend_override`` (anything other than the default
+    "auto") always wins, regardless of ``chat_backend_preference`` — that is
+    the whole point of a manual override. Under "auto", the router's own
+    per-turn classification (reused from its existing LLM call, not a new
+    one) decides. Returns ``None`` whenever neither applies, which leaves
+    ``RoutedBackend.chat()`` at its existing configured chain order: the
+    fail-open default this feature must never regress.
+    """
+    override = str(getattr(cfg, "chat_backend_override", "auto") or "auto").strip().lower()
+    if override and override != "auto":
+        debug_log(f"chat backend override forces provider {override!r}", "llm")
+        return override
+
+    provider = _CHAT_BACKEND_PREFERENCE_TO_PROVIDER.get(
+        str(chat_backend_preference or "").strip().lower()
+    )
+    if provider and provider != "ollama":
+        debug_log(
+            f"automatic chat backend routing selected {provider!r} "
+            f"(turn classified as {chat_backend_preference!r})",
+            "llm",
+        )
+    return provider
+
+
 def chat_with_messages(cfg, messages, *, timeout_sec=30.0, extra_options=None,
-                       tools=None, thinking=False, on_token=None):
+                       tools=None, thinking=False, on_token=None,
+                       chat_backend_preference=None):
     """Local indirection: route the engine's chat call through the active
     backend (Ollama or OpenAI-compatible, per ``cfg.llm_provider``) so the
     runtime swap is transparent to the rest of the engine.
@@ -42,8 +82,18 @@ def chat_with_messages(cfg, messages, *, timeout_sec=30.0, extra_options=None,
 
     ``on_token`` asks the backend for the reply's text as it is written, so
     the speech path can start on the first finished sentence.
+
+    ``chat_backend_preference`` is the tool router's optional per-turn
+    classification ("local" or "complex", from the same LLM call that
+    picks the tool allow-list — see ``jarvis.tools.selection._select_llm``).
+    Combined with ``cfg.chat_backend_override``, it resolves to a
+    ``preferred_provider`` passed through to ``RoutedBackend.chat()``,
+    which only ever reorders its existing route chain for this one call —
+    the chain's own fail-soft fallback is unchanged, so an unavailable or
+    failing preferred backend still falls through to the normal order.
     """
     backend = get_llm_backend(cfg)
+    preferred_provider = _resolve_preferred_chat_provider(cfg, chat_backend_preference)
     with telemetry_stage("llm"):
         return backend.chat(
             cfg.llm_chat_model, messages,
@@ -52,6 +102,7 @@ def chat_with_messages(cfg, messages, *, timeout_sec=30.0, extra_options=None,
             tools=tools,
             thinking=thinking,
             on_token=on_token,
+            preferred_provider=preferred_provider,
         )
 from .enrichment import (
     extract_search_params_for_memory,
@@ -1135,8 +1186,15 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         dialogue_memory.hot_cache_get(_router_cache_key)
         if dialogue_memory and hasattr(dialogue_memory, "hot_cache_get") else None
     )
-    if isinstance(_cached_routed, list):
-        routed_tools = list(_cached_routed)
+    # The router's LLM call also classifies how much reasoning this turn
+    # needs (see jarvis.tools.selection._select_llm), reused here to bias
+    # which Tier.CHAT backend answers the turn — no second LLM call. A
+    # cache hit carries the classification forward with the tool pick,
+    # since both came from the same underlying response.
+    _chat_backend_preference = None
+    if isinstance(_cached_routed, dict):
+        routed_tools = list(_cached_routed.get("tools") or [])
+        _chat_backend_preference = _cached_routed.get("chat_backend_preference")
         debug_log("tool router served from hot-window cache", "planning")
     else:
         _router_timeout_sec = float(
@@ -1157,6 +1215,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 turn_trace,
                 close_to_done=False,
             )
+        _chat_backend_signal: dict = {}
         routed_tools = select_tools(
             query=redacted,
             builtin_tools=BUILTIN_TOOLS,
@@ -1169,7 +1228,9 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             embed_model=cfg.embedding_model,
             embed_timeout_sec=_embedding_timeout_sec,
             context_hint=context_hint,
+            chat_backend_signal=_chat_backend_signal,
         )
+        _chat_backend_preference = _chat_backend_signal.get("preference")
         # Don't cache the router's "fall open to all tools" fallback. That
         # path fires when the LLM router times out, returns empty, or emits
         # a response no token of which matches a known tool name — i.e. the
@@ -1189,7 +1250,10 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             and hasattr(dialogue_memory, "hot_cache_put")
             and not _router_returned_full_catalog
         ):
-            dialogue_memory.hot_cache_put(_router_cache_key, list(routed_tools or []))
+            dialogue_memory.hot_cache_put(_router_cache_key, {
+                "tools": list(routed_tools or []),
+                "chat_backend_preference": _chat_backend_preference,
+            })
 
     # Tool carry-over guard: when the previous assistant turn invoked a
     # tool that FAILED (success=False on the ToolExecutionResult), union
@@ -2611,6 +2675,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 tools=_dump_tools_schema,
                 thinking=getattr(cfg, 'llm_thinking_enabled', False),
                 on_token=_on_token,
+                chat_backend_preference=_chat_backend_preference,
             )
             dump_reply_turn(
                 session_id=_dump_session_id,
@@ -2652,6 +2717,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 tools=None,
                 thinking=getattr(cfg, 'llm_thinking_enabled', False),
                 on_token=_on_token,
+                chat_backend_preference=_chat_backend_preference,
             )
             dump_reply_turn(
                 session_id=_dump_session_id,

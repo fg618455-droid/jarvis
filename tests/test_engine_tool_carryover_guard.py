@@ -301,9 +301,9 @@ def test_carryover_does_not_pollute_router_cache(
     ]
     assert cached_router_entries, "router output should have been cached"
     for key, (_ts, value) in cached_router_entries:
-        assert value == ["webSearch"], (
+        assert value["tools"] == ["webSearch"], (
             f"router cache for {key!r} should hold raw router output "
-            f"['webSearch']; got {value!r}"
+            f"['webSearch']; got {value['tools']!r}"
         )
 
 

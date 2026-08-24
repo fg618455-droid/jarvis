@@ -33,14 +33,15 @@ def _display_url(value: str) -> str:
 def _payload() -> dict[str, Any]:
     settings = load_settings()
     backend = get_llm_backend(settings)
+    override = str(getattr(settings, "chat_backend_override", "auto") or "auto")
     if not isinstance(backend, RoutedBackend):
-        return {"chains": {tier.value: [] for tier in Tier}}
+        return {"chains": {tier.value: [] for tier in Tier}, "chat_backend_override": override}
     chains = backend.route_status()
     for tier in Tier:
         for item, route in zip(chains[tier.value], backend.routes_for(tier)):
             item["base_url"] = _display_url(route.base_url)
             item["masked_key"] = _mask(route.api_key)
-    return {"chains": chains}
+    return {"chains": chains, "chat_backend_override": override}
 
 
 @bp.route("")
@@ -119,6 +120,25 @@ def replace_routes() -> Response:
         return jsonify(error="could not write route configuration"), 500
     debug_log(f"LLM route configuration written ({len(clean)} routes)", "webui")
     return jsonify({"written": len(clean), **_payload()})
+
+
+@bp.route("/chat-backend-override", methods=["PUT"])
+def set_chat_backend_override() -> Response:
+    """Force a specific Tier.CHAT route provider for every reply, or reset
+    to "auto" (the default) so automatic per-turn classification and the
+    configured chain order decide instead. Not validated against currently
+    configured routes: a provider named here with no matching route is the
+    same ordinary "unavailable, fall through to the normal chain" case
+    RoutedBackend already handles at call time, not a config error."""
+    body = request.get_json(silent=True) or {}
+    value = str(body.get("chat_backend_override", "") or "").strip().lower() or "auto"
+    path = resolve_config_path()
+    config = _load_json(path) or {}
+    config["chat_backend_override"] = value
+    if not _save_json(path, config):
+        return jsonify(error="could not write chat backend override"), 500
+    debug_log(f"chat backend override set to {value!r}", "webui")
+    return jsonify({"chat_backend_override": value, **_payload()})
 
 
 @bp.route("/reset", methods=["POST"])

@@ -36,11 +36,15 @@ def test_probe_cli_supports_a_windows_cp1252_console(monkeypatch):
 
 
 class _Backend(LLMBackend):
-    def __init__(self, *, direct_result=None, direct_error=None, stream=None):
+    def __init__(self, *, direct_result=None, direct_error=None, stream=None,
+                 chat_result=None, chat_error=None):
         self.direct_result = direct_result
         self.direct_error = direct_error
         self.stream = stream
+        self.chat_result = chat_result
+        self.chat_error = chat_error
         self.calls = 0
+        self.chat_calls = 0
         self.models = []
         self.warmed = []
 
@@ -62,8 +66,12 @@ class _Backend(LLMBackend):
         return self.stream
 
     def chat(self, chat_model, messages, timeout_sec=30.0, extra_options=None,
-             tools=None, thinking=False):
-        return None
+             tools=None, thinking=False, on_token=None):
+        self.chat_calls += 1
+        self.models.append(chat_model)
+        if self.chat_error:
+            raise self.chat_error
+        return self.chat_result
 
     def embed(self, text, model, timeout_sec=15.0):
         return None
@@ -524,3 +532,78 @@ def test_a_remote_route_leaves_residency_to_its_own_server():
     cloud = next(route for route in routes if route.name == "cloud")
 
     assert cloud.keep_alive == ""
+
+
+class TestPreferredProviderRouting:
+    """``chat(..., preferred_provider=...)`` promotes matching routes to the
+    front of the attempt order for that one call, without discarding the
+    rest of the chain — the manual-override and automatic-routing feature
+    both ride this, and both need the existing fail-soft chain to still
+    catch a promoted route that turns out to be unavailable."""
+
+    def test_preferred_provider_is_tried_first(self, tmp_path):
+        local = _route("local", provider="ollama")
+        cloud = _route("cloud", provider="claude_subscription")
+        local_backend = _Backend(chat_result={"message": {"content": "local"}})
+        cloud_backend = _Backend(chat_result={"message": {"content": "cloud"}})
+        router = _router(tmp_path, [local, cloud], {
+            local: local_backend,
+            cloud: cloud_backend,
+        })
+
+        result = router.chat("chat", [{"role": "user", "content": "hi"}],
+                              preferred_provider="claude_subscription")
+
+        assert result == {"message": {"content": "cloud"}}
+        assert cloud_backend.chat_calls == 1
+        assert local_backend.chat_calls == 0
+
+    def test_falls_through_to_the_rest_of_the_chain_when_preferred_fails(self, tmp_path):
+        """The promoted route existing but failing (e.g. claude-agent-sdk not
+        installed) must not end the turn — it continues through the normal
+        chain exactly as an unpromoted failure would."""
+        local = _route("local", provider="ollama")
+        cloud = _route("cloud", provider="claude_subscription")
+        local_backend = _Backend(chat_result={"message": {"content": "local"}})
+        cloud_backend = _Backend(chat_error=ProviderError("claude-agent-sdk is not installed"))
+        router = _router(tmp_path, [cloud, local], {
+            cloud: cloud_backend,
+            local: local_backend,
+        })
+
+        result = router.chat("chat", [{"role": "user", "content": "hi"}],
+                              preferred_provider="claude_subscription")
+
+        assert result == {"message": {"content": "local"}}
+        assert cloud_backend.chat_calls == 1
+        assert local_backend.chat_calls == 1
+
+    def test_preferred_provider_not_configured_falls_back_to_normal_order(self, tmp_path):
+        """Forcing a provider that has no route in the chain at all must
+        behave exactly like no preference was set — this is the "unavailable"
+        case the manual override's fail-open depends on."""
+        local = _route("local", provider="ollama")
+        local_backend = _Backend(chat_result={"message": {"content": "local"}})
+        router = _router(tmp_path, [local], {local: local_backend})
+
+        result = router.chat("chat", [{"role": "user", "content": "hi"}],
+                              preferred_provider="claude_subscription")
+
+        assert result == {"message": {"content": "local"}}
+        assert local_backend.chat_calls == 1
+
+    def test_no_preferred_provider_keeps_configured_chain_order(self, tmp_path):
+        first = _route("first", provider="claude_subscription")
+        second = _route("second", provider="ollama")
+        first_backend = _Backend(chat_result={"message": {"content": "first"}})
+        second_backend = _Backend(chat_result={"message": {"content": "second"}})
+        router = _router(tmp_path, [first, second], {
+            first: first_backend,
+            second: second_backend,
+        })
+
+        result = router.chat("chat", [{"role": "user", "content": "hi"}])
+
+        assert result == {"message": {"content": "first"}}
+        assert first_backend.chat_calls == 1
+        assert second_backend.chat_calls == 0

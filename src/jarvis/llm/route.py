@@ -124,6 +124,29 @@ class RoutedBackend(LLMBackend):
             yield route
 
     @staticmethod
+    def _ordered_for_preference(routes, preferred_provider: str | None):
+        """Promote routes matching ``preferred_provider`` to the front of
+        ``routes`` for one call, preserving relative order within each
+        group. The rest of the chain stays reachable immediately after, so
+        a promoted route that is unavailable or fails still falls through
+        to the normal chain rather than ending the turn. No match for
+        ``preferred_provider`` in ``routes`` (or no preference at all)
+        returns the input order unchanged — the fail-open case a caller
+        forcing an unconfigured provider depends on."""
+        if not preferred_provider:
+            return routes
+        preferred = [route for route in routes if route.provider == preferred_provider]
+        if not preferred:
+            debug_log(
+                f"LLM chat: preferred provider {preferred_provider!r} has no "
+                "available route, falling through to the normal chain order",
+                "llm",
+            )
+            return routes
+        rest = [route for route in routes if route.provider != preferred_provider]
+        return preferred + rest
+
+    @staticmethod
     def _is_local(route: Route) -> bool:
         try:
             host = (urlparse(route.base_url).hostname or "").lower()
@@ -150,8 +173,12 @@ class RoutedBackend(LLMBackend):
         invoke: Callable[[LLMBackend, Route], Any],
         *,
         capability: str = "chat",
+        preferred_provider: str | None = None,
     ):
-        for route in self._available(self._tier(model), capability):
+        candidates = self._ordered_for_preference(
+            list(self._available(self._tier(model), capability)), preferred_provider,
+        )
+        for route in candidates:
             try:
                 result = invoke(self._backend(route), route)
             except ToolsNotSupportedError:
@@ -284,10 +311,16 @@ class RoutedBackend(LLMBackend):
         return None
 
     def chat(self, chat_model, messages, timeout_sec=30.0, extra_options=None,
-             tools=None, thinking=False, on_token=None):
+             tools=None, thinking=False, on_token=None, preferred_provider=None):
         # A route that cannot stream still answers, it just answers all at
         # once — so falling back through the chain never depends on whether
         # the caller wanted its text early.
+        #
+        # ``preferred_provider`` promotes routes of that provider to the
+        # front of this one call's attempt order (see
+        # ``_ordered_for_preference``); it never removes the rest of the
+        # chain, so a promoted route that is missing or fails still falls
+        # through exactly as it would with no preference at all.
         def invoke(backend, route):
             listener = on_token if "stream" in route.capabilities else None
             return backend.chat(
@@ -296,7 +329,11 @@ class RoutedBackend(LLMBackend):
                 on_token=listener,
             )
 
-        return self._run(chat_model, invoke, capability="tools" if tools else "chat")
+        return self._run(
+            chat_model, invoke,
+            capability="tools" if tools else "chat",
+            preferred_provider=preferred_provider,
+        )
 
     def embed(self, text, model, timeout_sec=15.0):
         return None

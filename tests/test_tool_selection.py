@@ -699,3 +699,131 @@ class TestLLMStrategy:
         assert user.index("KNOWN FACTS") < user.index("User query:"), (
             "hint must precede the query so the query stays the final token"
         )
+
+
+class TestChatBackendPreferenceSignal:
+    """The router's single LLM call also names how much reasoning the turn
+    needs, so the reply engine can bias Tier.CHAT backend selection without
+    a second LLM round-trip (see ClaudeSubscriptionBackend routing)."""
+
+    @pytest.mark.unit
+    def test_complex_response_populates_the_signal(self):
+        backend = _llm_backend(return_value="webSearch, getWeather COMPLEX")
+        signal: dict = {}
+        select_tools(
+            "plan my week and debug this script",
+            _builtin(), {},
+            strategy=ToolSelectionStrategy.LLM,
+            llm_backend=backend,
+            llm_model="test",
+            chat_backend_signal=signal,
+        )
+        assert signal.get("preference") == "complex"
+
+    @pytest.mark.unit
+    def test_local_response_populates_the_signal(self):
+        backend = _llm_backend(return_value="none LOCAL")
+        signal: dict = {}
+        result = select_tools(
+            "hello",
+            _builtin(), {},
+            strategy=ToolSelectionStrategy.LLM,
+            llm_backend=backend,
+            llm_model="test",
+            chat_backend_signal=signal,
+        )
+        assert signal.get("preference") == "local"
+        # The classification suffix must not break the existing "none"
+        # handling — only mandatory tools come back.
+        assert result == ["stop"]
+
+    @pytest.mark.unit
+    def test_pipe_delimited_response_is_also_understood(self):
+        backend = _llm_backend(return_value="webSearch | COMPLEX")
+        signal: dict = {}
+        result = select_tools(
+            "research and write a detailed report",
+            _builtin(), {},
+            strategy=ToolSelectionStrategy.LLM,
+            llm_backend=backend,
+            llm_model="test",
+            chat_backend_signal=signal,
+        )
+        assert signal.get("preference") == "complex"
+        assert "webSearch" in result
+
+    @pytest.mark.unit
+    def test_no_signal_dict_supplied_does_not_break_selection(self):
+        """Callers that don't care about backend routing (e.g. the
+        toolSearchTool escape hatch) must see identical behaviour to
+        before this feature existed."""
+        backend = _llm_backend(return_value="webSearch, getWeather COMPLEX")
+        result = select_tools(
+            "what's the weather",
+            _builtin(), {},
+            strategy=ToolSelectionStrategy.LLM,
+            llm_backend=backend,
+            llm_model="test",
+        )
+        assert "webSearch" in result
+        assert "getWeather" in result
+
+    @pytest.mark.unit
+    def test_missing_classification_token_leaves_signal_unset(self):
+        """A response that ignores the instruction (small-model drift)
+        must not fabricate a preference — the caller's fail-open path
+        depends on the key staying absent."""
+        backend = _llm_backend(return_value="webSearch, getWeather")
+        signal: dict = {}
+        select_tools(
+            "what's the weather",
+            _builtin(), {},
+            strategy=ToolSelectionStrategy.LLM,
+            llm_backend=backend,
+            llm_model="test",
+            chat_backend_signal=signal,
+        )
+        assert "preference" not in signal
+
+    @pytest.mark.unit
+    def test_llm_failure_leaves_signal_unset(self):
+        backend = _llm_backend(raises=TimeoutError("LLM timed out"))
+        signal: dict = {}
+        select_tools(
+            "weather in London",
+            _builtin(), _mcp(),
+            strategy=ToolSelectionStrategy.LLM,
+            llm_backend=backend,
+            llm_model="test",
+            chat_backend_signal=signal,
+        )
+        assert "preference" not in signal
+
+    @pytest.mark.unit
+    def test_local_tool_name_does_not_false_positive_as_a_preference(self):
+        """A real tool name containing the substring "local" (e.g.
+        localFiles) must not be mistaken for the LOCAL classification
+        token — word-boundary matching keeps the two apart."""
+        backend = _llm_backend(return_value="localFiles COMPLEX")
+        signal: dict = {}
+        result = select_tools(
+            "read a file and refactor it carefully",
+            _builtin(), {},
+            strategy=ToolSelectionStrategy.LLM,
+            llm_backend=backend,
+            llm_model="test",
+            chat_backend_signal=signal,
+        )
+        assert signal.get("preference") == "complex"
+        assert "localFiles" in result
+
+    @pytest.mark.unit
+    def test_other_strategies_never_populate_the_signal(self):
+        signal: dict = {}
+        select_tools(
+            "weather",
+            _builtin(), {},
+            strategy=ToolSelectionStrategy.KEYWORD,
+            chat_backend_signal=signal,
+        )
+        assert signal == {}

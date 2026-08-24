@@ -115,6 +115,19 @@ Hits, failures, last safe error label, and future block time feed the control ce
 
 Memory retrieval may send the selected snippets into FAST or CHAT calls. Memory creation, graph mutation, and embeddings stay local.
 
+## Chat backend selection
+
+The main reply loop's Tier.CHAT call (`chat_with_messages` in `src/jarvis/reply/engine.py`) can bias which configured route answers a given turn, on top of the ordinary chain fallback above. This is a per-call hint, not a second routing mechanism: `RoutedBackend.chat(preferred_provider=...)` only reorders its existing candidate list for that one call, promoting routes of the named provider to the front while leaving the rest of the chain reachable immediately after. A promoted route that is missing from the chain, or present but failing, falls through to the normal chain order exactly as an unpromoted failure would — this feature can never leave a turn with no answer that the existing chain would have produced.
+
+Two independent sources feed `preferred_provider`, resolved in `chat_with_messages` via `_resolve_preferred_chat_provider`:
+
+- **Manual override** — `cfg.chat_backend_override`. `"auto"` (the default) defers to automatic classification below. Any other value names a route provider (e.g. `"ollama"`, `"claude_subscription"`) to try first for every reply, regardless of that turn's classification. Not validated against configured routes at load time: a forced provider with no matching route is the same ordinary "unavailable" case the chain fallback already handles.
+- **Automatic classification** — only consulted when the override is `"auto"`. The tool router's own LLM call (`jarvis.tools.selection._select_llm`, see `tools/selection.spec.md`) also classifies the turn as `"local"` or `"complex"` in the same response that picks the tool allow-list, so no second LLM call is made. `"local"` maps to `"ollama"`, `"complex"` maps to `"claude_subscription"`. A turn with no classification (non-LLM selection strategy, router failure or timeout, or a response that ignored the instruction) resolves to no preference at all, which is the existing configured chain order unchanged.
+
+The router's classification travels from the tool-router call site to the chat call within one reply exactly like `routed_tools` does: computed once, reused for every turn of that reply's agentic loop, and carried through a hot-window cache hit alongside the cached tool list so a repeated query does not lose it.
+
+`debug_log` fires when the manual override forces a provider, when automatic classification selects `claude_subscription`, and when a preferred provider has no matching route and the call falls through to the normal chain order.
+
 ## Embeddings
 
 With `llm_routes` configured, `get_embedding_backend(cfg)` returns an `OllamaBackend` whose URL is loopback. It never returns `RoutedBackend`, and the model remains `cfg.ollama_embed_model`, preserving the vector space used by stored embeddings. A configured non-loopback Ollama URL falls back to `http://127.0.0.1:11434` for private and embedding work. A single-endpoint configuration with no routes retains its explicit embedding-provider behaviour.
@@ -124,6 +137,7 @@ With `llm_routes` configured, `get_embedding_backend(cfg)` returns an `OllamaBac
 | Key | Default | Meaning |
 |---|---|---|
 | `llm_routes` | `[]` | Ordered generic endpoint entries for FAST and CHAT |
+| `chat_backend_override` | `"auto"` | `"auto"` or a route provider name to force for every Tier.CHAT reply; see "Chat backend selection" |
 | `llm_provider` | `"ollama"` | Single-endpoint protocol used when `llm_routes` is empty |
 | `llm_base_url` | `""` | Single-endpoint URL used when `llm_routes` is empty |
 | `llm_api_key` | `""` | Single-endpoint bearer credential used when `llm_routes` is empty |
