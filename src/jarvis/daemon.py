@@ -572,6 +572,98 @@ def handle_chat_restore_stdin_line(line: str) -> bool:
     return True
 
 
+def handle_security_confirm_stdin_line(line: str) -> bool:
+    """Parse a stdin line as a desktop security-confirmation response.
+
+    Returns True when the line carried a ``SECURITY_CONFIRM_RESPONSE:``
+    payload and was handled (whether or not the payload was well-formed
+    or the request id was still pending), False for anything else so the
+    caller can apply its own semantics.
+    """
+    line = line.strip()
+    if not line.startswith("SECURITY_CONFIRM_RESPONSE:"):
+        return False
+    import json
+    from .security.desktop_confirm import resolve_desktop_confirmation
+    try:
+        payload = json.loads(line.split(":", 1)[1])
+        resolve_desktop_confirmation(
+            str(payload["request_id"]),
+            bool(payload.get("approved", False)),
+        )
+    except Exception as exc:
+        debug_log(f"invalid desktop confirmation response: {exc}", "security")
+    return True
+
+
+def _dispatch_stdin_line(stripped: str) -> bool:
+    """Handle one already-stripped stdin line. Returns True when the
+    daemon should stop reading further lines (SHUTDOWN), False to keep
+    the monitor running.
+
+    A handler that raises is logged and swallowed here rather than left
+    to propagate: this is the seam that decides whether one malformed or
+    unexpected line can end the monitor for every line after it. It
+    can't - EOF is the only other way ``stdin_monitor`` stops, and that
+    is handled by the caller, not here.
+    """
+    try:
+        if handle_security_confirm_stdin_line(stripped):
+            return False
+        if stripped == "SHUTDOWN":
+            debug_log("SHUTDOWN command received, requesting stop", "jarvis")
+            request_stop()
+            return True
+        if handle_chat_cancel_stdin_line(stripped):
+            return False
+        if handle_chat_new_session_stdin_line(stripped):
+            return False
+        if handle_chat_rewind_stdin_line(stripped):
+            return False
+        if handle_chat_restore_stdin_line(stripped):
+            return False
+        if stripped.startswith(CHAT_QUERY_IPC_PREFIX):
+            handle_chat_query_stdin_line(stripped)
+        return False
+    except Exception as exc:
+        debug_log(f"stdin monitor: failed to handle line ({exc})", "jarvis")
+        return False
+
+
+def stdin_monitor(stream=None) -> None:
+    """Read stdin lines until EOF or a SHUTDOWN line, dispatching each one
+    through ``_dispatch_stdin_line``.
+
+    Two jobs live behind that dispatch:
+
+    1. Windows shutdown signal: ``CTRL_BREAK_EVENT`` doesn't work
+       reliably with ``CREATE_NO_WINDOW``, so stdin EOF / a bare
+       ``SHUTDOWN`` line is treated as a stop request instead.
+    2. Subprocess chat query-in: the desktop app writes
+       ``__CHAT_QUERY__:{"text":"..."}`` lines so the chat window can
+       submit text when the daemon runs as a separate process, plus
+       session-control and security-confirmation lines. A line that
+       matches none of these is ignored, so the monitor is a no-op for
+       users who never open the chat.
+
+    ``stream`` defaults to ``sys.stdin``; tests pass a ``StringIO``.
+    """
+    if stream is None:
+        stream = sys.stdin
+    while True:
+        try:
+            line = stream.readline()
+        except Exception as exc:
+            debug_log(f"stdin monitor: readline failed ({exc}), stopping", "jarvis")
+            return
+        if not line:  # EOF - stdin closed
+            debug_log("stdin closed, requesting stop", "jarvis")
+            request_stop()
+            return
+        if _dispatch_stdin_line(line.strip()):
+            return
+
+
 def wait_for_chat_worker(timeout_sec: float = 5.0) -> bool:
     """Wait for an in-flight chat worker to finish, bounded.
 
@@ -1261,60 +1353,9 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
     last_diary_check = time.time()
     diary_check_interval = 60.0
 
-    # Start stdin monitor thread.
-    # Two jobs:
-    #   1. Windows shutdown signal: CTRL_BREAK_EVENT doesn't work reliably with
-    #      CREATE_NO_WINDOW, so we treat stdin EOF / a bare "SHUTDOWN" line as a
-    #      stop request (unchanged behaviour).
-    #   2. Subprocess chat query-in: the desktop app writes
-    #      ``__CHAT_QUERY__:{"text":"..."}`` lines so the chat window can submit
-    #      text when the daemon runs as a separate process. Non-chat lines are
-    #      ignored so the monitor is a no-op for users who never open the chat.
-    def stdin_monitor():
-        try:
-            # When parent closes our stdin, readline returns empty
-            while True:
-                line = sys.stdin.readline()
-                if not line:  # EOF - stdin closed
-                    debug_log("stdin closed, requesting stop", "jarvis")
-                    request_stop()
-                    break
-                stripped = line.strip()
-                if stripped.startswith("SECURITY_CONFIRM_RESPONSE:"):
-                    try:
-                        import json as _json
-                        from .security.desktop_confirm import resolve_desktop_confirmation
-
-                        payload = _json.loads(stripped.split(":", 1)[1])
-                        resolve_desktop_confirmation(
-                            str(payload["request_id"]),
-                            bool(payload.get("approved", False)),
-                        )
-                    except Exception as exc:
-                        debug_log(f"invalid desktop confirmation response: {exc}", "security")
-                    continue
-                if stripped == SHUTDOWN_SKIP_DIARY_COMMAND:
-                    debug_log("fast shutdown command received, skipping diary update", "jarvis")
-                    request_stop(skip_diary_update=True)
-                    break
-                if stripped == "SHUTDOWN":
-                    debug_log("SHUTDOWN command received, requesting stop", "jarvis")
-                    request_stop()
-                    break
-                # Chat query-in (subprocess mode). Returns False for any other
-                # line, which we silently ignore.
-                if handle_chat_cancel_stdin_line(stripped):
-                    continue
-                if handle_chat_new_session_stdin_line(stripped):
-                    continue
-                if handle_chat_rewind_stdin_line(stripped):
-                    continue
-                if handle_chat_restore_stdin_line(stripped):
-                    continue
-                if stripped.startswith(CHAT_QUERY_IPC_PREFIX):
-                    handle_chat_query_stdin_line(stripped)
-        except Exception:
-            pass  # stdin might not be available
+    # Start the stdin monitor thread (module-level ``stdin_monitor``, see
+    # its docstring for what it feeds: Windows shutdown signalling and the
+    # desktop app's subprocess chat IPC).
 
     # Run the monitor on Windows (shutdown signal) and whenever the desktop
     # app explicitly signals it owns our stdin (subprocess chat query-in and
