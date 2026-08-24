@@ -134,6 +134,22 @@ class TestSecrets:
 
         assert _stored(client)["telegram_bot_token"] == "999:NEW"
 
+    def test_the_brave_search_api_key_is_treated_as_a_secret(self, client):
+        """Brave's key is a paid-API credential like the Telegram bot token —
+        it must never be readable in plain text from a settings page left
+        open in a browser tab."""
+        stored = _stored(client)
+        stored["brave_search_api_key"] = "BSAsecretvalue12345"
+        client.config_path.write_text(json.dumps(stored), encoding="utf-8")
+
+        body = client.get("/api/settings", headers=HEADERS).get_json()
+        field = _field(body, "brave_search_api_key")
+
+        assert field["type"] == "password"
+        assert "BSAsecretvalue12345" not in json.dumps(body)
+        assert field["value"].endswith("2345")
+        assert field["is_secret"] is True
+
 
 class TestWriting:
     def test_a_changed_value_is_stored(self, client):

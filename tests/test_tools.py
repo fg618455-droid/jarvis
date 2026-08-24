@@ -200,7 +200,12 @@ def test_fetch_web_page_success(monkeypatch):
             </html>
             '''
             self.text = self.content.decode()
-        
+            # The production tool walks redirects manually now, checking
+            # these on every hop before deciding whether to follow it.
+            self.is_redirect = False
+            self.is_permanent_redirect = False
+            self.headers = {}
+
         def raise_for_status(self):
             pass
 

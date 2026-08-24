@@ -10,11 +10,16 @@ from src.jarvis.tools.types import ToolExecutionResult
 
 
 def _make_response_mock(**attrs) -> Mock:
-    """Build a Mock that doubles as both the requests response and a context
-    manager (the production code uses ``with requests.get(...) as resp`` so
-    the connection is released deterministically).
+    """Build a Mock that doubles as a requests response.
+
+    Defaults to "not a redirect" with empty headers so tests that don't
+    care about redirects don't have to spell that out — a bare ``Mock()``
+    attribute is truthy, which would otherwise make every response look
+    like a redirect to the manual redirect-walk in the tool under test.
     """
-    resp = Mock(**attrs)
+    defaults = {"is_redirect": False, "is_permanent_redirect": False, "headers": {}}
+    defaults.update(attrs)
+    resp = Mock(**defaults)
     resp.__enter__ = Mock(return_value=resp)
     resp.__exit__ = Mock(return_value=False)
     return resp
@@ -154,3 +159,92 @@ class TestFetchWebPageTool:
         # relative link should be resolved to absolute
         assert "https://example.com/relative" in result.reply_text
         assert "absolute.test" in result.reply_text
+
+
+class TestRedirectValidation:
+    """SSRF: a redirect hop must be validated before it is requested.
+
+    ``allow_redirects=True`` hands redirect-following to the requests
+    library itself, so any hop between the first request and the final
+    response has already been connected to by the time our code gets a
+    chance to inspect it. The fetch must walk redirects manually
+    (``allow_redirects=False``) and re-validate every hop's target before
+    following it — the same pattern ``webSearch`` already uses.
+    """
+
+    def setup_method(self):
+        self.tool = FetchWebPageTool()
+        self.context = Mock(spec=ToolContext)
+        self.context.user_print = Mock()
+
+    @patch('requests.get')
+    def test_redirects_are_not_delegated_to_requests(self, mock_get):
+        mock_response = _make_response_mock(
+            status_code=200,
+            text='<html><head><title>Test</title></head><body><p>Content</p></body></html>',
+            content=b'<html><head><title>Test</title></head><body><p>Content</p></body></html>',
+            raise_for_status=Mock(),
+        )
+        mock_get.return_value = mock_response
+
+        self.tool.run({"url": "https://example.com"}, self.context)
+
+        assert mock_get.call_args.kwargs.get("allow_redirects") is False
+
+    @patch('requests.get')
+    def test_a_redirect_to_a_public_host_is_followed_to_its_content(self, mock_get):
+        hop1 = _make_response_mock(
+            status_code=302,
+            is_redirect=True,
+            headers={"Location": "https://1.1.1.1/final"},
+        )
+        hop2 = _make_response_mock(
+            status_code=200,
+            text='<html><head><title>Final</title></head><body><p>Landed here</p></body></html>',
+            content=b'<html><head><title>Final</title></head><body><p>Landed here</p></body></html>',
+            raise_for_status=Mock(),
+            url="https://1.1.1.1/final",
+        )
+        mock_get.side_effect = [hop1, hop2]
+
+        result = self.tool.run({"url": "https://example.com"}, self.context)
+
+        assert result.success is True
+        assert "Landed here" in result.reply_text
+        assert mock_get.call_count == 2
+        assert mock_get.call_args_list[1].args[0] == "https://1.1.1.1/final"
+
+    @patch('requests.get')
+    def test_a_redirect_to_a_private_address_is_refused_before_being_requested(self, mock_get):
+        hop1 = _make_response_mock(
+            status_code=302,
+            is_redirect=True,
+            headers={"Location": "http://169.254.169.254/latest/meta-data/"},
+        )
+        # Only one response is queued. If the fix regresses and the tool
+        # follows the disallowed hop anyway, the mock raises StopIteration
+        # instead of silently connecting — proving the second request was
+        # never made rather than just that its content was discarded.
+        mock_get.side_effect = [hop1]
+
+        result = self.tool.run({"url": "https://example.com"}, self.context)
+
+        assert result.success is False
+        assert mock_get.call_count == 1
+        assert "not allowed" in result.reply_text.lower()
+
+    @patch('requests.get')
+    def test_a_redirect_loop_gives_up_instead_of_hanging(self, mock_get):
+        from src.jarvis.tools.builtin.fetch_web_page import _MAX_REDIRECTS
+
+        loop_hop = _make_response_mock(
+            status_code=302,
+            is_redirect=True,
+            headers={"Location": "https://example.com/loop"},
+        )
+        mock_get.side_effect = [loop_hop] * (_MAX_REDIRECTS + 1)
+
+        result = self.tool.run({"url": "https://example.com"}, self.context)
+
+        assert mock_get.call_count == _MAX_REDIRECTS + 1
+        assert result.success is False

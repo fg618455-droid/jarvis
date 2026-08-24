@@ -19,6 +19,9 @@ from ..types import ToolErrorCode, ToolExecutionResult
 
 _MAX_BYTES = 2_000_000
 _TIMEOUT = (5, 15)
+# Max redirects to follow manually (so every hop can be re-validated against
+# the SSRF allowlist before it is requested).
+_MAX_REDIRECTS = 3
 
 
 def _validate_public_url(value: str) -> str:
@@ -113,20 +116,35 @@ class FetchWebPageTool(Tool):
         }
         try:
             debug_log(f"fetchWebPage: fetching host={urlparse(url).hostname}", "web")
-            with requests.get(url, headers=headers, timeout=_TIMEOUT, allow_redirects=True, stream=True) as response:
-                # Verify every redirect target, not just the final destination.
-                history = getattr(response, "history", [])
-                if not isinstance(history, (list, tuple)):
-                    history = []
-                for hop in [*history, response]:
-                    hop_url = getattr(hop, "url", "")
-                    if isinstance(hop_url, str) and hop_url:
-                        _validate_public_url(hop_url)
-                response.raise_for_status()
-                content_bytes = _read_limited(response)
-                final_url = getattr(response, "url", url)
-                if not isinstance(final_url, str):
-                    final_url = url
+            # Walk redirects manually rather than handing them to requests
+            # via allow_redirects=True: that would connect to every hop
+            # before we get a chance to inspect it. Each hop's target is
+            # validated against the SSRF allowlist before it is requested.
+            current_url = url
+            response: Optional[requests.Response] = None
+            for _ in range(_MAX_REDIRECTS + 1):
+                response = requests.get(
+                    current_url, headers=headers, timeout=_TIMEOUT,
+                    allow_redirects=False, stream=True,
+                )
+                if response.is_redirect or response.is_permanent_redirect:
+                    next_url = response.headers.get("Location", "")
+                    if not next_url:
+                        break
+                    next_url = urljoin(current_url, next_url)
+                    _validate_public_url(next_url)
+                    current_url = next_url
+                    response.close()
+                    continue
+                break
+            if response.is_redirect or response.is_permanent_redirect:
+                return ToolExecutionResult.failure(ToolErrorCode.UNAVAILABLE,
+                    "The page redirected too many times.", phase="fetch")
+            response.raise_for_status()
+            content_bytes = _read_limited(response)
+            final_url = getattr(response, "url", current_url)
+            if not isinstance(final_url, str):
+                final_url = current_url
         except requests.exceptions.Timeout as exc:
             return ToolExecutionResult.failure(ToolErrorCode.TIMEOUT, "Fetching the page timed out.",
                 retryable=True, technical_details=type(exc).__name__)
