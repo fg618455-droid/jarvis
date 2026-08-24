@@ -12,6 +12,7 @@ const STRINGS = {
     "nav.overview": "Overview",
     "nav.memory": "Memory",
     "nav.conversation": "Conversation",
+    "nav.visualizer": "Face",
     "nav.passive": "Passive record",
     "nav.tools": "Tools",
     "nav.security": "Security",
@@ -177,6 +178,9 @@ const STRINGS = {
     "conversation.modeTurnOff": "Turn off",
     "conversation.modeNoListener": "Nothing is listening, so there is no conversation to hold open.",
 
+    "visualizer.title": "Face",
+    "visualizer.lead": "A face that idles, listens, thinks, and speaks in step with the real conversation. Pick a face from the gallery below.",
+
     "passive.title": "Passive record",
     "passive.lead": "Everything heard near the microphone, kept as text. No audio is ever saved.",
     "passive.kept": "What has been kept",
@@ -333,6 +337,7 @@ const STRINGS = {
     "nav.overview": "Übersicht",
     "nav.memory": "Gedächtnis",
     "nav.conversation": "Gespräch",
+    "nav.visualizer": "Gesicht",
     "nav.passive": "Passives Protokoll",
     "nav.tools": "Werkzeuge",
     "nav.security": "Sicherheit",
@@ -497,6 +502,9 @@ const STRINGS = {
     "conversation.modeTurnOn": "Einschalten",
     "conversation.modeTurnOff": "Ausschalten",
     "conversation.modeNoListener": "Es hört gerade nichts zu, also gibt es kein Gespräch, das offen bleiben könnte.",
+
+    "visualizer.title": "Gesicht",
+    "visualizer.lead": "Ein Gesicht, das im Takt des echten Gesprächs ruht, zuhört, nachdenkt und spricht. Wähle unten ein Gesicht aus der Galerie.",
 
     "passive.title": "Passives Protokoll",
     "passive.lead": "Alles, was in der Nähe des Mikrofons zu hören war, als Text aufbewahrt. Es wird nie Audio gespeichert.",

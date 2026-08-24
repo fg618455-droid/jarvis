@@ -103,6 +103,32 @@ def resolve_voice_language(model_path: Optional[str]) -> Optional[str]:
     return resolved
 
 
+# Kokoro voice names encode their language pipeline as one leading letter
+# (documented in the voice's own name — see jarvis.output.vendor.kokoro_backtalk.warm),
+# rather than shipping a metadata sidecar the way Piper voices do. This is
+# the whole, fixed set Kokoro ships; there is nothing to detect.
+_KOKORO_LANGUAGE_BY_CODE = {
+    "a": "American English",
+    "b": "British English",
+    "e": "Spanish",
+    "f": "French",
+    "h": "Hindi",
+    "i": "Italian",
+    "j": "Japanese",
+    "p": "Portuguese",
+    "z": "Mandarin Chinese",
+}
+
+
+def resolve_kokoro_voice_language(voice: Optional[str]) -> Optional[str]:
+    """Return the English name of a Kokoro voice's language, or None if
+    the voice name does not start with one of Kokoro's known language codes.
+    """
+    if not voice:
+        return None
+    return _KOKORO_LANGUAGE_BY_CODE.get(voice[0].lower())
+
+
 def _download_piper_voice(voice_name: str, progress_callback: Optional[Callable[[str], None]] = None) -> Optional[str]:
     """
     Download a Piper voice model from HuggingFace.
@@ -722,6 +748,23 @@ class ChatterboxTTS:
         return self._last_spoken_text
 
 
+def _feed_visualizer_waveform(chunk) -> None:
+    """Hand the just-played block to the face/visualizer view.
+
+    Backtalk's own ``mouth.py`` calls ``signals.feed_waveform`` at this exact
+    point in playback so a face can move to real audio; this is the same
+    call, aimed at the control centre's in-memory waveform holder instead of
+    a signal file. Guarded because ``tts.py`` has no hard dependency on the
+    control centre: a run where webui is disabled or failed to start still
+    speaks.
+    """
+    try:
+        from ..webui.visualizer.state import get_visualizer_waveform
+        get_visualizer_waveform().feed(chunk)
+    except Exception:
+        pass
+
+
 def _resolve_output_device(configured: Optional[str]):
     """Turn a configured device name or index into something PortAudio takes.
 
@@ -1076,6 +1119,7 @@ class PiperTTS:
                 else:
                     outdata[:, 0] = chunk
 
+                _feed_visualizer_waveform(chunk)
                 play_position[0] = end
 
             with self._audio_lock:
@@ -1180,6 +1224,334 @@ class PiperTTS:
         return self._last_spoken_text
 
 
+class KokoroTTS:
+    """TTS implementation using Kokoro (local neural TTS, vendored from
+    backtalk's ``mouth.py`` — see ``jarvis.output.vendor.kokoro_backtalk``).
+
+    Kokoro synthesises straight to a PCM waveform, like Piper, so duration is
+    exact rather than estimated. Playback, interruption, and the audio queue
+    follow the same shape as :class:`PiperTTS` so the two engines are
+    interchangeable behind :func:`create_tts_engine`.
+    """
+
+    def __init__(
+        self,
+        enabled: bool = True,
+        voice: Optional[str] = None,
+        rate: Optional[int] = None,
+        kokoro_voice: str = "bm_lewis",
+        kokoro_speed: float = 1.0,
+        output_device: Optional[str] = None,
+    ) -> None:
+        self.enabled = enabled
+        self._output_device = _resolve_output_device(output_device)
+        self.voice = voice  # Not used by Kokoro directly, kept for interface compatibility
+        self.rate = rate    # Not used by Kokoro, use kokoro_speed instead
+        self.kokoro_voice = kokoro_voice or "bm_lewis"
+        self.kokoro_speed = kokoro_speed if kokoro_speed and kokoro_speed > 0 else 1.0
+
+        # Threading and queue setup (same pattern as PiperTTS).
+        self._q: queue.Queue[Utterance] = queue.Queue()
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+        self._is_speaking = threading.Event()
+        self._last_spoken_text: str = ""
+        self._should_interrupt = threading.Event()
+
+        # Kokoro pipeline (lazy loaded, cached per language in the vendor module).
+        self._initialized = False
+        self._init_lock = threading.Lock()
+        self._init_error: Optional[str] = None
+
+        # Audio stream for interruption.
+        self._audio_stream = None
+        self._audio_lock = threading.Lock()
+
+    def _ensure_initialized(self) -> bool:
+        """Load the Kokoro pipeline for the configured voice. Returns True
+        if it is ready to synthesise."""
+        if self._initialized:
+            return self._init_error is None
+        if not self.enabled:
+            return False
+
+        with self._init_lock:
+            if self._initialized:
+                return self._init_error is None
+
+            try:
+                from .vendor.kokoro_backtalk import warm
+                debug_log(f"Kokoro TTS loading voice: {self.kokoro_voice}", "tts")
+                warm(self.kokoro_voice)
+                debug_log("Kokoro TTS initialized", "tts")
+            except ImportError as e:
+                self._init_error = f"kokoro not installed: {e}"
+                debug_log(f"Kokoro TTS init failed: {self._init_error}", "tts")
+            except Exception as e:
+                self._init_error = f"Failed to load Kokoro voice: {e}"
+                debug_log(f"Kokoro TTS init failed: {self._init_error}", "tts")
+
+            self._initialized = True
+            return self._init_error is None
+
+    def start(self) -> None:
+        if not self.enabled or self._thread is not None:
+            return
+        self._ensure_initialized()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._thread is None:
+            return
+        try:
+            self.interrupt()
+        except Exception:
+            pass
+        self._stop.set()
+        try:
+            self._q.put_nowait(Utterance(""))
+        except Exception:
+            pass
+        self._thread.join(timeout=2.0)
+        self._thread = None
+        self._stop.clear()
+
+    def speak(self, text: str, completion_callback: Optional[Callable[[], None]] = None,
+              duration_callback: Optional[Callable[[float], None]] = None,
+              audio_start_callback: Optional[Callable[[], None]] = None) -> None:
+        if not self.enabled or not text.strip():
+            return
+        if self._thread is None:
+            self.start()
+        processed_text = _preprocess_for_speech(text)
+        if not processed_text.strip():
+            return
+        try:
+            self._q.put_nowait(Utterance(
+                text=processed_text,
+                completion_callback=completion_callback,
+                duration_callback=duration_callback,
+                audio_start_callback=audio_start_callback,
+            ))
+        except Exception:
+            pass
+
+    def end_of_reply(self, completion_callback: Optional[Callable[[], None]] = None) -> None:
+        """Close a streamed reply. See :meth:`PiperTTS.end_of_reply`."""
+        if not self.enabled:
+            return
+        if self._thread is None:
+            self.start()
+        try:
+            self._q.put_nowait(Utterance("", completion_callback=completion_callback))
+        except Exception:
+            pass
+
+    def interrupt(self) -> None:
+        """Stop current speech immediately."""
+        self._should_interrupt.set()
+        with self._audio_lock:
+            if self._audio_stream is not None:
+                try:
+                    with portaudio_lock:
+                        self._audio_stream.abort()
+                except Exception:
+                    pass
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                utterance = self._q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if utterance.is_end_of_reply:
+                self._finish_reply(utterance)
+                continue
+            try:
+                self._speak_once(utterance)
+            except Exception as e:
+                debug_log(f"Kokoro TTS error in _speak_once: {e}", "tts")
+                continue
+
+    def _finish_reply(self, utterance: Utterance) -> None:
+        """Report that everything queued before this marker has been spoken."""
+        if utterance.completion_callback is not None:
+            debug_log("Kokoro TTS reached the end of a streamed reply", "tts")
+            try:
+                utterance.completion_callback()
+            except Exception as e:
+                debug_log(f"Kokoro TTS end-of-reply callback error: {e}", "tts")
+        self._finish_speech_phase()
+
+    def _speak_once(self, utterance: Utterance) -> None:
+        text = utterance.text
+        self._is_speaking.set()
+        self._last_spoken_text = text
+        self._should_interrupt.clear()
+        interrupted = False
+
+        self._notify_speaking_state(True)
+
+        try:
+            if not self._ensure_initialized():
+                if self._init_error:
+                    print(f"  ⚠️ Kokoro TTS: {self._init_error}", flush=True)
+                return
+
+            import numpy as np
+            import sounddevice as sd
+
+            from .vendor.kokoro_backtalk import KOKORO_RATE, stream_kokoro
+
+            start_time = time.time()
+            debug_log(f"Kokoro TTS starting synthesis: {len(text.split())} words", "tts")
+
+            if self._should_interrupt.is_set():
+                debug_log("Kokoro TTS interrupted before synthesis", "tts")
+                return
+
+            audio_chunks = []
+            for chunk in stream_kokoro(text, self.kokoro_voice, self.kokoro_speed):
+                if self._should_interrupt.is_set():
+                    debug_log("Kokoro TTS interrupted during synthesis", "tts")
+                    return
+                audio_chunks.append(chunk)
+
+            if self._should_interrupt.is_set():
+                debug_log("Kokoro TTS interrupted after synthesis", "tts")
+                return
+
+            if not audio_chunks:
+                debug_log("Kokoro TTS: no audio chunks generated", "tts")
+                return
+
+            full_audio = np.concatenate(audio_chunks)
+            if len(full_audio) == 0:
+                debug_log("Kokoro TTS: no audio generated", "tts")
+                return
+
+            exact_duration = len(full_audio) / KOKORO_RATE
+            debug_log(f"Kokoro TTS synthesis complete: {exact_duration:.2f}s, {len(full_audio)} samples", "tts")
+
+            if utterance.duration_callback is not None:
+                try:
+                    utterance.duration_callback(exact_duration)
+                except Exception as e:
+                    debug_log(f"Kokoro TTS duration callback error: {e}", "tts")
+
+            play_position = [0]
+            blocksize = 1024
+
+            def audio_callback(outdata, frames, time_info, status):
+                if self._should_interrupt.is_set():
+                    raise sd.CallbackAbort()
+
+                start = play_position[0]
+                end = start + frames
+                chunk = full_audio[start:end]
+
+                if len(chunk) < frames:
+                    outdata[:len(chunk), 0] = chunk
+                    outdata[len(chunk):, 0] = 0
+                    raise sd.CallbackStop()
+                else:
+                    outdata[:, 0] = chunk
+
+                _feed_visualizer_waveform(chunk)
+                play_position[0] = end
+
+            with self._audio_lock:
+                with portaudio_lock:
+                    self._audio_stream = sd.OutputStream(
+                        samplerate=KOKORO_RATE,
+                        channels=1,
+                        dtype='int16',
+                        blocksize=blocksize,
+                        callback=audio_callback,
+                        device=self._output_device,
+                    )
+                    self._audio_stream.start()
+
+            self._notify_audio_start(utterance)
+
+            try:
+                while self._audio_stream is not None and self._audio_stream.active:
+                    if self._should_interrupt.is_set():
+                        interrupted = True
+                        with self._audio_lock:
+                            if self._audio_stream is not None:
+                                with portaudio_lock:
+                                    self._audio_stream.abort()
+                        break
+                    time.sleep(0.05)
+            finally:
+                with self._audio_lock:
+                    if self._audio_stream is not None:
+                        try:
+                            with portaudio_lock:
+                                self._audio_stream.close()
+                        except Exception:
+                            pass
+                        self._audio_stream = None
+
+            actual_duration = time.time() - start_time
+            debug_log(f"Kokoro TTS complete: actual={actual_duration:.2f}s (audio={exact_duration:.2f}s)", "tts")
+
+        except Exception as e:
+            debug_log(f"Kokoro TTS error: {e}", "tts")
+            print(f"  ⚠️ Kokoro TTS error: {e}", flush=True)
+        finally:
+            self._is_speaking.clear()
+            self._notify_speaking_state(False)
+            self._finish_speech_phase()
+
+            if utterance.completion_callback is not None and not interrupted:
+                try:
+                    utterance.completion_callback()
+                except Exception as e:
+                    print(f"  ⚠️ Kokoro TTS completion callback error: {e}", flush=True)
+
+    def _finish_speech_phase(self) -> None:
+        """Hand the phase back once nothing more is waiting to be spoken.
+
+        See :meth:`PiperTTS._finish_speech_phase`.
+        """
+        if not self._q.empty():
+            return
+        set_phase_if(Phase.SPEAKING, Phase.IDLE)
+        set_phase_if(Phase.THINKING, Phase.IDLE)
+
+    def _notify_audio_start(self, utterance: Utterance) -> None:
+        """Announce that sound has started leaving the speakers."""
+        if utterance.audio_start_callback is None:
+            return
+        try:
+            utterance.audio_start_callback()
+        except Exception as e:
+            debug_log(f"TTS audio start callback error: {e}", "tts")
+
+    def _notify_speaking_state(self, is_speaking: bool) -> None:
+        """Notify the face widget of speaking state changes."""
+        try:
+            from desktop_app.face_widget import get_jarvis_state, JarvisState
+            state_manager = get_jarvis_state()
+            if is_speaking:
+                debug_log("setting face state to SPEAKING (kokoro)", "tts")
+                state_manager.set_state(JarvisState.SPEAKING)
+        except ImportError:
+            debug_log("face widget not available (ImportError) (kokoro)", "tts")
+        except Exception as e:
+            debug_log(f"failed to set face state to SPEAKING (kokoro): {e}", "tts")
+
+    # Loopback guard helpers (same interface as TextToSpeech)
+    def is_speaking(self) -> bool:
+        return self._is_speaking.is_set()
+
+    def get_last_spoken_text(self) -> str:
+        return self._last_spoken_text
+
+
 def create_tts_engine(
     engine: str = "piper",
     enabled: bool = True,
@@ -1198,14 +1570,20 @@ def create_tts_engine(
     piper_noise_w: float = 0.8,
     piper_sentence_silence: float = 0.2,
     output_device: Optional[str] = None,
+    # Kokoro parameters
+    kokoro_voice: str = "bm_lewis",
+    kokoro_speed: float = 1.0,
 ):
     """Factory function to create the appropriate TTS engine.
 
     Supported engines:
     - "piper" (default): Neural TTS with auto-download, exact duration tracking
     - "chatterbox": AI voice with emotion control (requires PyTorch)
+    - "kokoro": Local neural TTS vendored from backtalk, exact duration tracking
     """
-    if engine.lower() == "chatterbox":
+    debug_log(f"selecting TTS engine: {engine}", "tts")
+    engine_key = engine.lower()
+    if engine_key == "chatterbox":
         return ChatterboxTTS(
             enabled=enabled,
             voice=voice,
@@ -1214,6 +1592,15 @@ def create_tts_engine(
             audio_prompt_path=audio_prompt_path,
             exaggeration=exaggeration,
             cfg_weight=cfg_weight,
+        )
+    elif engine_key == "kokoro":
+        return KokoroTTS(
+            enabled=enabled,
+            voice=voice,
+            rate=rate,
+            kokoro_voice=kokoro_voice,
+            kokoro_speed=kokoro_speed,
+            output_device=output_device,
         )
     else:
         # Default to Piper TTS

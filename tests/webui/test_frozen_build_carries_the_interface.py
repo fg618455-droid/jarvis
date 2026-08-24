@@ -31,3 +31,14 @@ def test_every_file_the_interface_serves_lives_under_that_folder():
 
     assert served <= {".html", ".css", ".js"}, f"unexpected asset types: {served}"
     assert (static / "index.html").is_file()
+
+
+def test_the_visualizer_vendor_folder_is_bundled_as_data():
+    """The face/visualizer view is served from its own vendored folder
+    (kept separate from static/ for the AGPL-3.0 licence boundary — see
+    THIRD_PARTY_NOTICES.md), which needs the same PyInstaller data entry
+    static/ already gets, or the bundled Face view 404s."""
+    spec = SPEC.read_text(encoding="utf-8")
+
+    entries = re.findall(r"'jarvis/webui/visualizer/vendor'", spec)
+    assert entries, "jarvis_desktop.spec does not bundle jarvis/webui/visualizer/vendor"

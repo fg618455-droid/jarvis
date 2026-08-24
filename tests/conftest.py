@@ -100,6 +100,8 @@ class MockConfig:
     tts_chatterbox_audio_prompt: Optional[str] = None
     tts_chatterbox_exaggeration: float = 0.5
     tts_chatterbox_cfg_weight: float = 0.5
+    tts_kokoro_voice: str = "bm_lewis"
+    tts_kokoro_speed: float = 1.0
     web_search_enabled: bool = True
     brave_search_api_key: str = ""
     wikipedia_fallback_enabled: bool = True

@@ -1097,6 +1097,9 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
         piper_noise_scale=cfg.tts_piper_noise_scale,
         piper_noise_w=cfg.tts_piper_noise_w,
         piper_sentence_silence=cfg.tts_piper_sentence_silence,
+        # Kokoro parameters
+        kokoro_voice=cfg.tts_kokoro_voice,
+        kokoro_speed=cfg.tts_kokoro_speed,
     )
     _global_tts_engine = tts  # Expose for face widget speaking animation
     if tts.enabled:

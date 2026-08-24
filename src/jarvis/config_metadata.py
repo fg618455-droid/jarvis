@@ -57,6 +57,7 @@ CATEGORIES = [
     ("tts", "🔊 Text-to-Speech"),
     ("piper", "🎵 Piper TTS"),
     ("chatterbox", "🎭 Chatterbox TTS"),
+    ("kokoro", "🎤 Kokoro TTS"),
     ("voice_input", "🎤 Voice Input"),
     ("wake", "👂 Wake Word"),
     ("whisper", "🗣️ Speech Recognition"),
@@ -210,7 +211,8 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("tts_enabled", "Enable TTS", "Enable text-to-speech output",
       "tts", "bool")
     f("tts_engine", "TTS Engine", "Speech synthesis engine",
-      "tts", "choice", choices=[("piper", "Piper (Neural)"), ("chatterbox", "Chatterbox (Voice Cloning)")])
+      "tts", "choice", choices=[("piper", "Piper (Neural)"), ("chatterbox", "Chatterbox (Voice Cloning)"),
+                                 ("kokoro", "Kokoro (Neural)")])
     f("tts_rate", "Speech Rate", "Words per minute (200 = normal)",
       "tts", "int", min_val=80, max_val=400, step=10, suffix="WPM", nullable=True)
 
@@ -248,6 +250,14 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("tts_chatterbox_audio_prompt", "Voice Clone Audio",
       "Path to audio file for voice cloning (leave empty to disable)",
       "chatterbox", "str", nullable=True)
+
+    # --- Kokoro TTS ---
+    f("tts_kokoro_voice", "Voice",
+      "Kokoro voice name (its first letter selects the language, e.g. 'a' American English, 'b' British English)",
+      "kokoro", "str")
+    f("tts_kokoro_speed", "Speed",
+      "Speaking rate multiplier: <1.0 slower, >1.0 faster",
+      "kokoro", "float", min_val=0.5, max_val=2.0, step=0.05)
 
     # --- Voice Input ---
     f("tts_output_device", "Output Device",

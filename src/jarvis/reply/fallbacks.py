@@ -21,7 +21,7 @@ from typing import Callable, Optional
 from jarvis.debug import debug_log
 from jarvis.llm import get_llm_backend
 from jarvis.llm.tiers import Tier, resolve_model
-from jarvis.output.tts import resolve_voice_language
+from jarvis.output.tts import resolve_kokoro_voice_language, resolve_voice_language
 
 
 # One rendering per language per message, for the lifetime of the process.
@@ -82,9 +82,12 @@ def forget_renderings() -> None:
 
 
 def _voice_language(cfg) -> Optional[str]:
-    if getattr(cfg, "tts_engine", "piper") != "piper":
-        return None
-    return resolve_voice_language(getattr(cfg, "tts_piper_model_path", None))
+    engine = getattr(cfg, "tts_engine", "piper")
+    if engine == "piper":
+        return resolve_voice_language(getattr(cfg, "tts_piper_model_path", None))
+    if engine == "kokoro":
+        return resolve_kokoro_voice_language(getattr(cfg, "tts_kokoro_voice", None))
+    return None
 
 
 def _ask_the_fast_model(cfg, language: str, message: str) -> Optional[str]:

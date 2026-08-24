@@ -165,6 +165,7 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 - **Text Chat** - Type to Jarvis alongside voice. Voice and text share one conversation, so a follow-up typed in the chat window continues a voice discussion. Text never speaks. Open it from the tray menu (`💬 Chat…`) while Jarvis is listening. The window is styled like an SMS thread with a single contact: speech bubbles, timestamps, and an online/typing presence line. It shows a local status banner while Jarvis starts, stops, or needs to be restarted, and every message you send carries a rewind button that rolls the conversation back to that point and regenerates the reply.
 - **Unlimited Memory** - Never forgets. Searches across all your conversation history and can add bounded, attributable excerpts from a local Remio knowledge base. Browse and edit Jarvis memory in the Control Centre.
 - **Control Centre** - A local web interface the daemon serves at `http://127.0.0.1:5055`: live state, memory, conversation, tools, security, technical readings, and every setting. Offline, no build step, nothing leaves the machine.
+- **Face/Visualizer** - A face in the Control Centre that idles, listens, thinks, and speaks in step with the real conversation, reading Jarvis's own live state directly (no signal files, no second server). The face gallery itself is a vendored, AGPL-3.0-licensed third-party component; see `THIRD_PARTY_NOTICES.md`.
 - **Passive Capture (opt-in)** - Keep a local, text-only record of speech the recogniser already transcribed, including ambient conversation not addressed to Jarvis. It is off by default, visibly indicated while active, and deletable by line, day, or in full. No audio is written to disk.
 - **Adaptive Tone** - Automatically surgical for code, pragmatic for business, encouraging for wellbeing — no manual mode switching
 - **Smart Tool Selection** - Embedding-based relevance filtering picks only the tools needed per query — add unlimited MCP tools without performance degradation
@@ -485,6 +486,16 @@ Voice cloning with Chatterbox - add a 3-10 second .wav sample:
 }
 ```
 
+**Kokoro** - a second local, offline neural voice, vendored from [backtalk](https://github.com/jaredrhod/backtalk) under its AGPL-3.0 licence (see `THIRD_PARTY_NOTICES.md`):
+```json
+{
+  "tts_engine": "kokoro",
+  "tts_kokoro_voice": "bm_lewis",
+  "tts_kokoro_speed": 1.0
+}
+```
+The voice's first letter selects its language pipeline (`a` American English, `b` British English, `e` Spanish, `f` French, `h` Hindi, `i` Italian, `j` Japanese, `p` Portuguese, `z` Mandarin Chinese) and downloads the matching model to the Hugging Face cache on first use. Kokoro needs `espeak-ng` installed on the system for phonemization.
+
 </details>
 
 <details>
@@ -692,7 +703,7 @@ pwsh -ExecutionPolicy Bypass -File scripts\run_windows.ps1
 bash scripts/run_linux.sh
 ```
 
-Running from source enables Chatterbox TTS (AI voice with emotion/cloning). Piper TTS works in both bundled and source modes.
+Running from source enables Chatterbox and Kokoro TTS (both use PyTorch, excluded from the bundled build to keep it small). Piper TTS works in both bundled and source modes.
 
 </details>
 
@@ -748,6 +759,9 @@ provider can't run out the voice-assistant latency budget.
 
 - **Personal use**: Free forever
 - **Commercial use**: [Contact us](mailto:baris@writeme.com)
+- A handful of vendored, opt-in components (the Face/Visualizer view and the
+  Kokoro TTS engine) carry their own AGPL-3.0 licence instead — see
+  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## Support
 

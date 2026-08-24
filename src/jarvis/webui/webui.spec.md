@@ -36,7 +36,7 @@ one file and no view can drift from the rest.
 | Overflow | A region that scrolls is sized against the window rather than a fixed count of pixels, and pins its heading above it, so a partly visible row reads as more below rather than as a rendering fault |
 | Shared parts | A component two views use is named for what it is rather than for whichever view needed it first, and lives in `app.css` rather than beside one of them |
 
-The sidebar groups its eleven destinations under three names: what is
+The sidebar groups its twelve destinations under three names: what is
 happening now, what the assistant knows, and how the machine is set up. Each
 group is an ARIA group carrying that name, so the structure is available to a
 screen reader and not only to the eye.
@@ -141,6 +141,9 @@ allowed; reading one back is not.
 | `PUT /api/llm/routes` | Validate and replace generic route configuration while preserving unchanged masked credentials |
 | `GET /api/crew` | One reading of the NAS-hosted agent crew: recent activity, the agent roster with its tallies, a 14-day daily activity count, and when the reading was taken |
 | `POST /api/crew/chat` | Relay one message to one crew agent and return its reply |
+| `GET /api/visualizer/state` | The face's `idle\|listening\|thinking\|speaking` reading, a waveform, and the two ai-visualizer signals Jarvis never sets (`alert`, `loading`) |
+| `GET /api/visualizer/config` | The assistant's display name and the installed face gallery |
+| `GET /visualizer/`, `/visualizer/<path>` | The vendored, AGPL-3.0-licensed face gallery and its static assets, served from disk |
 
 `POST /api/chat` runs one turn at a time, and the turn it waits for may not
 be its own. Voice, the desktop chat window and this endpoint all reach the
@@ -303,6 +306,30 @@ its own when the user asks Jarvis to stop.
 
 Standalone there is no voice loop, so the switch reaches nothing and says
 so instead of showing a mode that is not running anywhere.
+
+## Face/visualizer view
+
+A face that idles, listens, thinks, and speaks in step with the real
+conversation: the AGPL-3.0-licensed [ai-visualizer](https://github.com/jaredrhod/ai-visualizer)
+face gallery, vendored under `src/jarvis/webui/visualizer/vendor/` and
+served by this process rather than ai-visualizer's own stdlib HTTP server —
+see `THIRD_PARTY_NOTICES.md` for the licence terms this carries.
+
+The view itself is a thin frame: an iframe pointed at `/visualizer/`, which
+answers with the vendored gallery. Picking a face is the gallery's own job;
+nothing in this app's own views duplicates that switch. The face polls
+`/api/visualizer/state` roughly eight times a second and `/api/visualizer/config`
+once, both answered by `jarvis.webui.visualizer.state`, which derives the
+reading entirely from Jarvis's own live objects:
+
+| Reading | Source |
+|---|---|
+| `state` | The runtime phase (`jarvis.runtime.state.Phase`), mapped to `idle`, `listening`, `thinking`, or `speaking`. `capturing` reads as listening; `transcribing`, `thinking`, and `tool` all read as thinking; `starting` and `dictating` read as idle |
+| `level`, `samples` | The most recent block of audio a TTS engine wrote to the speakers, fed in by `PiperTTS` and `KokoroTTS` as they play — the in-process replacement for ai-visualizer's own `.voice_waveform` signal file. A waveform older than 0.6 seconds is stale and is not shown; when the samples are fresh they are trusted as speech even if the phase reading has not caught up yet, the same rule ai-visualizer's own server.py applies to its signal files |
+| `alert`, `loading` | Always `false`. Jarvis has no attention-signal concept and no TTS engine plays a thinking sound separate from the reply itself, so nothing here would ever set them |
+
+No signal files are read or written, and no second HTTP server runs: one
+process, the same principle every other view in this spec follows.
 
 ## Passive record
 
