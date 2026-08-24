@@ -20,6 +20,7 @@ from .backend import (
     ToolsNotSupportedError,
 )
 from .claude_subscription import ClaudeSubscriptionBackend
+from .crew_chat import CrewChatBackend
 from .ollama import OllamaBackend
 from .openai_compatible import OpenAICompatibleBackend
 from .route_state import RouteStateStore
@@ -68,12 +69,28 @@ class Route:
     keep_alive: str = ""
 
 
-def _build_backend(route: Route) -> LLMBackend:
+def _build_backend(route: Route, settings: Any = None) -> LLMBackend:
+    """Build the concrete backend for one route.
+
+    ``settings`` is only consulted for ``crew_chat``: that provider reuses
+    ``cfg.crew_api_url`` / ``cfg.crew_api_key`` / ``cfg.crew_chat_agent``
+    rather than the route's own ``base_url`` / ``api_key`` / ``model``
+    fields, which stay inert placeholders (the same convention
+    ``claude_subscription``'s ``base_url`` already uses). Every other
+    provider ignores ``settings`` entirely, so a caller building a backend
+    directly from a route (e.g. a test) never needs to supply it.
+    """
     api_key = os.environ.get(route.api_key_env) if route.api_key_env else route.api_key
     if route.provider == "openai_compatible":
         return OpenAICompatibleBackend(route.base_url, api_key=api_key or None)
     if route.provider == "claude_subscription":
         return ClaudeSubscriptionBackend()
+    if route.provider == "crew_chat":
+        return CrewChatBackend(
+            getattr(settings, "crew_api_url", "") or "",
+            api_key=getattr(settings, "crew_api_key", "") or "",
+            agent=getattr(settings, "crew_chat_agent", "") or "",
+        )
     return OllamaBackend(route.base_url, keep_alive=route.keep_alive or None)
 
 

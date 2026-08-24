@@ -36,6 +36,7 @@ from ..llm import (
 _CHAT_BACKEND_PREFERENCE_TO_PROVIDER = {
     "local": "ollama",
     "complex": "claude_subscription",
+    "hermes": "crew_chat",
 }
 
 
@@ -84,8 +85,9 @@ def chat_with_messages(cfg, messages, *, timeout_sec=30.0, extra_options=None,
     the speech path can start on the first finished sentence.
 
     ``chat_backend_preference`` is the tool router's optional per-turn
-    classification ("local" or "complex", from the same LLM call that
-    picks the tool allow-list — see ``jarvis.tools.selection._select_llm``).
+    classification ("local", "complex", or "hermes", from the same LLM call
+    that picks the tool allow-list — see
+    ``jarvis.tools.selection._select_llm``).
     Combined with ``cfg.chat_backend_override``, it resolves to a
     ``preferred_provider`` passed through to ``RoutedBackend.chat()``,
     which only ever reorders its existing route chain for this one call —

@@ -17,13 +17,14 @@ import weakref
 from .backend import LLMBackend
 from .ollama import OllamaBackend
 from .openai_compatible import OpenAICompatibleBackend
-from .route import Route, RoutedBackend
+from .route import Route, RoutedBackend, _build_backend
 from .tiers import Tier
 
 
 _OLLAMA = "ollama"
 _OPENAI_COMPATIBLE = "openai_compatible"
 _CLAUDE_SUBSCRIPTION = "claude_subscription"
+_CREW_CHAT = "crew_chat"
 _DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 _ROUTER_CACHE: dict[int, tuple[weakref.ReferenceType[Any], RoutedBackend]] = {}
 
@@ -56,16 +57,16 @@ def _resolve_route_provider(value: Any) -> str:
 
     Unlike :func:`_resolve_provider` (used for the single-endpoint
     ``llm_provider``/``embedding_provider`` settings), this also accepts
-    ``claude_subscription``: that route protocol is a CHAT-chain-only
-    alternative, never a blanket single-endpoint choice, because the
+    ``claude_subscription`` and ``crew_chat``: both are CHAT-chain-only
+    alternatives, never a blanket single-endpoint choice, because the
     single-endpoint path also serves the FAST tier and embeddings, and a
-    cloud subscription call has no place answering either — FAST needs a
-    warm, low-latency local model, and embeddings must stay on loopback
-    Ollama regardless of billing model.
+    cloud subscription or crew relay call has no place answering either —
+    FAST needs a warm, low-latency local model, and embeddings must stay on
+    loopback Ollama regardless of billing model.
     """
     if isinstance(value, str):
         v = value.strip().lower()
-        if v in (_OLLAMA, _OPENAI_COMPATIBLE, _CLAUDE_SUBSCRIPTION):
+        if v in (_OLLAMA, _OPENAI_COMPATIBLE, _CLAUDE_SUBSCRIPTION, _CREW_CHAT):
             return v
     return _OLLAMA
 
@@ -213,7 +214,14 @@ def get_llm_backend(settings: Any) -> LLMBackend:
         "local-private", _OLLAMA, private_ollama_url, "", ollama_chat, Tier.PRIVATE,
         180.0, keep_alive=keep_alive,
     ))
-    backend = RoutedBackend(routes)
+    # A crew_chat route needs cfg.crew_api_url / crew_api_key / crew_chat_agent
+    # rather than its own base_url / api_key / model fields (see
+    # route._build_backend), so this factory's own settings object is bound
+    # into the backend factory closure RoutedBackend uses to build each
+    # route's backend on first use.
+    backend = RoutedBackend(
+        routes, backend_factory=lambda route: _build_backend(route, settings),
+    )
     try:
         reference = weakref.ref(
             settings,

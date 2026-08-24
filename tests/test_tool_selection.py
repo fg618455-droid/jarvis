@@ -738,6 +738,21 @@ class TestChatBackendPreferenceSignal:
         assert result == ["stop"]
 
     @pytest.mark.unit
+    def test_hermes_response_populates_the_signal(self):
+        backend = _llm_backend(return_value="localFiles HERMES")
+        signal: dict = {}
+        result = select_tools(
+            "refactor the backend service's database connection pooling",
+            _builtin(), {},
+            strategy=ToolSelectionStrategy.LLM,
+            llm_backend=backend,
+            llm_model="test",
+            chat_backend_signal=signal,
+        )
+        assert signal.get("preference") == "hermes"
+        assert "localFiles" in result
+
+    @pytest.mark.unit
     def test_pipe_delimited_response_is_also_understood(self):
         backend = _llm_backend(return_value="webSearch | COMPLEX")
         signal: dict = {}

@@ -42,6 +42,15 @@ class TestManualOverride:
 
         assert mock_backend.chat.call_args.kwargs["preferred_provider"] == "claude_subscription"
 
+    def test_override_forces_crew_chat(self, mock_backend):
+        from src.jarvis.reply.engine import chat_with_messages
+
+        cfg = _cfg(chat_backend_override="crew_chat")
+        with patch("src.jarvis.reply.engine.get_llm_backend", return_value=mock_backend):
+            chat_with_messages(cfg, [{"role": "user", "content": "hi"}])
+
+        assert mock_backend.chat.call_args.kwargs["preferred_provider"] == "crew_chat"
+
     def test_override_wins_over_automatic_preference(self, mock_backend):
         """Manual override is unconditional — it must not be overridden by
         whatever the router classified this turn as."""
@@ -96,6 +105,18 @@ class TestAutomaticRouting:
 
         assert mock_backend.chat.call_args.kwargs["preferred_provider"] == "ollama"
 
+    def test_hermes_preference_selects_crew_chat(self, mock_backend):
+        from src.jarvis.reply.engine import chat_with_messages
+
+        cfg = _cfg()
+        with patch("src.jarvis.reply.engine.get_llm_backend", return_value=mock_backend):
+            chat_with_messages(
+                cfg, [{"role": "user", "content": "hi"}],
+                chat_backend_preference="hermes",
+            )
+
+        assert mock_backend.chat.call_args.kwargs["preferred_provider"] == "crew_chat"
+
     def test_complex_preference_is_logged(self, mock_backend):
         from src.jarvis.reply.engine import chat_with_messages
 
@@ -109,6 +130,22 @@ class TestAutomaticRouting:
 
         assert any(
             "claude_subscription" in str(call.args[0])
+            for call in logged.call_args_list
+        )
+
+    def test_hermes_preference_is_logged(self, mock_backend):
+        from src.jarvis.reply.engine import chat_with_messages
+
+        cfg = _cfg()
+        with patch("src.jarvis.reply.engine.get_llm_backend", return_value=mock_backend), \
+             patch("src.jarvis.reply.engine.debug_log") as logged:
+            chat_with_messages(
+                cfg, [{"role": "user", "content": "hi"}],
+                chat_backend_preference="hermes",
+            )
+
+        assert any(
+            "crew_chat" in str(call.args[0])
             for call in logged.call_args_list
         )
 

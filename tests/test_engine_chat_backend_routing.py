@@ -123,3 +123,43 @@ def test_hot_cache_replay_carries_the_preference_forward(
 
     assert mock_select_tools.call_count == 1, "second identical turn should hit the hot-window cache"
     assert mock_chat.call_args_list[-1].kwargs["chat_backend_preference"] == "complex"
+
+
+@pytest.mark.unit
+@patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value="")
+@patch("src.jarvis.memory.graph_ops.build_warm_profile",
+       return_value={"user": "", "directives": ""})
+@patch("src.jarvis.memory.graph.GraphMemoryStore")
+@patch("src.jarvis.reply.engine.plan_query", return_value=[])
+@patch("src.jarvis.reply.engine.extract_search_params_for_memory", return_value={})
+@patch("src.jarvis.reply.engine.extract_text_from_response")
+@patch("src.jarvis.reply.engine.chat_with_messages")
+@patch("src.jarvis.reply.engine.select_tools")
+def test_hermes_classification_also_reaches_the_chat_call_in_one_llm_call(
+    mock_select_tools, mock_chat, mock_extract, _mock_extract_mem, _mock_plan,
+    _mock_graph, _mock_warm, _mock_fmt,
+):
+    """The router's "hermes" verdict (crew_chat backend) must reach
+    chat_with_messages exactly like "complex" does, from the same single
+    classification call — no second LLM round-trip for the crew_chat leg
+    either."""
+    def _select_tools_side_effect(*args, **kwargs):
+        signal = kwargs.get("chat_backend_signal")
+        if signal is not None:
+            signal["preference"] = "hermes"
+        return ["localFiles"]
+
+    mock_select_tools.side_effect = _select_tools_side_effect
+    mock_chat.return_value = {"message": {"content": "Refactored the pooling."}}
+    mock_extract.return_value = "Refactored the pooling."
+
+    db = Mock()
+    cfg = _mock_cfg()
+    dm = DialogueMemory()
+
+    run_reply_engine(db=db, cfg=cfg, tts=None,
+                     text="refactor the backend connection pooling", dialogue_memory=dm)
+
+    assert mock_chat.call_args_list, "chat_with_messages should have been called"
+    assert mock_chat.call_args_list[-1].kwargs["chat_backend_preference"] == "hermes"
+    assert mock_select_tools.call_count == 1

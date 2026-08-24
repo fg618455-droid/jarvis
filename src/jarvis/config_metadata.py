@@ -131,6 +131,15 @@ def _dictation_hotkey_choices() -> list:
     ]
 
 
+def _crew_chat_agent_choices() -> list:
+    """Which crew specialist can answer a crew_chat turn, from the same
+    fixed roster ``askCrew`` delegates to (``AGENT_THREADS``). Read-only
+    import: this only offers the existing names as dropdown choices, it
+    does not change askCrew's own fire-and-forget behaviour."""
+    from jarvis.tools.builtin.ask_crew import AGENT_THREADS
+    return [("", "Not set")] + [(name, name) for name in sorted(AGENT_THREADS.keys())]
+
+
 def _build_field_metadata() -> List[FieldMeta]:
     """Build the metadata registry for all user-facing config fields."""
     fields = []
@@ -558,6 +567,12 @@ def _build_field_metadata() -> List[FieldMeta]:
       "not yet bounded to the deadline, so a delegation with nobody free to "
       "confirm can sit at the full confirmation timeout before it gives up",
       "crew", "bool")
+    f("crew_chat_agent", "Crew Chat Agent",
+      "Which crew specialist answers a turn routed to the crew_chat backend "
+      "(the \"crew_chat\" route provider and chat_backend_override value). "
+      "Empty leaves that route unable to answer rather than guessing an "
+      "agent",
+      "crew", "choice", choices=_crew_chat_agent_choices())
 
     # --- Advanced ---
     f("echo_tolerance", "Echo Tolerance",

@@ -62,11 +62,12 @@ _RELATIVE_THRESHOLD = 0.97
 _LLM_MAX_SELECTED = 5
 
 # Fixed protocol tokens the LLM router is instructed to append after its
-# tool list, naming how much reasoning the turn needs (see _select_llm).
-# These are not natural-language keywords matched against the user's
-# words — they are a closed vocabulary the classifying LLM itself must
-# emit, the same kind of fixed sentinel "none" already is in this router.
-_CHAT_BACKEND_PREFERENCE_RE = re.compile(r"\b(local|complex)\b", re.IGNORECASE)
+# tool list, naming which Tier.CHAT backend the turn prefers (see
+# _select_llm). These are not natural-language keywords matched against the
+# user's words — they are a closed vocabulary the classifying LLM itself
+# must emit, the same kind of fixed sentinel "none" already is in this
+# router.
+_CHAT_BACKEND_PREFERENCE_RE = re.compile(r"\b(local|complex|hermes)\b", re.IGNORECASE)
 
 # Tool descriptions change only when the catalogue changes, while user queries
 # change every turn. Cache only the description vectors so embedding routing
@@ -361,12 +362,13 @@ def _select_llm(
     has less context and falls back to tool-selection on content.
 
     ``chat_backend_signal``, when supplied, is populated with
-    ``{"preference": "local" | "complex"}`` from the SAME response this call
-    already produces, so the reply engine can bias which Tier.CHAT backend
-    answers the turn without a second LLM round-trip. The key is left absent
-    on any fallback path (empty/unparseable response, timeout, exception, or
-    no backend supplied) — an absent key is the caller's fail-open signal to
-    leave backend selection at its existing default.
+    ``{"preference": "local" | "complex" | "hermes"}`` from the SAME
+    response this call already produces, so the reply engine can bias which
+    Tier.CHAT backend answers the turn without a second LLM round-trip. The
+    key is left absent on any fallback path (empty/unparseable response,
+    timeout, exception, or no backend supplied) — an absent key is the
+    caller's fail-open signal to leave backend selection at its existing
+    default.
     """
     catalogue_lines: List[str] = []
     for name, tool in builtin_tools.items():
@@ -397,16 +399,19 @@ def _select_llm(
         "place, confirming an option, answering a clarifying question the "
         "assistant just asked) should route to the tool that answers the "
         "COMBINED intent across turns, not to 'none'. "
-        "After the tool list, add a single space then exactly one more word: "
-        "COMPLEX if answering this turn needs multi-step reasoning, code, or "
-        "careful structured output, or LOCAL for everything else, including "
-        "simple factual lookups through a tool. A single-fact lookup stays "
-        "LOCAL even when it names a future time or date (e.g. 'what's the "
-        "weather tomorrow', 'when is my next meeting') — one fact about one "
-        "moment is not multi-step reasoning. A short conversational "
-        "question is LOCAL even when it picks a tool; a query asking to "
-        "plan, debug, compare in depth, or produce carefully structured "
-        "output is COMPLEX. "
+        "After the tool list, add a single space then exactly one more word "
+        "naming which backend should answer: HERMES if the turn is about "
+        "building, debugging, or maintaining backend code, infrastructure, "
+        "servers, or data systems — the kind of engineering work suited to "
+        "a background crew with deep tool access; COMPLEX if it needs "
+        "multi-step reasoning, careful structured output, or front-end or "
+        "user-facing design work that is not HERMES-shaped; or LOCAL for "
+        "everything else, including simple factual lookups through a tool. "
+        "A single-fact lookup stays LOCAL even when it names a future time "
+        "or date (e.g. 'what's the weather tomorrow', 'when is my next "
+        "meeting') — one fact about one moment is not multi-step reasoning. "
+        "A short conversational question is LOCAL even when it picks a "
+        "tool. "
         "Output nothing else — no explanations, no prose, no code fences."
     )
     hint_section = ""
@@ -557,12 +562,12 @@ def select_tools(
         embed_timeout_sec:  Timeout for embedding calls.
         context_hint:       Optional facts/dialogue surface for the LLM router.
         chat_backend_signal: Optional dict populated with
-                            ``{"preference": "local" | "complex"}`` when the
-                            "llm" strategy's response names one, so a caller
-                            can bias Tier.CHAT backend selection without a
-                            second LLM call. Ignored by every other strategy;
-                            left untouched on any "llm" strategy fallback
-                            path, which is the fail-open signal.
+                            ``{"preference": "local" | "complex" | "hermes"}``
+                            when the "llm" strategy's response names one, so
+                            a caller can bias Tier.CHAT backend selection
+                            without a second LLM call. Ignored by every other
+                            strategy; left untouched on any "llm" strategy
+                            fallback path, which is the fail-open signal.
 
     Returns:
         List of tool name strings.

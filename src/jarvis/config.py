@@ -160,6 +160,11 @@ class Settings:
     crew_telegram_chat_id: str
     crew_agents: list[str]
     crew_handoff_enabled: bool
+    # Which crew specialist answers a Tier.CHAT turn routed to the
+    # "crew_chat" backend (see src/jarvis/llm/llm.spec.md, "Crew chat
+    # relay"). Empty leaves that route unable to answer, failing closed
+    # rather than guessing an agent.
+    crew_chat_agent: str
 
     # Screen Capture
     allowlist_bundles: list[str]
@@ -790,6 +795,9 @@ def get_default_config() -> Dict[str, Any]:
         # full confirmation timeout before falling through to a refusal
         # rather than an answer. Explicit askCrew calls are unaffected.
         "crew_handoff_enabled": False,
+        # Empty leaves the "crew_chat" Tier.CHAT route unable to answer
+        # rather than guessing which specialist should.
+        "crew_chat_agent": "",
 
         # Screen Capture
         "allowlist_bundles": [
@@ -1029,7 +1037,7 @@ def load_settings() -> Settings:
             tier = str(raw.get("tier", "") or "").strip().lower()
             base_url = str(raw.get("base_url", "") or "").strip().rstrip("/")
             model = str(raw.get("model", "") or "").strip()
-            if provider not in ("ollama", "openai_compatible", "claude_subscription"):
+            if provider not in ("ollama", "openai_compatible", "claude_subscription", "crew_chat"):
                 continue
             if tier not in ("fast", "chat") or not base_url or not model:
                 continue
@@ -1425,6 +1433,7 @@ def load_settings() -> Settings:
         if str(name).strip()
     ] or list(DEFAULT_CREW_AGENTS)
     crew_handoff_enabled = bool(merged.get("crew_handoff_enabled", False))
+    crew_chat_agent = str(merged.get("crew_chat_agent", "") or "").strip().lower()
 
     return Settings(
         # Database & Storage
@@ -1480,6 +1489,7 @@ def load_settings() -> Settings:
         crew_api_key=crew_api_key,
         crew_telegram_chat_id=crew_telegram_chat_id,
         crew_handoff_enabled=crew_handoff_enabled,
+        crew_chat_agent=crew_chat_agent,
 
         # Screen Capture
         allowlist_bundles=allowlist_bundles,
