@@ -48,6 +48,12 @@ TOKEN_BYTES = 16
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+# The vendored, AGPL-3.0-licensed ai-visualizer face gallery. Kept out of
+# STATIC_DIR so the permissively-licensed control centre assets and the
+# copyleft third-party face never share one directory tree; see
+# THIRD_PARTY_NOTICES.md.
+VISUALIZER_DIR = Path(__file__).parent / "visualizer" / "vendor"
+
 
 @dataclass(frozen=True)
 class WebUIConfig:
@@ -150,6 +156,21 @@ def create_app(cfg: WebUIConfig) -> Flask:
     @app.route("/api/health")
     def _health():  # noqa: ANN202 - Flask hook
         return jsonify(ok=True, port=cfg.port, host=cfg.host)
+
+    @app.route("/visualizer/")
+    @app.route("/visualizer/<path:subpath>")
+    def _visualizer(subpath: str = "index.html"):  # noqa: ANN202 - Flask hook
+        # The vendored gallery/faces are a plain folder of static files,
+        # served the same way the control centre's own static/ is: no
+        # build step, no second server, just files answered from disk.
+        target = (VISUALIZER_DIR / subpath).resolve()
+        if VISUALIZER_DIR not in target.parents and target != VISUALIZER_DIR:
+            return jsonify(error="not found"), 404
+        if target.is_dir():
+            target = target / "index.html"
+        if not target.is_file():
+            return jsonify(error="not found"), 404
+        return send_from_directory(target.parent, target.name)
 
     from .api import register_blueprints
 

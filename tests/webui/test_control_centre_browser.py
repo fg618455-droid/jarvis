@@ -25,6 +25,7 @@ VIEWS = [
     "overview",
     "memory",
     "conversation",
+    "visualizer",
     "passive",
     "tools",
     "security",
