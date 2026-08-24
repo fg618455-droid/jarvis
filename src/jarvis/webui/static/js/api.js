@@ -132,6 +132,10 @@ export const api = {
   saveLlmRoutes: (routes) => request("/api/llm/routes", { method: "PUT", body: { routes } }),
   probeLlmRoutes: () => request("/api/llm/routes/probe", { method: "POST" }),
   resetLlmRoutes: () => request("/api/llm/routes/reset", { method: "POST" }),
+  setChatBackendOverride: (chatBackendOverride) =>
+    request("/api/llm/routes/chat-backend-override", { method: "PUT", body: { chat_backend_override: chatBackendOverride } }),
+  setCrewChatAgent: (crewChatAgent) =>
+    request("/api/llm/routes/crew-chat-agent", { method: "PUT", body: { crew_chat_agent: crewChatAgent } }),
 
   settings: () => request("/api/settings"),
   saveSettings: (changes) => request("/api/settings", { method: "PUT", body: { changes } }),

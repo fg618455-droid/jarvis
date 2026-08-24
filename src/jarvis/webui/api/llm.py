@@ -12,6 +12,7 @@ from jarvis.config import _load_json, _save_json, load_settings, resolve_config_
 from jarvis.debug import debug_log
 from jarvis.llm import ProviderError, RoutedBackend, Tier, get_llm_backend
 from jarvis.llm.route_state import RouteStateStore
+from jarvis.tools.builtin.ask_crew import AGENT_THREADS
 
 from .settings import MASK, _mask
 
@@ -34,14 +35,23 @@ def _payload() -> dict[str, Any]:
     settings = load_settings()
     backend = get_llm_backend(settings)
     override = str(getattr(settings, "chat_backend_override", "auto") or "auto")
+    crew_chat_agent = str(getattr(settings, "crew_chat_agent", "") or "")
     if not isinstance(backend, RoutedBackend):
-        return {"chains": {tier.value: [] for tier in Tier}, "chat_backend_override": override}
+        return {
+            "chains": {tier.value: [] for tier in Tier},
+            "chat_backend_override": override,
+            "crew_chat_agent": crew_chat_agent,
+        }
     chains = backend.route_status()
     for tier in Tier:
         for item, route in zip(chains[tier.value], backend.routes_for(tier)):
             item["base_url"] = _display_url(route.base_url)
             item["masked_key"] = _mask(route.api_key)
-    return {"chains": chains, "chat_backend_override": override}
+    return {
+        "chains": chains,
+        "chat_backend_override": override,
+        "crew_chat_agent": crew_chat_agent,
+    }
 
 
 @bp.route("")
@@ -68,7 +78,7 @@ def _normalise_routes(raw_routes: Any, existing: list[dict[str, Any]]) -> list[d
         tier = str(raw.get("tier", "") or "").strip().lower()
         if not name or not base_url or not model:
             raise ValueError(f"route {index + 1} needs name, base_url, and model")
-        if provider not in ("ollama", "openai_compatible", "claude_subscription"):
+        if provider not in ("ollama", "openai_compatible", "claude_subscription", "crew_chat"):
             raise ValueError(f"route {index + 1} has an unsupported protocol")
         if tier not in ("fast", "chat"):
             raise ValueError(f"route {index + 1} has an unsupported tier")
@@ -139,6 +149,29 @@ def set_chat_backend_override() -> Response:
         return jsonify(error="could not write chat backend override"), 500
     debug_log(f"chat backend override set to {value!r}", "webui")
     return jsonify({"chat_backend_override": value, **_payload()})
+
+
+@bp.route("/crew-chat-agent", methods=["PUT"])
+def set_crew_chat_agent() -> Response:
+    """Set which crew specialist answers a turn routed to the crew_chat
+    backend, or clear it back to empty (the route then fails closed rather
+    than guessing an agent, see llm.spec.md). Validated against the same
+    fixed roster askCrew delegates to, since a name outside it can never
+    answer either."""
+    body = request.get_json(silent=True) or {}
+    value = str(body.get("crew_chat_agent", "") or "").strip().lower()
+    if value and value not in AGENT_THREADS:
+        return jsonify(error=(
+            f"Unknown crew agent '{value}'. Choose one of: "
+            f"{', '.join(sorted(AGENT_THREADS))}."
+        )), 400
+    path = resolve_config_path()
+    config = _load_json(path) or {}
+    config["crew_chat_agent"] = value
+    if not _save_json(path, config):
+        return jsonify(error="could not write crew chat agent"), 500
+    debug_log(f"crew chat agent set to {value!r}", "webui")
+    return jsonify({"crew_chat_agent": value, **_payload()})
 
 
 @bp.route("/reset", methods=["POST"])

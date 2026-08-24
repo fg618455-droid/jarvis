@@ -10,15 +10,17 @@ export async function mount(root) {
     el("p", { text: t("llm.lead") }),
   ]);
   const actions = el("div", { class: "actions" });
+  const backendCard = el("section", { class: "card" });
   const chains = el("div", { class: "grid" });
   const editorCard = el("section", { class: "card" });
-  root.append(head, actions, chains, editorCard);
+  root.append(head, actions, backendCard, chains, editorCard);
 
   let payload = null;
   let editor = null;
 
   async function refresh() {
     payload = await api.llmRoutes();
+    paintBackendSelectors(backendCard, payload);
     paintChains(chains, payload.chains || {});
     paintEditor(editorCard, payload.chains || {});
   }
@@ -98,6 +100,60 @@ export async function mount(root) {
   }
 
   await refresh();
+}
+
+const CHAT_BACKEND_CHOICES = ["auto", "ollama", "claude_subscription", "crew_chat"];
+const CREW_CHAT_AGENTS = ["", "jarvis", "dev", "research", "assistant", "schule", "scribe", "reach"];
+
+function paintBackendSelectors(container, currentPayload) {
+  clear(container);
+
+  const overrideSelect = el(
+    "select",
+    { class: "input", "aria-label": t("llm.backendOverride") },
+    CHAT_BACKEND_CHOICES.map((value) => el("option", { value, text: t(`llm.backend.${value}`) })),
+  );
+  overrideSelect.value = currentPayload.chat_backend_override || "auto";
+  overrideSelect.addEventListener("change", async () => {
+    try {
+      await api.setChatBackendOverride(overrideSelect.value);
+      toast(t("llm.backendSaved"));
+      await refreshBackendState(container);
+    } catch (error) {
+      toast(error.message, "bad");
+    }
+  });
+
+  const agentSelect = el(
+    "select",
+    { class: "input", "aria-label": t("llm.crewChatAgent") },
+    CREW_CHAT_AGENTS.map((value) =>
+      el("option", { value, text: value || t("llm.crewChatAgentUnset") })),
+  );
+  agentSelect.value = currentPayload.crew_chat_agent || "";
+  agentSelect.addEventListener("change", async () => {
+    try {
+      await api.setCrewChatAgent(agentSelect.value);
+      toast(t("llm.backendSaved"));
+      await refreshBackendState(container);
+    } catch (error) {
+      toast(error.message, "bad");
+    }
+  });
+
+  container.append(
+    el("header", {}, [el("h2", { text: t("llm.backendTitle") })]),
+    el("p", { class: "aside", text: t("llm.backendLead") }),
+    el("div", { class: "field-row" }, [
+      el("label", {}, [el("span", { text: t("llm.backendOverride") }), overrideSelect]),
+      el("label", {}, [el("span", { text: t("llm.crewChatAgent") }), agentSelect]),
+    ]),
+  );
+
+  async function refreshBackendState(node) {
+    const latest = await api.llmRoutes();
+    paintBackendSelectors(node, latest);
+  }
 }
 
 function paintChains(container, chains) {
