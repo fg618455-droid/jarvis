@@ -48,7 +48,7 @@ There is no "write anywhere" escape hatch. The mirror cannot address a path outs
 
 ## File Layout
 
-One graph node, one markdown file, flat inside the memory folder. No subdirectories: the hierarchy lives in wikilinks, which is what Obsidian's graph view reads, and a flat folder makes the orphan sweep trivial.
+One graph node, one markdown file, flat inside the memory folder. No subdirectories: the hierarchy lives in wikilinks, which is what Obsidian's graph view reads, and a flat folder makes the orphan sweep trivial. The one exception is `_quarantine`, a holding area for notes removed from the mirror while still carrying user content (see "Deleting a Note With User Content" under Sync); it is not part of the node-to-file mapping and orphan sweeps do not descend into it.
 
 The root node is not mirrored. It holds no data and exists only as a container.
 
@@ -122,6 +122,12 @@ This is the one place where the vault holds memory that SQLite does not. The rea
 
 `apply_sync(plan, cfg)` executes a plan. In `dry_run` mode it is never called. Writes are atomic: render to `<name>.md.tmp` in the same directory, `os.replace` onto the target. A crash mid-sync leaves every file either fully old or fully new.
 
+### Deleting a Note With User Content
+
+A `delete` action removes the file from disk only when its protected tail (see below) is empty after stripping whitespace. When the tail holds real user content, `apply_sync` quarantines the file instead: it is moved with `os.replace` to `<obsidian_memory_folder>/_quarantine/<same filename>`, resolved through `resolve_managed_path` exactly like every other target in this module, so the quarantine slot is bound to the vault root and cannot escape it. The content is untouched by the move, machine header and protected tail alike. If a file already occupies that quarantine slot, the delete is refused rather than overwriting whatever was quarantined there before.
+
+This exists because a node id can disappear from the graph for reasons that have nothing to do with the user's own annotations, most notably a graph-wide reshape that empties `valid_ids` for an entire sweep at once. Unlinking on sight would destroy the one thing this subsystem promises never to touch: content below `<!-- jarvis:end -->`. Quarantining costs nothing when the tail truly is empty (the common case, and the only one that still unlinks) and costs one house-kept file the one time it is not.
+
 ### When Sync Runs
 
 The mirror subscribes via `register_graph_mutation_listener` (see `graph.spec.md`). Events are pushed onto a queue drained by a single background worker with a 3 second debounce, so one diary flush that writes five facts across two nodes produces one sync pass, not five. The worker only ever syncs the nodes named by the coalesced events plus a link-fixup for their parents and children.
@@ -144,7 +150,9 @@ Excluded: any path component starting with `.` (`.obsidian`, `.trash`, `.git`), 
 
 For files inside the memory folder, only the protected region below `<!-- jarvis:end -->` is indexed. The machine-written part is already in the graph and enriches replies through the graph path; indexing it too would inject the same fact twice into one system prompt.
 
-Each entry holds the vault-relative path, the note title (H1 if present, else filename stem), frontmatter tags, mtime, and the body text. The index is built on first use and refreshed lazily: an entry is re-read when its mtime changed, and the file list is re-scanned when the directory tree's newest mtime changed. 392 notes at ~2 MB is small enough that this is a few milliseconds, so there is no persistent index file to corrupt or invalidate.
+Each entry holds the vault-relative path, the note title (H1 if present, else filename stem), frontmatter tags, mtime, and the body text. An entry is re-read only when its mtime or size changed; every other file on the tree is served from memory. 392 notes at ~2 MB is small enough that a full re-scan is a few milliseconds, so there is no persistent index file to corrupt or invalidate.
+
+`get_vault_index(vault_root, memory_folder, max_file_kb)` is the process-wide cache: it returns the same `VaultIndex` instance for the same resolved vault root plus those two config knobs, building one only on first use. Both callers below (enrichment and the `vaultSearch` tool) go through it rather than constructing `VaultIndex` directly, so a vault of any size is walked once per process, not once per reply turn. The cache never goes stale, because the returned index still refreshes its own entries on every `search()` call: a note edited in Obsidian, or a file the mirror just wrote, is picked up on the next search against that same cached index. A config change to `obsidian_memory_folder` or `obsidian_index_max_file_kb` is a different cache key, so it gets a fresh index rather than one built under the old settings.
 
 Search is keyword-based over title, tags, and body, ranked by number of distinct query terms matched, then by term frequency, then by recency of mtime. Matching is Unicode-aware, reusing the same NFKC + casefold folding as `normalise_fact` in `graph.py` so German umlauts and casing behave. There are no hardcoded language patterns; content words come from the existing extractor, and stop-wording is the reader's caller's job, exactly as it is for graph enrichment.
 
@@ -195,9 +203,9 @@ The vault is the most sensitive store Jarvis touches: it is the user's private n
 
 These hold regardless of config, LLM output, or graph state:
 
-1. Jarvis writes only inside `<vault>/<obsidian_memory_folder>`, verified after path resolution.
+1. Jarvis writes only inside `<vault>/<obsidian_memory_folder>` (including its `_quarantine` subfolder), verified after path resolution.
 2. Jarvis never modifies or deletes a file lacking `jarvis_managed: true`, even inside its own folder.
-3. Content below `<!-- jarvis:end -->` survives every rewrite.
+3. Content below `<!-- jarvis:end -->` survives every rewrite and every delete: a note is only ever unlinked once that content is empty, otherwise it is quarantined, never destroyed.
 4. `obsidian_write_mode` defaults to `dry_run`; writing requires an explicit config change.
 5. A vault failure never fails a graph write, a diary write, or a reply.
 6. The graph in SQLite is authoritative; markdown is never parsed back into graph state.

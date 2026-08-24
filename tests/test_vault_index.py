@@ -8,6 +8,7 @@ import pytest
 from jarvis.memory.vault.index import (
     VaultIndex,
     format_hits_for_prompt,
+    get_vault_index,
     search_vault_for_enrichment,
 )
 from jarvis.memory.vault.render import END_MARKER
@@ -111,3 +112,74 @@ def test_enrichment_is_gated_by_read_setting_and_two_keywords(tmp_path):
     assert search_vault_for_enrichment(cfg, ["alpha", "beta"])
     cfg.obsidian_read_enabled = False
     assert search_vault_for_enrichment(cfg, ["alpha", "beta"]) == []
+
+
+def test_get_vault_index_returns_same_instance_for_same_key(tmp_path):
+    first = get_vault_index(tmp_path, "Jarvis", 512)
+    second = get_vault_index(tmp_path, "Jarvis", 512)
+
+    assert first is second
+
+
+def test_get_vault_index_builds_a_fresh_instance_per_distinct_key(tmp_path):
+    by_folder = get_vault_index(tmp_path, "Jarvis", 512)
+    other_folder = get_vault_index(tmp_path, "OtherFolder", 512)
+    other_cap = get_vault_index(tmp_path, "Jarvis", 256)
+
+    assert by_folder is not other_folder
+    assert by_folder is not other_cap
+
+
+def test_enrichment_reuses_the_cached_index_instead_of_rereading_every_note(
+    tmp_path, monkeypatch
+):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "note.md").write_text("alpha beta", encoding="utf-8")
+    cfg = type("Cfg", (), {
+        "obsidian_vault_path": str(vault),
+        "obsidian_memory_folder": "Jarvis",
+        "obsidian_index_max_file_kb": 512,
+        "obsidian_read_max_results": 3,
+        "obsidian_read_enabled": True,
+    })()
+
+    read_calls = []
+    original_read_entry = VaultIndex._read_entry
+
+    def counting_read_entry(self, path):
+        read_calls.append(path)
+        return original_read_entry(self, path)
+
+    monkeypatch.setattr(VaultIndex, "_read_entry", counting_read_entry)
+
+    assert search_vault_for_enrichment(cfg, ["alpha", "beta"])
+    assert len(read_calls) == 1
+
+    # A second enrichment lookup against an unchanged vault must not pay
+    # another full read of every note: the cached index already holds it.
+    assert search_vault_for_enrichment(cfg, ["alpha", "beta"])
+    assert len(read_calls) == 1
+
+
+def test_enrichment_still_reflects_edits_made_between_cached_lookups(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    note = vault / "note.md"
+    note.write_text("zeta yankee", encoding="utf-8")
+    cfg = type("Cfg", (), {
+        "obsidian_vault_path": str(vault),
+        "obsidian_memory_folder": "Jarvis",
+        "obsidian_index_max_file_kb": 512,
+        "obsidian_read_max_results": 3,
+        "obsidian_read_enabled": True,
+    })()
+
+    assert search_vault_for_enrichment(cfg, ["zeta", "yankee"])
+
+    note.write_text("kappa omega", encoding="utf-8")
+    stat = note.stat()
+    os.utime(note, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+    assert search_vault_for_enrichment(cfg, ["zeta", "yankee"]) == []
+    assert search_vault_for_enrichment(cfg, ["kappa", "omega"])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -180,6 +181,35 @@ class VaultIndex:
         return result
 
 
+_INDEX_CACHE: dict[tuple[str, str, int], VaultIndex] = {}
+_INDEX_CACHE_LOCK = threading.Lock()
+
+
+def get_vault_index(vault_root, memory_folder="Jarvis", max_file_kb=512) -> VaultIndex:
+    """Return the process-wide index for one vault, building it on first use.
+
+    Both call sites (reply enrichment, `vaultSearch`) need the same index
+    reused across calls: `VaultIndex._refresh` already re-reads only
+    entries whose mtime or size changed, so a fresh, empty `VaultIndex`
+    would throw that work away and pay a full walk-and-read of every note
+    on every single call. Keyed by the resolved vault root plus the two
+    config knobs that change what gets indexed, so a config change (a
+    different memory folder or file-size cap) builds a fresh index instead
+    of serving results computed under the old settings. The returned index
+    stays correct as files change on disk between calls because `search`
+    still refreshes it lazily every time; only the *rebuild from empty* is
+    avoided.
+    """
+    resolved_root = Path(vault_root).expanduser().resolve(strict=False)
+    key = (str(resolved_root), str(memory_folder or "Jarvis"), int(max_file_kb))
+    with _INDEX_CACHE_LOCK:
+        index = _INDEX_CACHE.get(key)
+        if index is None:
+            index = VaultIndex(vault_root, memory_folder, max_file_kb)
+            _INDEX_CACHE[key] = index
+        return index
+
+
 def format_hits_for_prompt(hits: list[VaultHit]) -> str:
     """Render hits inside the untrusted-data envelope used for prompts."""
     if not hits:
@@ -211,7 +241,7 @@ def search_vault_for_enrichment(cfg, keywords: list[str]) -> list[VaultHit]:
     if len(content_words) < 2:
         debug_log("vault enrichment skipped: fewer than two content words", "vault")
         return []
-    index = VaultIndex(
+    index = get_vault_index(
         vault_path,
         getattr(cfg, "obsidian_memory_folder", "Jarvis") or "Jarvis",
         getattr(cfg, "obsidian_index_max_file_kb", 512),

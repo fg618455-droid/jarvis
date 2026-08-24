@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from ...memory.vault.index import VaultIndex, format_hits_for_prompt
+from ...memory.vault.index import format_hits_for_prompt, get_vault_index
 from ..base import Tool, ToolContext
 from ..types import ToolExecutionResult
 
@@ -52,7 +52,7 @@ class VaultSearchTool(Tool):
         except (TypeError, ValueError):
             limit = 5
         context.user_print(f"  📚 Vault search: {query}")
-        index = VaultIndex(
+        index = get_vault_index(
             vault_path,
             getattr(context.cfg, "obsidian_memory_folder", "Jarvis") or "Jarvis",
             getattr(context.cfg, "obsidian_index_max_file_kb", 512),
