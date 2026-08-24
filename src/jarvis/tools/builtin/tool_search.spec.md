@@ -18,6 +18,8 @@ allow-list = <router's picks> + stop + toolSearchTool
 
 When the model invokes `toolSearchTool(query=...)`, the tool re-runs the same routing logic (`select_tools` from `src/jarvis/tools/selection.py`) against the new query, and the returned tool names are merged into the loop's allow-list for subsequent turns. `stop` and `toolSearchTool` itself always remain in the allow-list.
 
+The router and embedding-router sub-calls this re-run makes are bounded to `ToolContext.deadline` (see `reply.spec.md`, "Reply deadlines"), not just their own configured ceilings — a hung re-run cannot outlive the turn.
+
 ### Contract
 
 - **Name**: `toolSearchTool`

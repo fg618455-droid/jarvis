@@ -2344,6 +2344,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                     redacted_text=redacted,
                     max_retries=1,
                     language=language,
+                    deadline=deadline,
                 )
         except Exception as exc:
             debug_log(
@@ -2573,6 +2574,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                                 redacted_text=redacted,
                                 max_retries=1,
                                 language=language,
+                                deadline=deadline,
                             )
                             if _plan_result.reply_text:
                                 _plan_text = _maybe_digest_tool_result(
@@ -2910,6 +2912,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 redacted_text=redacted,
                 max_retries=1,
                 language=language,
+                deadline=deadline,
             )
 
             # Handle stop tool - end conversation without response

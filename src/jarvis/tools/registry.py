@@ -363,11 +363,19 @@ def run_tool_with_retries(
     redacted_text: str,
     max_retries: int = 1,
     language: Optional[str] = None,
+    deadline: Optional[Any] = None,
 ) -> ToolExecutionResult:
     """Run one tool through the security gate and time it.
 
     Every tool the assistant runs, builtin or MCP, passes through here, so
     this is where a turn learns what it called and how long each call took.
+
+    ``deadline`` (a ``jarvis.llm.route.RequestDeadline``, optional) is the
+    reply turn's overall budget. Tools that make their own blocking LLM or
+    network call read it via ``ToolContext.bounded_timeout`` so that call
+    can't outlive the turn just because its own configured ceiling (e.g.
+    ``llm_tools_timeout_sec``, 300s by default) is far larger than what
+    actually remains.
     """
     begun = time.perf_counter()
     set_phase_if(Phase.THINKING, Phase.TOOL)
@@ -375,6 +383,7 @@ def run_tool_with_retries(
         result = _run_tool_with_retries(
             db, cfg, tool_name, tool_args, system_prompt,
             original_prompt, redacted_text, max_retries, language,
+            deadline,
         )
     except Exception as exc:
         record_tool(
@@ -412,6 +421,7 @@ def _run_tool_with_retries(
     redacted_text: str,
     max_retries: int = 1,
     language: Optional[str] = None,
+    deadline: Optional[Any] = None,
 ) -> ToolExecutionResult:
     # Normalize tool name to canonical camelCase
     raw_name = (tool_name or "").strip()
@@ -501,6 +511,7 @@ def _run_tool_with_retries(
             max_retries=max_retries,
             user_print=_user_print,
             language=language,
+            deadline=deadline,
         )
 
     # Unknown tool

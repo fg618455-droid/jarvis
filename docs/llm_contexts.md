@@ -112,6 +112,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 - **Model**: reuses the tool router (#7) — no separate LLM call here.
 - **Inputs**: self-contained query from the model.
 - **Output**: newline-separated tool names + one-liners, merged into the allow-list for the next turn.
+- **Limits**: `llm_timeout_sec`/`embed_timeout_sec` for this re-run are `ToolContext.deadline`-bounded (the reply turn's remaining budget), not the raw `llm_tools_timeout_sec`/`llm_embedding_timeout_sec` ceilings (300s/10s+ by default) — a hung re-run here previously could outlive the turn by minutes since tool execution had no visibility into the turn's deadline at all.
 
 ## 9. Conversation Summariser
 
@@ -185,7 +186,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 
 ## 14. Tool-specific LLM calls
 
-- **Weather** ([src/jarvis/tools/builtin/weather.py](src/jarvis/tools/builtin/weather.py), ~line 60) — factory-dispatched. Place extraction is a FAST-tier pass (`resolve_model(cfg, Tier.FAST)`) so small/warm models handle the parse without paging in the chat model. `max_tokens: 50`. Parses location/time/unit from the query.
+- **Weather** ([src/jarvis/tools/builtin/weather.py](src/jarvis/tools/builtin/weather.py), ~line 60) — factory-dispatched. Place extraction is a FAST-tier pass (`resolve_model(cfg, Tier.FAST)`) so small/warm models handle the parse without paging in the chat model. `max_tokens: 50`. Parses location/time/unit from the query. Timeout is `llm_tools_timeout_sec` (300s default) bounded by the reply turn's `ToolContext.deadline` when present, so a hung extraction can't outlive the turn.
 - **Nutrition log_meal** ([src/jarvis/tools/builtin/nutrition/log_meal.py](src/jarvis/tools/builtin/nutrition/log_meal.py), lines 48 & 136) uses the CHAT tier. Extractor `max_tokens: 200`, follow-up `max_tokens: 100`. Extracts nutrients and confirms logging.
 
 ## 15. Server Capability Probe (setup-time, OpenAI-compatible only)
