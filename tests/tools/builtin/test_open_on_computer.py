@@ -164,6 +164,76 @@ class TestPaths:
         assert result.success is False
         opener.assert_not_called()
 
+    @pytest.mark.parametrize("suffix", [
+        # ".com" is deliberately excluded here: it stays a valid top-level
+        # domain for the bare-domain fallback (pre-existing, unrelated to
+        # this fix), so an unopenable "invoice.com" safely falls through
+        # to a harmless https://invoice.com browser open rather than
+        # failing outright - covered separately below.
+        "bat", "cmd", "ps1", "vbs", "vbe", "wsf", "hta", "scr", "pif",
+        "js", "jse", "lnk", "py", "pyw", "sh", "reg", "msi",
+    ])
+    def test_an_executable_type_path_is_refused_not_run(
+        self, tool, mock_config, tmp_path, monkeypatch, suffix,
+    ):
+        """os.startfile runs these instead of viewing them - opening one
+        via this tool is indistinguishable from executing arbitrary code
+        a prompt injection pointed it at (e.g. from a web search result
+        suggesting a Downloads file by name)."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        target = tmp_path / f"invoice.{suffix}"
+        target.write_text("", encoding="utf-8")
+
+        with patch("jarvis.tools.builtin.open_on_computer._open_path") as opener, \
+             patch("jarvis.tools.builtin.open_on_computer._resolve_application",
+                   return_value=None), \
+             patch("jarvis.tools.builtin.open_on_computer.webbrowser.open") as browser:
+            result = tool.run({"target": f"invoice.{suffix}"}, _ctx(mock_config))
+
+        assert result.success is False
+        opener.assert_not_called()
+        browser.assert_not_called()
+
+    def test_a_dot_com_named_file_falls_through_to_the_domain_not_the_opener(
+        self, tool, mock_config, tmp_path, monkeypatch,
+    ):
+        """.com stays a valid top-level domain (pre-existing, unrelated to
+        this fix): an unopenable "invoice.com" resolves to a harmless
+        browser open at https://invoice.com rather than running the local
+        file or failing outright."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        target = tmp_path / "invoice.com"
+        target.write_text("", encoding="utf-8")
+
+        with patch("jarvis.tools.builtin.open_on_computer._open_path") as opener, \
+             patch("jarvis.tools.builtin.open_on_computer._resolve_application",
+                   return_value=None), \
+             patch("jarvis.tools.builtin.open_on_computer.webbrowser.open",
+                   return_value=True) as browser:
+            result = tool.run({"target": "invoice.com"}, _ctx(mock_config))
+
+        assert result.success is True
+        opener.assert_not_called()
+        browser.assert_called_once_with("https://invoice.com")
+
+    def test_a_plain_text_file_in_home_is_still_opened(
+        self, tool, mock_config, tmp_path, monkeypatch,
+    ):
+        """The suffix block is specific to executable types; ordinary
+        documents keep working exactly as before."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        target = tmp_path / "notes.txt"
+        target.write_text("hi", encoding="utf-8")
+
+        with patch("jarvis.tools.builtin.open_on_computer._open_path") as opener:
+            result = tool.run({"target": "notes.txt"}, _ctx(mock_config))
+
+        assert result.success is True
+        opener.assert_called_once_with(target.resolve())
+
 
 class TestSchemes:
     @pytest.mark.parametrize("target", [

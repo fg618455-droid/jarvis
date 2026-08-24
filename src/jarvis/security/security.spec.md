@@ -12,7 +12,7 @@ An unavailable confirmation path never permits execution.
 | Level | Behaviour |
 |-------|-----------|
 | `off` | Valid tools execute without confirmation. This level is intended for controlled development only. |
-| `critical` | Every MCP tool, `deleteMeal`, `askCrew`, `browserInteract`, `desktopInteract`, their consequential inner actions, `localFiles` write, append, or delete operations, and mutating `systemManager` operations require confirmation. |
+| `critical` | Every MCP tool, `deleteMeal`, `askCrew`, `browserInteract`, `desktopInteract`, their consequential inner actions, `localFiles` write, append, or delete operations, mutating `systemManager` operations, and an `openOnComputer` target that resolves to an application launch require confirmation. |
 | `paranoid` | Every valid built-in and MCP tool requires confirmation. |
 
 The default level is `critical`. An unknown level is treated as `critical`.
@@ -62,6 +62,17 @@ confirmation. The tool independently hard-denies protected operating-system
 paths before action I/O, so neither approval nor `security_level = off` can
 make those paths reachable. The full boundary is defined in
 `../tools/builtin/system_manager.spec.md`.
+
+`openOnComputer` takes a single `target` argument that can resolve to a URL,
+a home-directory path, or an application launch, so the gate cannot read
+intent directly from the arguments the way it does for `localFiles` and
+`systemManager`'s explicit `operation` field. Instead it resolves `target`
+through `open_on_computer.resolves_to_application_launch`, the same
+resolution order the tool itself uses, and requires confirmation only when
+that resolution lands on an application launch. A URL or a home path never
+requires confirmation at `critical`; the full boundary, including why paths
+alone don't need this treatment, is defined in
+`../tools/builtin/open_on_computer.spec.md`.
 
 ## Synchronous execution boundary
 

@@ -59,6 +59,36 @@ _EXECUTABLE_SUFFIXES = frozenset({
 # PATH (Spotify, Chrome, Discord, …). Same table the Run dialog consults.
 _WINDOWS_APP_PATHS = r"Software\Microsoft\Windows\CurrentVersion\App Paths"
 
+# Suffixes the path branch must refuse rather than hand to the platform
+# opener: for these, "open" and "run" are the same action (os.startfile on
+# Windows executes a .bat/.lnk/.ps1/... exactly as double-clicking it
+# would), which is a different and far more privileged action than viewing
+# a document. Anything reaching this list is a name that resolves to
+# nothing, matching how a shell-syntax target already resolves to nothing,
+# not a way to run code a prompt injection pointed the model at.
+_DANGEROUS_PATH_SUFFIXES = frozenset({
+    # Windows
+    "exe", "bat", "cmd", "com", "msi", "msp", "mst", "ps1", "ps1xml",
+    "psc1", "psc2", "vb", "vbe", "vbs", "vbscript", "ws", "wsc", "wsf",
+    "wsh", "scr", "pif", "gadget", "application", "jse", "lnk", "inf",
+    "reg", "hta", "cpl", "msc", "js", "jar",
+    # Interpreted scripts launched by file-type association on any platform
+    "py", "pyw", "sh", "bash", "command",
+    # macOS
+    "app", "workflow", "scpt",
+    # Linux
+    "run", "appimage", "desktop", "deb", "rpm",
+})
+
+# Suffixes that mark a dotted target as a program rather than a host for
+# the bare-domain fallback: the union of both suffix lists above, minus
+# ``.com`` (deliberately kept openable as a domain - as a top-level domain
+# it outweighs the DOS executable format by every measure that matters
+# here). Without this, a target like "invoice.reg" that the path and
+# application branches both refused would fall through to opening
+# "https://invoice.reg" instead of failing honestly.
+_NON_DOMAIN_SUFFIXES = (_EXECUTABLE_SUFFIXES | _DANGEROUS_PATH_SUFFIXES) - {"com"}
+
 
 def _home_root() -> Path:
     return Path(os.path.expanduser("~")).resolve()
@@ -90,6 +120,10 @@ def _resolve_home_path(target: str) -> Optional[Path]:
     except OSError:
         return None
     if not resolved.exists():
+        return None
+    suffix = resolved.suffix.lstrip(".").lower()
+    if suffix in _DANGEROUS_PATH_SUFFIXES:
+        debug_log(f"openOnComputer refused an executable-type path: {resolved}", "tools")
         return None
     home = _home_root()
     if resolved != home and not str(resolved).startswith(str(home) + os.sep):
@@ -136,13 +170,33 @@ def _resolve_application(name: str) -> Optional[str]:
     return None
 
 
+def resolves_to_application_launch(target: str) -> bool:
+    """Whether ``target``, read through the same resolution order
+    :meth:`OpenOnComputerTool.run` uses, would launch an installed
+    application rather than opening a URL or a home-directory path.
+
+    The security gate calls this before the tool runs to decide whether
+    the call needs confirmation. ``target`` is the tool's only argument,
+    so the gate has no other way to tell an application name from a URL
+    or a path without repeating the same resolution steps.
+    """
+    target = (target or "").strip()
+    if not target:
+        return False
+    if _HAS_SCHEME_RE.match(target):
+        return False
+    if _resolve_home_path(target) is not None:
+        return False
+    return _resolve_application(target) is not None
+
+
 def _looks_like_bare_domain(target: str) -> bool:
     """Whether a scheme-less target should be read as a web address."""
     if not _DOMAIN_SHAPED_RE.match(target):
         return False
     host = target.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
     suffix = host.rsplit(".", 1)[-1].lower()
-    return suffix not in _EXECUTABLE_SUFFIXES
+    return suffix not in _NON_DOMAIN_SUFFIXES
 
 
 def _open_url(url: str) -> bool:

@@ -158,6 +158,19 @@ class SecurityGate:
                 isinstance(operation, str)
                 and operation.strip().casefold() in _SYSTEM_MANAGER_MUTATIONS
             )
+        if action_name == "openOnComputer":
+            # The tool takes a single "target" argument, so the gate can't
+            # tell an application name from a URL or a home path without
+            # resolving it the same way the tool itself will. Only an
+            # application launch is gated: a URL opens in the user's own
+            # browser and a home path is bounded to their own data (and,
+            # separately, the tool itself now refuses an executable-type
+            # path outright rather than running it).
+            target = action_args.get("target")
+            if not isinstance(target, str):
+                return False
+            from jarvis.tools.builtin.open_on_computer import resolves_to_application_launch
+            return resolves_to_application_launch(target)
         return False
 
     def _request_confirmation(self, action_name: str, action_args: dict[str, Any]) -> bool:

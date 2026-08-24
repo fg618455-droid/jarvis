@@ -177,6 +177,57 @@ def test_ask_crew_is_critical_and_requires_confirmation() -> None:
     assert rejecting.requests == [("askCrew", {"agent": "dev", "task": "x"})]
 
 
+def test_open_on_computer_application_launch_requires_confirmation(tmp_path) -> None:
+    """A target that resolves to an installed application is a meaningfully
+    privileged action (some other name could resolve to a different
+    program a prompt-injected instruction picked), so it is gated like
+    every other critical builtin even though the tool takes only one
+    ``target`` argument."""
+    from unittest.mock import patch
+
+    exe = tmp_path / "notepad.exe"
+    exe.write_text("", encoding="utf-8")
+    rejecting = DecisionChannel(False)
+    gate = SecurityGate(level="critical", channels={"desktop": rejecting}, confirm_channels=["desktop"])
+
+    with patch("jarvis.tools.builtin.open_on_computer.shutil.which", return_value=str(exe)):
+        assert gate.confirm("openOnComputer", {"target": "notepad"}) is False
+
+    assert rejecting.requests == [("openOnComputer", {"target": "notepad"})]
+
+
+def test_open_on_computer_url_does_not_require_confirmation() -> None:
+    rejecting = DecisionChannel(False)
+    gate = SecurityGate(level="critical", channels={"desktop": rejecting}, confirm_channels=["desktop"])
+
+    assert gate.confirm("openOnComputer", {"target": "https://youtube.com"}) is True
+    assert rejecting.requests == []
+
+
+def test_open_on_computer_home_path_does_not_require_confirmation(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    note = tmp_path / "notes.txt"
+    note.write_text("hi", encoding="utf-8")
+    rejecting = DecisionChannel(False)
+    gate = SecurityGate(level="critical", channels={"desktop": rejecting}, confirm_channels=["desktop"])
+
+    assert gate.confirm("openOnComputer", {"target": "notes.txt"}) is True
+    assert rejecting.requests == []
+
+
+def test_open_on_computer_non_string_target_does_not_require_confirmation() -> None:
+    """The gate must not crash or fail closed on a malformed args shape;
+    a target that isn't even a string can't resolve to anything, so it
+    is not a critical action - the tool itself reports the argument
+    error when it runs."""
+    rejecting = DecisionChannel(False)
+    gate = SecurityGate(level="critical", channels={"desktop": rejecting}, confirm_channels=["desktop"])
+
+    assert gate.confirm("openOnComputer", {"target": None}) is True
+    assert rejecting.requests == []
+
+
 def test_all_mcp_tools_are_critical_and_fail_closed(mock_config) -> None:
     SecurityGate(level="critical", channels={}, confirm_channels=["desktop", "telegram", "voice"])
     cfg = replace(
