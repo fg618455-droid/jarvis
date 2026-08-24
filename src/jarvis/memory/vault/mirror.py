@@ -244,6 +244,20 @@ def _validated_target(change: PlannedChange, cfg) -> Path:
     return target
 
 
+_QUARANTINE_SUBFOLDER = "_quarantine"
+
+
+def _quarantine_target(target: Path, cfg) -> Path:
+    """Resolve the quarantine slot for a note carrying user content, through
+    the same boundary checks as every other managed path in this module."""
+    memory_folder = getattr(cfg, "obsidian_memory_folder")
+    return resolve_managed_path(
+        getattr(cfg, "obsidian_vault_path"),
+        f"{memory_folder}/{_QUARANTINE_SUBFOLDER}",
+        target.name,
+    )
+
+
 def _atomic_write(target: Path, content: str) -> None:
     temp = target.with_name(target.name + ".tmp")
     if temp.resolve(strict=False).parent != target.parent:
@@ -305,7 +319,19 @@ def apply_sync(plan: SyncPlan, cfg) -> int:
                 existing = _read_text(target)
                 if existing is None or not is_managed_markdown(existing):
                     raise VaultWriteError("Delete target is not an owned note")
-                target.unlink()
+                _, protected_tail = split_protected_region(existing)
+                if protected_tail.strip():
+                    quarantine = _quarantine_target(target, cfg)
+                    if quarantine.exists():
+                        raise VaultWriteError("Quarantine target already occupied")
+                    quarantine.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(target, quarantine)
+                    debug_log(
+                        f"vault delete quarantined (protected content retained): {target.name}",
+                        "vault",
+                    )
+                else:
+                    target.unlink()
             else:
                 continue
             applied += 1

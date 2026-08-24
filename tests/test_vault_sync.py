@@ -145,6 +145,95 @@ def test_sync_never_writes_elsewhere_in_vault(tmp_path):
     assert all(path.startswith("Jarvis/") or path == "Projects/private.md" for path in after)
 
 
+def test_delete_with_empty_protected_tail_unlinks_the_file(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    store = _store()
+    _apply_initial(store, vault)
+    target_id = "22222222-2222-2222-2222-222222222222"
+    node = store.get_node(target_id)
+    path = vault / "Jarvis" / filename_for_node(node, "User")
+    assert path.read_text(encoding="utf-8").rstrip("\n").endswith(END_MARKER)
+    del store.nodes[target_id]
+
+    plan = plan_sync(store, _cfg(vault))
+    matching = [c for c in plan.changes if c.node_id == target_id]
+    assert matching and matching[0].action == "delete"
+
+    apply_sync(plan, _cfg(vault))
+
+    assert not path.exists()
+    assert not (vault / "Jarvis" / "_quarantine").exists()
+
+
+def test_delete_quarantines_notes_carrying_protected_user_content(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    store = _store()
+    _apply_initial(store, vault)
+    target_id = "22222222-2222-2222-2222-222222222222"
+    node = store.get_node(target_id)
+    path = vault / "Jarvis" / filename_for_node(node, "User")
+    tail = "\n\n## My annotations\nKeep [[this]] verbatim.\n"
+    original = path.read_text(encoding="utf-8") + tail
+    path.write_text(original, encoding="utf-8")
+    del store.nodes[target_id]
+
+    plan = plan_sync(store, _cfg(vault))
+    matching = [c for c in plan.changes if c.node_id == target_id]
+    assert matching and matching[0].action == "delete"
+
+    applied = apply_sync(plan, _cfg(vault))
+
+    assert applied >= 1
+    assert not path.exists()
+    quarantined = vault / "Jarvis" / "_quarantine" / filename_for_node(node, "User")
+    assert quarantined.exists()
+    assert quarantined.read_text(encoding="utf-8") == original
+    assert quarantined.read_text(encoding="utf-8").endswith(tail)
+
+
+def test_quarantine_path_is_resolved_inside_the_managed_folder(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    store = _store()
+    _apply_initial(store, vault)
+    target_id = "22222222-2222-2222-2222-222222222222"
+    node = store.get_node(target_id)
+    path = vault / "Jarvis" / filename_for_node(node, "User")
+    path.write_text(path.read_text(encoding="utf-8") + "\nuser note\n", encoding="utf-8")
+    del store.nodes[target_id]
+
+    apply_sync(plan_sync(store, _cfg(vault)), _cfg(vault))
+
+    quarantined = vault / "Jarvis" / "_quarantine" / filename_for_node(node, "User")
+    resolved = quarantined.resolve(strict=True)
+    assert resolved.is_relative_to((vault / "Jarvis").resolve(strict=True))
+    assert resolved.parent.name == "_quarantine"
+
+
+def test_quarantine_refuses_to_overwrite_an_existing_quarantine_slot(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    store = _store()
+    _apply_initial(store, vault)
+    target_id = "22222222-2222-2222-2222-222222222222"
+    node = store.get_node(target_id)
+    path = vault / "Jarvis" / filename_for_node(node, "User")
+    path.write_text(path.read_text(encoding="utf-8") + "\nuser note\n", encoding="utf-8")
+
+    quarantine_dir = vault / "Jarvis" / "_quarantine"
+    quarantine_dir.mkdir(parents=True)
+    occupied = quarantine_dir / filename_for_node(node, "User")
+    occupied.write_text("already quarantined", encoding="utf-8")
+
+    del store.nodes[target_id]
+    apply_sync(plan_sync(store, _cfg(vault)), _cfg(vault))
+
+    assert path.exists()
+    assert occupied.read_text(encoding="utf-8") == "already quarantined"
+
+
 def test_orphan_sweep_deletes_only_owned_files(tmp_path):
     vault = tmp_path / "vault"
     memory = vault / "Jarvis"
