@@ -130,6 +130,10 @@ hiddenimports = [
     'jarvis.output',
     'jarvis.output.tts',
     'jarvis.output.tune_player',
+    # Kokoro's own client-side module (subprocess launch + stdio protocol
+    # only; the AGPL-licensed synthesis code and the kokoro package stay in
+    # the sidecar subprocess and are excluded below like Chatterbox).
+    'jarvis.output.kokoro_sidecar_client',
     # Piper TTS (local neural TTS)
     'piper',
     'piper.voice',

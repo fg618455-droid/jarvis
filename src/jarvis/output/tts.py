@@ -1225,8 +1225,16 @@ class PiperTTS:
 
 
 class KokoroTTS:
-    """TTS implementation using Kokoro (local neural TTS, vendored from
-    backtalk's ``mouth.py`` — see ``jarvis.output.vendor.kokoro_backtalk``).
+    """TTS implementation using Kokoro, run in its own sidecar subprocess.
+
+    ``jarvis.output.vendor.kokoro_backtalk`` (AGPL-3.0, vendored from
+    backtalk's ``mouth.py``) and the ``kokoro`` package it wraps are never
+    imported by this class or anywhere else in the main daemon process:
+    :class:`~jarvis.output.kokoro_sidecar_client.KokoroSidecarClient` talks
+    to a separate ``jarvis.output.vendor.kokoro_sidecar`` process over a
+    stdio pipe instead, launched lazily on the first utterance actually
+    spoken. See ``THIRD_PARTY_NOTICES.md`` for why this process boundary
+    exists.
 
     Kokoro synthesises straight to a PCM waveform, like Piper, so duration is
     exact rather than estimated. Playback, interruption, and the audio queue
@@ -1258,51 +1266,25 @@ class KokoroTTS:
         self._last_spoken_text: str = ""
         self._should_interrupt = threading.Event()
 
-        # Kokoro pipeline (lazy loaded, cached per language in the vendor module).
-        self._initialized = False
-        self._init_lock = threading.Lock()
-        self._init_error: Optional[str] = None
+        # The sidecar process is only ever launched from inside
+        # KokoroSidecarClient.synthesize(), the first time an utterance
+        # actually needs speaking: nothing here starts it eagerly.
+        from .kokoro_sidecar_client import KokoroSidecarClient
+        self._sidecar = KokoroSidecarClient()
 
         # Audio stream for interruption.
         self._audio_stream = None
         self._audio_lock = threading.Lock()
 
-    def _ensure_initialized(self) -> bool:
-        """Load the Kokoro pipeline for the configured voice. Returns True
-        if it is ready to synthesise."""
-        if self._initialized:
-            return self._init_error is None
-        if not self.enabled:
-            return False
-
-        with self._init_lock:
-            if self._initialized:
-                return self._init_error is None
-
-            try:
-                from .vendor.kokoro_backtalk import warm
-                debug_log(f"Kokoro TTS loading voice: {self.kokoro_voice}", "tts")
-                warm(self.kokoro_voice)
-                debug_log("Kokoro TTS initialized", "tts")
-            except ImportError as e:
-                self._init_error = f"kokoro not installed: {e}"
-                debug_log(f"Kokoro TTS init failed: {self._init_error}", "tts")
-            except Exception as e:
-                self._init_error = f"Failed to load Kokoro voice: {e}"
-                debug_log(f"Kokoro TTS init failed: {self._init_error}", "tts")
-
-            self._initialized = True
-            return self._init_error is None
-
     def start(self) -> None:
         if not self.enabled or self._thread is not None:
             return
-        self._ensure_initialized()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         if self._thread is None:
+            self._sidecar.stop()
             return
         try:
             self.interrupt()
@@ -1316,6 +1298,7 @@ class KokoroTTS:
         self._thread.join(timeout=2.0)
         self._thread = None
         self._stop.clear()
+        self._sidecar.stop()
 
     def speak(self, text: str, completion_callback: Optional[Callable[[], None]] = None,
               duration_callback: Optional[Callable[[float], None]] = None,
@@ -1394,15 +1377,10 @@ class KokoroTTS:
         self._notify_speaking_state(True)
 
         try:
-            if not self._ensure_initialized():
-                if self._init_error:
-                    print(f"  ⚠️ Kokoro TTS: {self._init_error}", flush=True)
-                return
-
             import numpy as np
             import sounddevice as sd
 
-            from .vendor.kokoro_backtalk import KOKORO_RATE, stream_kokoro
+            from .kokoro_sidecar_client import KOKORO_RATE, KokoroSidecarError
 
             start_time = time.time()
             debug_log(f"Kokoro TTS starting synthesis: {len(text.split())} words", "tts")
@@ -1411,12 +1389,21 @@ class KokoroTTS:
                 debug_log("Kokoro TTS interrupted before synthesis", "tts")
                 return
 
+            # Chunks stream in from the sidecar one Kokoro-yielded block at a
+            # time (not one blob at the end of the whole utterance), so a
+            # crash or a missing kokoro install surfaces as soon as the
+            # sidecar reports it rather than after a silent, full wait.
             audio_chunks = []
-            for chunk in stream_kokoro(text, self.kokoro_voice, self.kokoro_speed):
-                if self._should_interrupt.is_set():
-                    debug_log("Kokoro TTS interrupted during synthesis", "tts")
-                    return
-                audio_chunks.append(chunk)
+            try:
+                for chunk in self._sidecar.synthesize(text, self.kokoro_voice, self.kokoro_speed):
+                    if self._should_interrupt.is_set():
+                        debug_log("Kokoro TTS interrupted during synthesis", "tts")
+                        return
+                    audio_chunks.append(chunk)
+            except KokoroSidecarError as e:
+                debug_log(f"Kokoro TTS sidecar failed: {e}", "tts")
+                print(f"  ⚠️ Kokoro TTS: {e}", flush=True)
+                return
 
             if self._should_interrupt.is_set():
                 debug_log("Kokoro TTS interrupted after synthesis", "tts")

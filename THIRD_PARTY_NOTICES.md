@@ -35,7 +35,10 @@ rest of this repository.
 - **Author:** Jared Rhodenizer, Copyright (C) 2026
 - **Licence:** GNU Affero General Public License, version 3 or later. Full
   text: https://www.gnu.org/licenses/agpl-3.0.html
-- **Location in this repository:** `src/jarvis/output/vendor/kokoro_backtalk.py`
+- **Location in this repository:** `src/jarvis/output/vendor/kokoro_backtalk.py`,
+  run only inside the sidecar subprocess entry point
+  `src/jarvis/output/vendor/kokoro_sidecar.py` (also in that folder, but
+  original Jarvis code, not vendored from backtalk).
 - **What is vendored:** the Kokoro half of `backtalk/mouth.py` — the
   espeak-ng discovery, the Kokoro pipeline loader, the sentence splitter,
   and the streaming synthesis call. backtalk's ElevenLabs cloud path and its
@@ -49,32 +52,46 @@ rest of this repository.
 - **What changed:** the vendored functions take their voice and speed as
   arguments instead of reading backtalk's global `CFG`, and log through
   `jarvis.debug.debug_log` instead of backtalk's own logger, so
-  `jarvis.output.tts.KokoroTTS` can call them directly. The synthesis
-  algorithm, the sentence splitting, and the espeak-ng path discovery are
-  otherwise backtalk's own code, and the AGPL header is unmodified.
+  `kokoro_sidecar.py` can call them directly. The synthesis algorithm, the
+  sentence splitting, and the espeak-ng path discovery are otherwise
+  backtalk's own code, and the AGPL header is unmodified.
+- **Process boundary:** `kokoro_backtalk.py` and the `kokoro` package are
+  imported only by `kokoro_sidecar.py`, which runs as its own subprocess
+  (`python -m jarvis.output.vendor.kokoro_sidecar`), launched lazily by
+  `jarvis.output.kokoro_sidecar_client.KokoroSidecarClient` the first time
+  Kokoro speech is actually requested. Nothing in the main daemon process,
+  including `jarvis.output.tts.KokoroTTS`, imports either — see "Licence
+  boundary" below. `tests/test_kokoro_process_boundary.py` enforces this
+  with a source scan.
 
 ## Licence boundary
 
-The ai-visualizer face is served as its own set of static files and two
-small JSON endpoints; nothing in `src/jarvis/webui/visualizer/vendor/`
-imports Jarvis's own modules; the only Jarvis code that touches it is a
-comment's-width blueprint (`src/jarvis/webui/api/visualizer.py`) and a state
-reader with no reply-path logic of its own (`src/jarvis/webui/visualizer/state.py`).
-That reader still imports Jarvis's own `jarvis.runtime.state`, and Jarvis's
-TTS engines call into it to feed a live waveform — a real, if narrow, link
-between AGPL code and the rest of the daemon.
+Both vendored components are reached from the main daemon process only over
+a local, loopback interface, not by direct import, and each is a separable
+program the AGPL's own terms already anticipate this way:
 
-The Kokoro engine is a materially closer link: `jarvis.output.vendor.kokoro_backtalk`
-is imported directly by `jarvis.output.tts.KokoroTTS`, which is one of the
-selectable engines behind every spoken reply the assistant gives, in the
-same process and the same Python import graph as the rest of the daemon
-whenever `tts_engine` is set to `"kokoro"`. Unlike the visualizer (reachable
-as a separable view over the network), the Kokoro engine is linked into the
-core reply/voice pipeline that every other module in this repository also
-depends on. Whether that combined program can be conveyed under the
-permissive Jarvis licence while one selectable, opt-in code path is AGPL, or
-whether shipping that build requires the whole combination to carry AGPL
-terms, is not resolved here. This is flagged for the maintainer to decide
-rather than assumed by file layout; it does not by itself relicense any
-other file in this repository, and Piper and Chatterbox remain unaffected
-since they carry no AGPL code.
+- The **ai-visualizer face** is served as its own set of static files and
+  two small JSON endpoints (`src/jarvis/webui/api/visualizer.py`,
+  `src/jarvis/webui/visualizer/state.py`). Nothing under
+  `src/jarvis/webui/visualizer/vendor/` imports Jarvis's own modules; the
+  Jarvis-side code that touches it reads live state and forwards it over
+  HTTP, and never imports the AGPL files themselves.
+- The **Kokoro engine**'s AGPL code (`kokoro_backtalk.py`) and its PyTorch
+  dependency (`kokoro`) run only inside the sidecar subprocess
+  (`kokoro_sidecar.py`), talked to over a stdin/stdout pipe by
+  `KokoroSidecarClient`. The main daemon process, including
+  `jarvis.output.tts.KokoroTTS`, never imports `kokoro_backtalk.py` or the
+  `kokoro` package; the two processes exchange only synthesis requests and
+  PCM audio as newline-delimited JSON messages.
+
+Both are therefore separate programs communicating over a local interface
+rather than one linked combination, the shape the AGPL's own FAQ describes
+as separate works rather than a derivative combination. Reaching either over
+the daemon's own interfaces (the control centre's network port for the
+face, the sidecar's local pipe for Kokoro) is "conveying" under AGPL section
+13, and each carries its own AGPL obligations independently: a user who can
+reach the Face view can request `ai-visualizer`'s source from the URL above,
+and a user running the Kokoro sidecar can request `backtalk`'s. Neither
+requires, and neither triggers, relicensing any other file in this
+repository. Piper and Chatterbox remain unaffected, since they carry no
+AGPL code at all.

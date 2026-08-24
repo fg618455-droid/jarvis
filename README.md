@@ -496,6 +496,8 @@ Voice cloning with Chatterbox - add a 3-10 second .wav sample:
 ```
 The voice's first letter selects its language pipeline (`a` American English, `b` British English, `e` Spanish, `f` French, `h` Hindi, `i` Italian, `j` Japanese, `p` Portuguese, `z` Mandarin Chinese) and downloads the matching model to the Hugging Face cache on first use. Kokoro needs `espeak-ng` installed on the system for phonemization.
 
+Kokoro's own code and the `kokoro` package run in their own subprocess, launched the first time Kokoro is actually asked to speak, so the AGPL-licensed synthesis code stays out of the main daemon process (see `src/jarvis/output/tts.spec.md`).
+
 </details>
 
 <details>
