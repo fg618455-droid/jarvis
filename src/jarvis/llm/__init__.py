@@ -38,6 +38,7 @@ from .backend import (
     ToolsNotSupportedError,
 )
 from .claude_subscription import ClaudeSubscriptionBackend
+from .crew_chat import CrewChatBackend
 from .ollama import OllamaBackend, check_version, extract_text_from_response
 from .openai_compatible import OpenAICompatibleBackend, ServerCapabilities
 from .factory import (
@@ -61,6 +62,7 @@ __all__ = [
     "OllamaBackend",
     "OpenAICompatibleBackend",
     "ClaudeSubscriptionBackend",
+    "CrewChatBackend",
     "ServerCapabilities",
     "Route",
     "RequestDeadline",
