@@ -51,3 +51,16 @@ class TestThirdPartyNotices:
         )
         assert module.is_file()
         assert "AGPL-3.0-or-later" in module.read_text(encoding="utf-8")
+
+    def test_the_kokoro_sidecar_entry_point_exists_on_disk(self):
+        entry_point = (
+            REPO_ROOT / "src" / "jarvis" / "output" / "vendor" / "kokoro_sidecar.py"
+        )
+        assert entry_point.is_file()
+
+    def test_the_kokoro_process_boundary_is_documented(self):
+        """The licence-boundary paragraph must describe the resolved,
+        separable relationship, not the old in-process one."""
+        text = NOTICES_PATH.read_text(encoding="utf-8")
+        assert "sidecar" in text.lower()
+        assert "process boundary" in text.lower() or "process" in text.lower()

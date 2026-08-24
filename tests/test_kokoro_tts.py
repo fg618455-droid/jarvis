@@ -1,12 +1,18 @@
 """Tests for the Kokoro TTS engine.
 
-Kokoro is Jarvis's second local, offline TTS engine alongside Piper: the
-Kokoro half of backtalk's ``mouth.py``, vendored into
-``jarvis.output.vendor.kokoro_backtalk`` and wrapped in a class that follows
-the same shape as :class:`jarvis.output.tts.PiperTTS` (queue, worker thread,
-interruptible playback), so ``create_tts_engine`` can select between them
-the same way it already selects Piper vs Chatterbox.
+Kokoro is Jarvis's second local, offline TTS engine alongside Piper. The
+actual synthesis (the Kokoro half of backtalk's ``mouth.py``, vendored into
+``jarvis.output.vendor.kokoro_backtalk``) runs in its own sidecar
+subprocess, reached through
+:class:`jarvis.output.kokoro_sidecar_client.KokoroSidecarClient` — see
+``tests/test_kokoro_sidecar_client.py`` for that boundary's own tests.
+:class:`KokoroTTS` itself follows the same shape as
+:class:`jarvis.output.tts.PiperTTS` (queue, worker thread, interruptible
+playback), so ``create_tts_engine`` can select between them the same way it
+already selects Piper vs Chatterbox.
 """
+
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -116,18 +122,68 @@ class TestKokoroTTSWithMocking:
         tts._last_spoken_text = "Hello world"
         assert tts.get_last_spoken_text() == "Hello world"
 
-    def test_kokoro_import_error_is_reported_not_raised(self):
-        """A machine without the kokoro package installed should get a
-        readable init error rather than an exception out of speak()."""
+    def test_start_does_not_launch_the_sidecar(self):
+        """The sidecar is launched lazily, only when speech is actually
+        requested, mirroring computer_interaction_enabled/
+        system_management_enabled: enabling a feature is not using it."""
         from src.jarvis.output.tts import KokoroTTS
 
         tts = KokoroTTS(enabled=True)
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setitem(__import__("sys").modules, "kokoro", None)
-            result = tts._ensure_initialized()
+        tts._sidecar = MagicMock()
 
-        assert result is False
-        assert tts._init_error is not None
+        tts.start()
+        tts.stop()
+
+        tts._sidecar.synthesize.assert_not_called()
+
+    def test_speak_once_calls_the_sidecar_with_the_text_voice_and_speed(self):
+        """The exact call, not just "it worked" - mirrors how
+        tests/tools/builtin/test_system_manager.py asserts subprocess calls."""
+        from src.jarvis.output.tts import KokoroTTS, Utterance
+
+        tts = KokoroTTS(enabled=True, kokoro_voice="jf_alpha", kokoro_speed=1.3)
+        tts._sidecar = MagicMock()
+        tts._sidecar.synthesize.return_value = iter([])
+
+        tts._speak_once(Utterance(text="konnichiwa"))
+
+        tts._sidecar.synthesize.assert_called_once_with("konnichiwa", "jf_alpha", 1.3)
+
+    def test_each_utterance_makes_exactly_one_sidecar_call(self):
+        """Sentence-by-sentence streaming: one sidecar round trip per queued
+        utterance, never batched into a single call for a whole reply."""
+        from src.jarvis.output.tts import KokoroTTS, Utterance
+
+        tts = KokoroTTS(enabled=True)
+        tts._sidecar = MagicMock()
+        tts._sidecar.synthesize.return_value = iter([])
+
+        tts._speak_once(Utterance(text="First sentence."))
+        tts._speak_once(Utterance(text="Second sentence."))
+
+        assert tts._sidecar.synthesize.call_count == 2
+
+    def test_a_sidecar_failure_is_reported_not_raised(self):
+        """A sidecar crash or a missing kokoro install surfaces through the
+        normal TTS failure path (debug_log + a printed warning), never as a
+        raw exception out of speak()."""
+        from src.jarvis.output.kokoro_sidecar_client import KokoroSidecarError
+        from src.jarvis.output.tts import KokoroTTS, Utterance
+
+        tts = KokoroTTS(enabled=True)
+        tts._sidecar = MagicMock()
+
+        def _raise(*args, **kwargs):
+            raise KokoroSidecarError("kokoro not installed")
+            yield  # pragma: no cover - makes this a generator function
+
+        tts._sidecar.synthesize.side_effect = _raise
+
+        with patch("builtins.print") as mock_print:
+            tts._speak_once(Utterance(text="hello"))  # must not raise
+
+        assert tts.is_speaking() is False
+        assert any("kokoro not installed" in str(call) for call in mock_print.call_args_list)
 
 
 class TestKokoroTTSFactory:
