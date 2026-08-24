@@ -103,7 +103,7 @@ export function createMic({ onState, onError } = {}) {
         let buffer = event.data;
         measure(new Int16Array(buffer));
         if (needsResample) {
-          const asFloat = Int16Array.from(new Int16Array(buffer), (v) => v / 0x8000);
+          const asFloat = Float32Array.from(new Int16Array(buffer), (v) => v / 0x8000);
           const resampled = resample(asFloat, ctx.sampleRate, SAMPLE_RATE);
           const pcm = new Int16Array(resampled.length);
           for (let i = 0; i < resampled.length; i++) {
