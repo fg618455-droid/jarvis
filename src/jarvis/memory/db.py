@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from ..debug import debug_log
 
 _SCHEMA_SQL = """
+PRAGMA foreign_keys = ON;
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
 
@@ -110,6 +111,7 @@ class Database:
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys = ON")
         self._lock = threading.RLock()
         self.is_vss_enabled = False
         self._python_vector_store = None
@@ -144,8 +146,57 @@ class Database:
             if self.is_vss_enabled:
                 cur.executescript(_VSS_SCHEMA_SQL)
             self.conn.commit()
+        if self.is_vss_enabled:
+            self._cleanup_orphaned_summary_embeddings()
 
-    
+    def _cleanup_orphaned_summary_embeddings(self) -> int:
+        """Delete ``summary_vec``/``embeddings`` rows left behind by a
+        ``conversation_summaries`` row that no longer exists.
+
+        Two distinct gaps land here, both closed by the same sweep:
+
+        - Rows written before foreign key enforcement was turned on, where
+          a stale ``summary_vec`` row still points at a ``summary_id`` that
+          was deleted without ever cascading.
+        - Rows written after enforcement: cascading a ``conversation_summaries``
+          delete removes the ``summary_vec`` row, but ``summary_vec.emb_id``
+          has no cascade of its own, so its ``embeddings`` row is left
+          dangling with nothing pointing at it any more.
+
+        Runs on every startup; additive and idempotent, so it is a no-op
+        once the backlog is cleared, and it never touches a
+        ``summary_id`` that still exists in ``conversation_summaries`` or
+        an ``embeddings`` row still referenced by a live ``summary_vec``
+        entry.
+        """
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                """
+                DELETE FROM summary_vec
+                WHERE summary_id NOT IN (SELECT id FROM conversation_summaries)
+                """
+            )
+            removed_summary_vec = int(cur.rowcount)
+            cur.execute(
+                """
+                DELETE FROM embeddings
+                WHERE id NOT IN (SELECT emb_id FROM summary_vec)
+                """
+            )
+            removed_embeddings = int(cur.rowcount)
+            self.conn.commit()
+            total_removed = removed_summary_vec + removed_embeddings
+            if total_removed:
+                debug_log(
+                    f"Cleaned up {removed_summary_vec} orphaned summary_vec "
+                    f"row(s) and {removed_embeddings} orphaned embedding "
+                    "row(s)",
+                    "jarvis",
+                )
+            return total_removed
+
+
 
     def search_hybrid(self, fts_query: str, query_vec_json: Optional[str], top_k: int = 8) -> list[sqlite3.Row]:
         with self._lock:
