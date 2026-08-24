@@ -255,7 +255,7 @@ class MockConfig:
     sqlite_vss_path: Optional[str] = None
     voice_debug: bool = True
     tts_enabled: bool = False
-    tts_engine: str = "piper"  # "piper" (default) or "chatterbox"
+    tts_engine: str = "piper"  # "piper" (default), "chatterbox", or "kokoro"
     tts_voice: Optional[str] = None
     tts_rate: int = 200
     # Piper TTS settings
@@ -270,6 +270,9 @@ class MockConfig:
     tts_chatterbox_audio_prompt: Optional[str] = None
     tts_chatterbox_exaggeration: float = 0.5
     tts_chatterbox_cfg_weight: float = 0.5
+    # Kokoro TTS settings
+    tts_kokoro_voice: str = "bm_lewis"
+    tts_kokoro_speed: float = 1.0
     web_search_enabled: bool = True
     brave_search_api_key: str = ""
     wikipedia_fallback_enabled: bool = True

@@ -187,3 +187,28 @@ class TestReplyMirrorsTheUsersLanguage:
 
         print(f"\n🗣️ Query: {query}\n💬 Reply: {response}")
         _assert_reply_language(response, "German", query)
+
+    @pytest.mark.eval
+    @requires_judge_llm
+    def test_a_kokoro_voice_still_wins_over_mirroring(
+        self, mock_config, eval_db, eval_dialogue_memory,
+    ):
+        """The same contract as a named Piper voice, for Kokoro's voice-name
+        scheme rather than a metadata sidecar: a Japanese Kokoro voice keeps
+        Japanese replies even for an English query."""
+        from jarvis.reply.engine import run_reply_engine
+
+        mock_config.tts_engine = "kokoro"
+        mock_config.tts_kokoro_voice = "jf_alpha"
+
+        query = "Tell me something interesting."
+        response = run_reply_engine(
+            db=eval_db,
+            cfg=mock_config,
+            tts=None,
+            text=query,
+            dialogue_memory=eval_dialogue_memory,
+        )
+
+        print(f"\n🗣️ Query: {query}\n💬 Reply: {response}")
+        _assert_reply_language(response, "Japanese", query)

@@ -16,7 +16,7 @@ import json
 
 import pytest
 
-from jarvis.output.tts import resolve_voice_language
+from jarvis.output.tts import resolve_kokoro_voice_language, resolve_voice_language
 from jarvis.reply.engine import build_reply_prompt_prefix
 
 
@@ -71,6 +71,24 @@ class TestResolveVoiceLanguage:
         assert resolve_voice_language(str(model)) is None
 
 
+class TestResolveKokoroVoiceLanguage:
+    def test_a_british_voice_reports_british_english(self):
+        assert resolve_kokoro_voice_language("bm_lewis") == "British English"
+
+    def test_an_american_voice_reports_american_english(self):
+        assert resolve_kokoro_voice_language("af_bella") == "American English"
+
+    def test_a_japanese_voice_reports_japanese(self):
+        assert resolve_kokoro_voice_language("jf_alpha") == "Japanese"
+
+    def test_an_unknown_code_yields_no_constraint(self):
+        assert resolve_kokoro_voice_language("qx_mystery") is None
+
+    def test_no_voice_yields_no_constraint(self):
+        assert resolve_kokoro_voice_language(None) is None
+        assert resolve_kokoro_voice_language("") is None
+
+
 class _Cfg:
     """The handful of fields the reply prefix reads."""
 
@@ -80,6 +98,7 @@ class _Cfg:
     def __init__(self, **fields):
         self.tts_engine = "piper"
         self.tts_piper_model_path = None
+        self.tts_kokoro_voice = "bm_lewis"
         for key, value in fields.items():
             setattr(self, key, value)
 
@@ -139,6 +158,20 @@ class TestReplyPromptLanguageConstraint:
 
         assert "Always respond in English" in prefix
         assert not _mirrors_the_user(prefix)
+
+    def test_a_kokoro_voice_pins_the_reply_to_its_language(self):
+        prefix = build_reply_prompt_prefix(
+            _Cfg(tts_engine="kokoro", tts_kokoro_voice="jf_alpha"),
+        )
+
+        assert "Always respond in Japanese" in prefix
+
+    def test_an_unrecognised_kokoro_voice_still_constrains_the_language(self):
+        prefix = build_reply_prompt_prefix(
+            _Cfg(tts_engine="kokoro", tts_kokoro_voice="qx_mystery"),
+        )
+
+        assert _mirrors_the_user(prefix)
 
     def test_a_named_voice_does_not_also_ask_for_mirroring(self, tmp_path):
         """One rule at a time: a named language and 'mirror the user' conflict."""
@@ -204,6 +237,24 @@ class TestTheCannedFallbackSpeaksTheVoicesLanguage:
                                    render=fake_render)
 
         assert len(calls) == 1
+
+    def test_a_kokoro_voice_language_gets_the_message_rendered(self, mock_config):
+        from jarvis.reply.fallbacks import in_the_voices_language, forget_renderings
+
+        forget_renderings()
+        mock_config.tts_engine = "kokoro"
+        mock_config.tts_kokoro_voice = "jf_alpha"
+        asked = []
+
+        def fake_render(cfg, language, message):
+            asked.append(language)
+            return "リクエストを理解できませんでした。"
+
+        assert in_the_voices_language(
+            mock_config, "I had trouble understanding that request.",
+            render=fake_render,
+        ) == "リクエストを理解できませんでした。"
+        assert asked == ["Japanese"]
 
     def test_no_named_language_leaves_the_message_alone(self, mock_config):
         """Text chat and an unreadable voice have nothing to render into."""

@@ -9,7 +9,7 @@ from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from ..utils.redact import redact
 from ..system_prompt import build_system_prompt
-from ..output.tts import resolve_voice_language
+from ..output.tts import resolve_kokoro_voice_language, resolve_voice_language
 from ..runtime import (
     current_turn,
     mark as telemetry_mark,
@@ -162,6 +162,10 @@ def build_reply_prompt_prefix(cfg) -> str:
     if tts_engine == "piper":
         voice_language = resolve_voice_language(
             getattr(cfg, "tts_piper_model_path", None)
+        )
+    elif tts_engine == "kokoro":
+        voice_language = resolve_kokoro_voice_language(
+            getattr(cfg, "tts_kokoro_voice", None)
         )
 
     if voice_language:
