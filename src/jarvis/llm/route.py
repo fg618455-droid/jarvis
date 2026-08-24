@@ -19,6 +19,7 @@ from .backend import (
     ProviderError,
     ToolsNotSupportedError,
 )
+from .claude_subscription import ClaudeSubscriptionBackend
 from .ollama import OllamaBackend
 from .openai_compatible import OpenAICompatibleBackend
 from .route_state import RouteStateStore
@@ -71,6 +72,8 @@ def _build_backend(route: Route) -> LLMBackend:
     api_key = os.environ.get(route.api_key_env) if route.api_key_env else route.api_key
     if route.provider == "openai_compatible":
         return OpenAICompatibleBackend(route.base_url, api_key=api_key or None)
+    if route.provider == "claude_subscription":
+        return ClaudeSubscriptionBackend()
     return OllamaBackend(route.base_url, keep_alive=route.keep_alive or None)
 
 

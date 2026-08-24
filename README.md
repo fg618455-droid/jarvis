@@ -302,6 +302,8 @@ The control centre's **LLM routes** view shows active routes, cooldowns, failure
 - HTTP rate limits and quota resets are persisted in `~/.jarvis/llm_routes_state.json`, so restarting does not immediately retry a blocked key.
 - HTTP 401 and 403 responses remove the key for the process lifetime.
 
+A CHAT-tier route may instead set `"provider": "claude_subscription"`. It authenticates through an already logged-in `claude` CLI session via `claude_agent_sdk` rather than any API key, so it has no key to fill in — `base_url` is only kept for shape consistency and can be any non-empty placeholder such as `"claude-agent-sdk"`. The session is text-generation only: it never runs a tool of its own, native tool schemas fall back to Jarvis's own text-based tool calling, and every reply still passes through Jarvis's one tool-calling loop and confirmation gate. `claude-agent-sdk` is not installed by default (`pip install claude-agent-sdk` first) because its `mcp` requirement is newer than the version this project pins.
+
 To inspect current catalogues and import FCC credentials once:
 
 ```bash

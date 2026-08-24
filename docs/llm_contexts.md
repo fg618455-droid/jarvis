@@ -2,7 +2,7 @@
 
 Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it is gated. This is the reference for optimising the app's main bottleneck (LLM latency). Keep it in sync with the code — see the note at the bottom.
 
-> **Backend abstraction and lanes.** Every completion below enters `get_llm_backend(cfg)` and selects FAST, CHAT, or PRIVATE through `resolve_model(cfg, tier)`. Configured FAST and CHAT chains use generic endpoint routes followed by loopback Ollama. PRIVATE contains loopback Ollama only. `get_embedding_backend(cfg)` is separate, always local Ollama, and never routed.
+> **Backend abstraction and lanes.** Every completion below enters `get_llm_backend(cfg)` and selects FAST, CHAT, or PRIVATE through `resolve_model(cfg, tier)`. Configured FAST and CHAT chains use generic endpoint routes followed by loopback Ollama. PRIVATE contains loopback Ollama only. `get_embedding_backend(cfg)` is separate, always local Ollama, and never routed. A configured CHAT route may use the `claude_subscription` provider: a text-generation-only session over `claude_agent_sdk`, authenticated through Felix's own Claude Code CLI login rather than an API key, offered alongside `askCrew`/Hermes as a second cloud option for the same class of complex or slow turn (see `src/jarvis/llm/llm.spec.md`, "Claude subscription session"). It never appears in a FAST or PRIVATE chain.
 
 ---
 

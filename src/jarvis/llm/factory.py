@@ -23,6 +23,7 @@ from .tiers import Tier
 
 _OLLAMA = "ollama"
 _OPENAI_COMPATIBLE = "openai_compatible"
+_CLAUDE_SUBSCRIPTION = "claude_subscription"
 _DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 _ROUTER_CACHE: dict[int, tuple[weakref.ReferenceType[Any], RoutedBackend]] = {}
 
@@ -46,6 +47,25 @@ def _resolve_provider(value: Any) -> str:
     if isinstance(value, str):
         v = value.strip().lower()
         if v in (_OLLAMA, _OPENAI_COMPATIBLE):
+            return v
+    return _OLLAMA
+
+
+def _resolve_route_provider(value: Any) -> str:
+    """Resolve a provider name for one ``llm_routes`` chain entry.
+
+    Unlike :func:`_resolve_provider` (used for the single-endpoint
+    ``llm_provider``/``embedding_provider`` settings), this also accepts
+    ``claude_subscription``: that route protocol is a CHAT-chain-only
+    alternative, never a blanket single-endpoint choice, because the
+    single-endpoint path also serves the FAST tier and embeddings, and a
+    cloud subscription call has no place answering either — FAST needs a
+    warm, low-latency local model, and embeddings must stay on loopback
+    Ollama regardless of billing model.
+    """
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in (_OLLAMA, _OPENAI_COMPATIBLE, _CLAUDE_SUBSCRIPTION):
             return v
     return _OLLAMA
 
@@ -98,7 +118,7 @@ def get_llm_backend(settings: Any) -> LLMBackend:
                 continue
             if tier is Tier.PRIVATE:
                 continue
-            provider = _resolve_provider(raw.get("provider"))
+            provider = _resolve_route_provider(raw.get("provider"))
             base_url = str(raw.get("base_url", "") or "").strip()
             model = str(raw.get("model", "") or "").strip()
             if not base_url or not model:

@@ -1,6 +1,6 @@
 # LLM Backend Specification
 
-The `jarvis.llm` package owns every LLM HTTP call. Jarvis speaks only generic, self-hostable protocols: native Ollama and OpenAI-compatible HTTP. Route configuration contains protocol names, URLs, credentials, model names, tiers, and timeouts. Runtime code has no vendor SDK or vendor-specific request path.
+The `jarvis.llm` package owns every LLM completion call. Jarvis mainly speaks generic, self-hostable protocols: native Ollama and OpenAI-compatible HTTP. Route configuration contains protocol names, URLs, credentials, model names, tiers, and timeouts. The one named exception is the `claude_subscription` provider, which rides `claude_agent_sdk` against Felix's own Claude Code CLI login rather than a metered API key (see "Claude subscription session" below); every other provider stays vendor-neutral HTTP with no SDK.
 
 ## Goals
 
@@ -17,6 +17,7 @@ from jarvis.llm import (
     LLMBackend,
     OllamaBackend,
     OpenAICompatibleBackend,
+    ClaudeSubscriptionBackend,
     RoutedBackend,
     RequestDeadline,
     Route,
@@ -52,7 +53,7 @@ Function-style Ollama helpers remain available to performance tests and eval scr
 
 ### Tool calling
 
-`ToolsNotSupportedError` means the selected model rejected a supplied native tool schema. It is not a routing signal. `RoutedBackend` passes it to the reply engine, which changes to text-based tool calls without losing the turn.
+`ToolsNotSupportedError` means the selected model rejected a supplied native tool schema. It is not a routing signal. `RoutedBackend` passes it to the reply engine, which changes to text-based tool calls without losing the turn. `ClaudeSubscriptionBackend` raises it unconditionally whenever `tools` is supplied, never only on a transient rejection: its session never carries a usable tool (see "Claude subscription session" below), so a native tool schema can never be satisfied.
 
 ### Streaming
 
@@ -151,6 +152,8 @@ Each `llm_routes` entry has this shape:
 
 The loader accepts this tiered shape and ignores malformed entries. List order is route order. A credential may be stored directly in `api_key` or referenced by `api_key_env`; environment values are resolved only when the backend is built and are never copied into configuration.
 
+`provider` may also be `"claude_subscription"` (see "Claude subscription session" below). That route carries no `api_key`: `base_url` is still required for shape consistency but is never dialled, so any non-empty placeholder (conventionally `"claude-agent-sdk"`) satisfies it. `claude_subscription` is a `llm_routes`-chain provider only; it is not one of the choices for the single-endpoint `llm_provider` or `embedding_provider` settings, because those apply uniformly to the FAST tier and to embeddings, and a cloud subscription call has no place answering either: FAST needs a warm, low-latency local model, and embeddings must stay on loopback Ollama regardless of billing model. Every configured route entry that resolves to `Tier.PRIVATE` is dropped before a backend is built, for every provider without exception, so a `claude_subscription` route can never reach the private lane even if misconfigured with that tier.
+
 Config migration version 5 converts priority-based route lists into ordered FAST and CHAT entries. It preserves activation, capabilities, and environment-variable names without reading their values. Existing tiered entries receive the same explicit defaults, and repeated migration is idempotent.
 
 `scripts/import_fcc_keys.py` probes keys from `~/.fcc/.env` and writes routes only for endpoints that advertise a model. `python -m jarvis.llm.probe` performs `GET /models`, prints no credential material, and stores the observed catalogues in `~/.jarvis/llm_probe.json` with mode `0o600`. Model names come from live endpoint responses or a probed FCC smoke model that is present in that response.
@@ -173,11 +176,25 @@ Config migration version 5 converts priority-based route lists into ordered FAST
 - Ollama-only request options omitted
 - Optional `Authorization: Bearer` header
 
+### Claude subscription session
+
+`ClaudeSubscriptionBackend` authenticates through `claude_agent_sdk.ClaudeSDKClient`, which spawns Felix's own `claude` CLI subprocess and inherits whatever session it already has open. No `ANTHROPIC_API_KEY` is read, set, or stored for this route; there is no key to mask.
+
+- Every call opens a fresh `ClaudeSDKClient`, sends one prompt, and disconnects. Jarvis's own `LLMBackend` contract already carries the full conversation on every call (`chat()` receives the whole `messages` list; `direct()` receives system and user text together), so resuming or continuing an SDK session across calls would duplicate that context rather than save anything. `chat()`'s multi-role `messages` list is flattened into one system prompt plus one labelled transcript string, because `ClaudeSDKClient.query()` takes a single prompt per call.
+- The session is stripped to text generation only, because `ClaudeSDKClient` is otherwise a fully agentic session with its own tool-calling loop and Jarvis owns exactly one tool-calling loop and one security gate (`../security/security.spec.md`). Every session sets `tools=[]`, `setting_sources=[]`, and `mcp_servers={}`, and always passes a `can_use_tool` callback that denies every attempt unconditionally. The empty tool/settings/MCP options are not sufficient alone: an authenticated session can still see MCP tools attached at the Anthropic account level (connectors configured in the Claude.ai account the CLI is logged into), entirely outside this process's control, and the model can still attempt to call one. The `can_use_tool` deny-all callback is the mechanism that actually stops that attempt, and is mandatory rather than an alternative to the empty tool list. `permission_mode` is always `"default"`; a mode that auto-approves calls ahead of `can_use_tool` (e.g. `bypassPermissions`) would silently defeat the deny-all gate, per the SDK's own `CanUseToolShadowedWarning`.
+- Every denied tool-use attempt and every backend selection is recorded through `debug_log`.
+- No native tool schema is ever satisfiable (see "Tool calling" above): `chat()` raises `ToolsNotSupportedError` whenever `tools` is supplied, before any session is opened.
+- No sampling controls: `num_ctx`, `thinking`, `temperature`, and `max_tokens` have no equivalent exposed by `ClaudeAgentOptions` for a single generation call, so they are accepted for signature parity and silently ignored, the same way `OpenAICompatibleBackend` ignores Ollama-only knobs it cannot express.
+- No model-listing or warm-up endpoint: `list_models()` returns `[]` and `warm_up()` is a no-op returning `True`; nothing needs paging in and nothing is worth a real round trip at every daemon start.
+- A failed `ResultMessage` (`is_error=True`) or a raised `ClaudeSDKError` maps to the same typed failures in the "Typed provider failures" table: `api_error_status` 401/403 to `AuthError`, 404 to `ModelUnavailableError`, 429 to `RateLimitedError`, anything else (including a missing `claude` CLI) to `ProviderError`. Every path is caught; nothing but these typed exceptions or an assembled string ever leaves the backend.
+- `claude_agent_sdk` is an optional dependency, not listed in `requirements.txt`: it requires `mcp>=1.23.0,<3.0.0`, which conflicts with the `mcp==1.13.1` pin the persistent MCP runtime depends on (`../tools/external/mcp_runtime.spec.md`). The import is lazy and guarded, so the rest of Jarvis is unaffected without it installed, and a `claude_subscription` route used without the package installed fails with a typed `ProviderError` rather than an import crash.
+
 ## File layout
 
 ```text
 src/jarvis/llm/
 ├── backend.py
+├── claude_subscription.py
 ├── factory.py
 ├── ollama.py
 ├── openai_compatible.py

@@ -37,6 +37,7 @@ from .backend import (
     RateLimitedError,
     ToolsNotSupportedError,
 )
+from .claude_subscription import ClaudeSubscriptionBackend
 from .ollama import OllamaBackend, check_version, extract_text_from_response
 from .openai_compatible import OpenAICompatibleBackend, ServerCapabilities
 from .factory import (
@@ -59,6 +60,7 @@ __all__ = [
     "ModelUnavailableError",
     "OllamaBackend",
     "OpenAICompatibleBackend",
+    "ClaudeSubscriptionBackend",
     "ServerCapabilities",
     "Route",
     "RequestDeadline",
