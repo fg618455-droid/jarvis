@@ -18,7 +18,7 @@ On first bootstrap the graph seeds three non-deletable branches under root, defi
 
 These branches are created idempotently via `INSERT OR IGNORE` on stable IDs. The structure is intentionally shallow and purpose-driven — splits deepen each subtree over time, but the top layer stays fixed so the **warm profile** (see below) has a stable shape.
 
-No Other branch: the extractor defaults unknown classifications to `user`. A fact that genuinely belongs nowhere should not be stored.
+No Other branch: the extractor defaults unknown classifications to `world`. A `user` fact is loaded into every future prompt as an established truth about the person, so an unclear or misclassified fact — including overheard/third-party content the extractor failed to route correctly — is filed as general knowledge instead.
 
 ### Legacy-Shape Migration (destructive)
 
@@ -58,6 +58,8 @@ The warm profile is injected into every reply's initial system message (see `rep
 ### Storage
 
 SQLite table `memory_nodes` in the same database as the diary system. Schema is initialised automatically on first access. The root node is created if absent.
+
+`GraphMemoryStore`'s own lock makes each individual method call atomic, but placing and merging a fact spans a read, an LLM round trip, and a write — not atomic on its own. The ambient digest worker, the reply-turn pipeline, and the control centre's manual node edit can all reach the same node concurrently, so `update_graph_from_dialogue()` (and the manual-edit endpoint) hold `memory.write_lock.MEMORY_WRITE_LOCK` for the full read-transform-write span, serialising mutations to one writer at a time. The diary's `update_daily_conversation_summary()` shares the same lock for the same reason.
 
 ### Entry Points
 
@@ -156,7 +158,7 @@ The graph memory system is fully automatic — no tool calls required. It integr
 Piggybacks on the existing diary update flow in `conversation.py`:
 
 1. After a successful diary update, the conversation summary is passed to `update_graph_from_dialogue()`
-2. **Extract + classify**: LLM extracts novel knowledge from the summary and classifies each fact into one of the three fixed branches (`USER` / `DIRECTIVES` / `WORLD`). Output is a JSON list of `{"branch": "...", "fact": "..."}` objects. Rough routing heuristic baked into the prompt: if the user is *telling the assistant how to behave* → DIRECTIVES; if the user is *telling the assistant about themselves* → USER; if the assistant *discovered a fact about the world* → WORLD. Unknown branches default to USER. Requests are reframed as knowledge ("user asked about CEX hours" → "CEX Kensington closes at 6pm on Sundays"). Patterns and consolidation emerge through auto-split.
+2. **Extract + classify**: LLM extracts novel knowledge from the summary and classifies each fact into one of the three fixed branches (`USER` / `DIRECTIVES` / `WORLD`). Output is a JSON list of `{"branch": "...", "fact": "..."}` objects. Rough routing heuristic baked into the prompt: if the user is *telling the assistant how to behave* → DIRECTIVES; if the user is *telling the assistant about themselves* → USER; if the assistant *discovered a fact about the world* → WORLD. Overheard or reported speech about a third party (as produced by the ambient digest, see `passive_capture.spec.md`) must route to WORLD, never USER. Unknown branches also default to WORLD. Requests are reframed as knowledge ("user asked about CEX hours" → "CEX Kensington closes at 6pm on Sundays"). Patterns and consolidation emerge through auto-split.
 3. **Traverse**: Each fact is placed in the best-fitting node using branch-pinned descent from its tagged branch root (recent/top shortcuts are skipped so cross-branch contamination is impossible):
    - **Recent nodes** — checked first; follows conversational momentum
    - **Top nodes** — checked second; matches frequently accessed knowledge domains

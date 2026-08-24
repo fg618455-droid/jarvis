@@ -151,17 +151,20 @@ class TestExtractGraphMemories:
         assert len(facts) == 2
 
     @patch("src.jarvis.memory.graph_ops.call_llm_direct")
-    def test_unknown_branch_defaults_to_user(self, mock_llm):
+    def test_unknown_branch_defaults_to_world(self, mock_llm):
         """When the model emits a branch label we don't recognise, the
-        fact still gets stored — under USER — rather than silently
-        dropping a potentially useful piece of information. The
-        assistant is a personal agent; user-scoped context is the
-        safer default for unclassified items."""
+        fact still gets stored — under WORLD, not USER — rather than
+        silently dropping a potentially useful piece of information.
+        USER facts are loaded into every future prompt as established
+        truths about the person; misfiling unclear content there is
+        worse than filing it as general knowledge, especially since an
+        unrecognised label is also what a misclassified overheard/
+        third-party statement looks like."""
         mock_llm.return_value = (
             '[{"branch": "MISC", "fact": "Some useful fact"}]'
         )
         facts = extract_graph_memories("summary", "http://localhost", "model")
-        assert facts == [("user", "Some useful fact")]
+        assert facts == [("world", "Some useful fact")]
 
 
 # ── _llm_pick_best_child ──────────────────────────────────────────────

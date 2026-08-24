@@ -7,6 +7,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Iterator, Optional, List, Tuple, Union, Callable
 from .db import Database
+from .write_lock import MEMORY_WRITE_LOCK
 from ..llm import Tier, get_embedding_backend, get_llm_backend, resolve_model
 from ..debug import debug_log
 from ..utils.redact import redact, scrub_secrets
@@ -1404,51 +1405,58 @@ def update_daily_conversation_summary(
             chunk_preview = chunk[:100] + "..." if len(chunk) > 100 else chunk
             debug_log(f"  chunk {i+1}: {chunk_preview}", "memory")
 
-        # Get existing summary for today
-        existing = db.get_conversation_summary(target_date, source_app)
-        previous_summary = existing['summary'] if existing else None
+        # The read (existing summary), the LLM transform, and the write
+        # below must run as one unit: a second thread reading the same
+        # day's summary between our read and our write would generate
+        # its own update from the same stale previous_summary, and
+        # whichever thread wrote last would silently discard the other's
+        # chunks. See write_lock.MEMORY_WRITE_LOCK.
+        with MEMORY_WRITE_LOCK:
+            # Get existing summary for today
+            existing = db.get_conversation_summary(target_date, source_app)
+            previous_summary = existing['summary'] if existing else None
 
-        # Generate updated summary using redacted chunks
-        summary, topics = generate_conversation_summary(
-            redacted_chunks, previous_summary, cfg,
-            timeout_sec=timeout_sec, on_token=on_token, thinking=thinking,
-        )
+            # Generate updated summary using redacted chunks
+            summary, topics = generate_conversation_summary(
+                redacted_chunks, previous_summary, cfg,
+                timeout_sec=timeout_sec, on_token=on_token, thinking=thinking,
+            )
 
-        # Skip summarization if LLM failed
-        if summary is None or topics is None:
-            debug_log("conversation summary skipped - LLM failed to generate summary", "memory")
-            return  # Skip summarization entirely
+            # Skip summarization if LLM failed
+            if summary is None or topics is None:
+                debug_log("conversation summary skipped - LLM failed to generate summary", "memory")
+                return  # Skip summarization entirely
 
-        # Debug: Log the generated summary and topics
-        summary_preview = summary[:200] + "..." if len(summary) > 200 else summary
-        debug_log("conversation memory updated to:", "memory")
-        debug_log(f"  summary: {summary_preview}", "memory")
-        debug_log(f"  topics: {topics}", "memory")
-        if previous_summary:
-            prev_preview = previous_summary[:100] + "..." if len(previous_summary) > 100 else previous_summary
-            debug_log(f"  previous summary: {prev_preview}", "memory")
-        else:
-            debug_log("  previous summary: (none)", "memory")
+            # Debug: Log the generated summary and topics
+            summary_preview = summary[:200] + "..." if len(summary) > 200 else summary
+            debug_log("conversation memory updated to:", "memory")
+            debug_log(f"  summary: {summary_preview}", "memory")
+            debug_log(f"  topics: {topics}", "memory")
+            if previous_summary:
+                prev_preview = previous_summary[:100] + "..." if len(previous_summary) > 100 else previous_summary
+                debug_log(f"  previous summary: {prev_preview}", "memory")
+            else:
+                debug_log("  previous summary: (none)", "memory")
 
-        # Store the summary
-        summary_id = db.upsert_conversation_summary(
-            date_utc=target_date,
-            summary=summary,
-            topics=topics,
-            source_app=source_app,
-        )
+            # Store the summary
+            summary_id = db.upsert_conversation_summary(
+                date_utc=target_date,
+                summary=summary,
+                topics=topics,
+                source_app=source_app,
+            )
 
-        # Generate and store embedding for semantic search. Gate on a
-        # configured embedding model too (matching the search paths) so an
-        # empty model never burns a doomed embed round-trip.
-        if db.is_vss_enabled and cfg.embedding_model:
-            # Combine summary and topics for embedding
-            text_for_embedding = f"{summary} {topics}"
-            vec = _embed_text(text_for_embedding, cfg, timeout_sec=15.0)
-            if vec is not None:
-                db.upsert_summary_embedding(summary_id, vec)
+            # Generate and store embedding for semantic search. Gate on a
+            # configured embedding model too (matching the search paths) so an
+            # empty model never burns a doomed embed round-trip.
+            if db.is_vss_enabled and cfg.embedding_model:
+                # Combine summary and topics for embedding
+                text_for_embedding = f"{summary} {topics}"
+                vec = _embed_text(text_for_embedding, cfg, timeout_sec=15.0)
+                if vec is not None:
+                    db.upsert_summary_embedding(summary_id, vec)
 
-        return summary_id
+            return summary_id
 
     except Exception:
         return None

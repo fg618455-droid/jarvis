@@ -50,7 +50,7 @@ Ambient speech was not addressed to the assistant and was not necessarily spoken
 
 - Write "someone in the room said X", "it was mentioned that X", never "the user said X" or a bare "X".
 - Where the speaker identifies themselves or is named by another speaker, the name may be recorded, still as reported speech.
-- Never promote overheard content into a user fact. A preference the assistant hears across the room is not a preference the user stated, and downstream enrichment reads unattributed lines as established fact.
+- Never promote overheard content into a user fact. A preference the assistant hears across the room is not a preference the user stated, and downstream enrichment reads unattributed lines as established fact. This holds at the graph-extraction step too (`graph_ops.py`, see `graph.spec.md`): a digest sentence attributed as overheard must route to the WORLD branch, never USER, even though the digest text itself already carries the correct attribution.
 
 ### 5. Nothing is the ordinary answer
 Most speech in a room carries nothing worth a permanent record. The prompt states plainly that returning an empty digest is correct and common, with worked examples of small talk that produces nothing. Without this, a small model treats an empty answer as a failure to comply and invents significance for "have you seen my keys".

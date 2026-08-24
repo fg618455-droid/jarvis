@@ -20,6 +20,7 @@ from flask import Blueprint, jsonify, request, Response
 from jarvis.config import load_settings
 from jarvis.debug import debug_log
 from jarvis.memory.graph import FIXED_BRANCH_IDS, GraphMemoryStore
+from jarvis.memory.write_lock import MEMORY_WRITE_LOCK
 
 
 # Routes carry their own /api prefix, kept verbatim so existing callers
@@ -413,7 +414,12 @@ def graph_update_node(node_id: str) -> Response:
                     return jsonify({"error": f"{field} must be a string"}), 400
                 kwargs[field] = body[field]
 
-        node = store.update_node(node_id, **kwargs)
+        # Shares the lock every background flush (ambient digest, reply
+        # turn) holds for its own read-transform-write span, so a manual
+        # edit here can't land in the middle of one and get silently
+        # overwritten by (or overwrite) an in-flight merge.
+        with MEMORY_WRITE_LOCK:
+            node = store.update_node(node_id, **kwargs)
         if node is None:
             return jsonify({"error": "Node not found or invalid parent"}), 404
 

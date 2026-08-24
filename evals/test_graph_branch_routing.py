@@ -224,3 +224,39 @@ class TestGraphBranchRouting:
                 f"{expected_branch!r}, got {actual_branch!r}. Facts: "
                 f"{facts}"
             )
+
+    @requires_judge_llm
+    def test_overheard_third_party_content_is_never_attributed_to_user(
+        self, mock_config,
+    ):
+        """Ambient/passive capture digests explicitly attribute retained
+        content as overheard reported speech about someone else in the
+        room, never the user (see the ambient digest system prompt in
+        ``memory/ambient.py``). When that digest text is fed through this
+        classifier, a third party's plans must never be filed under USER
+        — that would surface someone else's dentist appointment as an
+        established fact about the assistant's own user in every future
+        prompt. WORLD (or dropping the fact) are both acceptable; USER
+        is not."""
+        summary = (
+            "It was overheard that Sam's dentist appointment is Friday "
+            "at ten."
+        )
+        facts = extract_graph_memories(
+            summary=summary,
+            cfg=mock_config,
+            chat_model=mock_config.llm_chat_model,
+            timeout_sec=mock_config.llm_chat_timeout_sec,
+            thinking=False,
+            date_utc="2026-04-20",
+        )
+
+        print(f"Extracted {len(facts)} facts:")
+        for branch_id, fact in facts:
+            print(f"  [{branch_id}] {fact}")
+
+        user_facts = [fact for branch_id, fact in facts if branch_id == BRANCH_USER]
+        assert not user_facts, (
+            f"Overheard third-party content must never be classified as "
+            f"USER, got: {user_facts}"
+        )

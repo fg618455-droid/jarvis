@@ -31,6 +31,7 @@ from .graph import (
     SPLIT_THRESHOLD,
     normalise_fact,
 )
+from .write_lock import MEMORY_WRITE_LOCK
 
 
 def call_llm_direct(*, cfg, chat_model, system_prompt, user_content,
@@ -94,7 +95,15 @@ def extract_graph_memories(
         "opinions, history. Anything that answers 'what is true about "
         "the user?'. Examples: 'The user is vegetarian', 'The user lives "
         "in Hackney, London', 'The user enjoys dark sci-fi films like "
-        "Possessor'.\n"
+        "Possessor'. NEVER file overheard or reported speech about "
+        "someone ELSE here, even when the summary phrases it as 'it was "
+        "overheard that...', 'someone mentioned...', or similar — that "
+        "is a fact about a third party, not the user. Route it to "
+        "WORLD if it is a durable fact worth keeping, or drop it "
+        "entirely if it is not (see DO NOT EXTRACT below). Example: "
+        "'It was overheard that Sam's dentist appointment is Friday at "
+        "ten' → WORLD fact 'Sam has a dentist appointment Friday at "
+        "ten', never a USER fact.\n"
         "- DIRECTIVES: imperatives the user has issued AT the assistant "
         "about its OWN behaviour — tone, verbosity, language, style "
         "rules, do/don't instructions. These are RULES the assistant "
@@ -242,16 +251,19 @@ def extract_graph_memories(
             continue
         branch_id = _LABEL_TO_BRANCH.get(branch_label)
         if branch_id is None:
-            # Unknown branch label → default to USER. Assistant is a
-            # personal agent; the common failure mode is the model
-            # emitting a bare fact string, and user-scoped context is
-            # the safer default for unclassified content.
+            # Unknown branch label → default to WORLD, not USER. A fact
+            # about the user is loaded into every future prompt as an
+            # established truth about the person; misfiling unclear
+            # content there is worse than filing it as general
+            # knowledge. This also covers the case where the source was
+            # overheard/third-party speech the model failed to classify
+            # correctly — WORLD is the safe landing spot either way.
             debug_log(
                 f"graph memory extraction: unknown branch {branch_label!r}, "
-                f"defaulting to USER for: {fact_text[:60]!r}",
+                f"defaulting to WORLD for: {fact_text[:60]!r}",
                 "memory",
             )
-            branch_id = BRANCH_USER
+            branch_id = BRANCH_WORLD
         facts.append((branch_id, fact_text))
 
     debug_log(f"graph memory extraction: got {len(facts)} facts", "memory")
@@ -871,173 +883,181 @@ def update_graph_from_dialogue(
 
     debug_log(f"graph update: placing {len(facts)} facts into knowledge graph", "memory")
 
-    # Step 2: Place — resolve the destination node for every fact up
-    # front, applying the cheap exact-match dedupe fast-path along the
-    # way. Then group surviving facts by node so the merge step below
-    # rewrites each node at most once per flush instead of once per
-    # fact. Without batching, a 5-fact flush against a populated User
-    # node fires 5 small-model rewrites of the same `data`; with
-    # batching, it's one rewrite that incorporates all five.
-    pending: list[tuple[str, str, str]] = []  # (branch_id, fact, node_id)
-    seen_keys_per_node: dict[str, set[str]] = {}
-    skipped = 0
-    for branch_id, fact in facts:
-        try:
-            node_id = find_best_node(
-                store=store,
-                fragment=fact,
-                cfg=cfg,
-                chat_model=chat_model,
-                timeout_sec=15.0,
-                thinking=thinking,
-                picker_model=picker_model,
-                branch_root_id=branch_id,
-            )
-        except Exception as e:
-            debug_log(f"graph update: traversal failed for '{fact[:50]}...' — {e}", "memory")
-            continue
-
-        # Exact-match dedupe (fast-path, no LLM): skip facts already
-        # stored verbatim on the chosen node. Cumulative daily summaries
-        # re-extract the same facts on every flush; the SQL-only check
-        # short-circuits the merge LLM call for the most common no-op
-        # case. Re-extractions are not fresh learning — we don't report
-        # them as newly stored and we don't touch the access score.
-        # Skips are still counted so callers can log "nothing new (N
-        # duplicates skipped)" on all-duplicate flushes.
-        if store.node_contains_fact(node_id, fact):
-            target = store.get_node(node_id)
-            target_name = target.name if target else node_id[:8]
-            skipped += 1
-            debug_log(
-                f"graph update: skipped duplicate '{fact[:50]}...' → "
-                f"'{target_name}' [{branch_id}]",
-                "memory",
-            )
-            continue
-
-        # Within a single flush, two extractor outputs that fold to the
-        # same key should also dedupe against each other before reaching
-        # the merge step.
-        key = normalise_fact(fact)
-        node_keys = seen_keys_per_node.setdefault(node_id, set())
-        if key and key in node_keys:
-            debug_log(
-                f"graph update: skipped intra-flush duplicate '{fact[:50]}...'",
-                "memory",
-            )
-            continue
-        if key:
-            node_keys.add(key)
-
-        pending.append((branch_id, fact, node_id))
-
-    if not pending:
-        debug_log("graph update: nothing to merge after dedupe", "memory")
-        return GraphUpdateResult(stored=[], skipped=skipped)
-
-    # Group by destination node so each node gets a single merge call.
-    by_node: dict[str, list[tuple[str, str]]] = {}
-    for branch_id, fact, node_id in pending:
-        by_node.setdefault(node_id, []).append((branch_id, fact))
-
-    stored: "list[tuple[str, str]]" = []
-    for node_id, items in by_node.items():
-        node_facts = [fact for _, fact in items]
-        node = store.get_node(node_id)
-        node_name = node.name if node else node_id[:8]
-
-        # Step 3: Merge — combine the existing node data with all
-        # queued new facts in a single LLM rewrite. Subsumes
-        # supersession (contradictions drop the old line),
-        # near-duplicate dedupe (different wordings collapse), and
-        # ongoing consolidation (repeated activities fold into
-        # patterns). The latest prompt always rewrites the whole
-        # node, so updated conventions propagate to old data without
-        # a separate migration step.
-        #
-        # Fail-open: if the merge returns success=False (empty node,
-        # LLM failure, parse failure, empty rewrite, or rewrite that
-        # tripped the hallucination guard), each fact falls back to
-        # plain append below. We never let a flaky LLM erase data —
-        # a contradiction is recoverable, a silent wipe is not.
-        merge_result = MergeResult(success=False)
-        try:
-            merge_result = merge_node_data(
-                store=store,
-                node_id=node_id,
-                new_facts=node_facts,
-                cfg=cfg,
-                chat_model=chat_model,
-                timeout_sec=20.0,
-                thinking=thinking,
-                picker_model=picker_model,
-                node=node,
-            )
-        except Exception as e:
-            debug_log(f"graph update: merge failed for node '{node_name}' — {e}", "memory")
-
-        if merge_result.success:
-            # Merge wrote the consolidated data. Only the facts the
-            # rewrite actually retained get reported as stored — a
-            # fact that was consolidated out (e.g. folded into a
-            # pattern, or treated as a near-duplicate) was not
-            # newly learned and shouldn't be claimed as such.
-            incorporated = set(merge_result.incorporated_indices)
-            for idx, (branch_id, fact) in enumerate(items):
-                if idx in incorporated:
-                    stored.append((fact, node_name))
-                    debug_log(
-                        f"graph update: merged '{fact[:50]}...' → "
-                        f"'{node_name}' [{branch_id}]",
-                        "memory",
-                    )
-                else:
-                    debug_log(
-                        f"graph update: '{fact[:50]}...' consolidated "
-                        f"out by merge on '{node_name}' — not reported",
-                        "memory",
-                    )
-        else:
-            # Cold start, merge failure, or guard rejection — fall
-            # back to plain append for every queued fact so nothing
-            # is lost.
-            for branch_id, fact in items:
-                store.append_to_node(node_id, fact)
-                stored.append((fact, node_name))
-                debug_log(
-                    f"graph update: appended '{fact[:50]}...' → "
-                    f"'{node_name}' [{branch_id}] (merge skipped)",
-                    "memory",
-                )
-
-        store.touch_node(node_id)
-
-        # Step 4: Auto-split if the node has grown too large.
-        refreshed = store.get_node(node_id)
-        if refreshed is not None and refreshed.data_token_count > SPLIT_THRESHOLD:
-            debug_log(
-                f"graph update: node '{node_name}' exceeded threshold, splitting",
-                "memory",
-            )
+    # Step 2 onward reads and writes shared node state (dedupe checks,
+    # merge, append, touch, auto-split) across an LLM round trip per
+    # node — a concurrent flush against the same node could read the
+    # same pre-write data and silently discard this flush's facts on
+    # write. Serialise the whole placement-through-write span so at
+    # most one flush mutates the graph at a time. See
+    # write_lock.MEMORY_WRITE_LOCK.
+    with MEMORY_WRITE_LOCK:
+        # Step 2: Place — resolve the destination node for every fact up
+        # front, applying the cheap exact-match dedupe fast-path along the
+        # way. Then group surviving facts by node so the merge step below
+        # rewrites each node at most once per flush instead of once per
+        # fact. Without batching, a 5-fact flush against a populated User
+        # node fires 5 small-model rewrites of the same `data`; with
+        # batching, it's one rewrite that incorporates all five.
+        pending: list[tuple[str, str, str]] = []  # (branch_id, fact, node_id)
+        seen_keys_per_node: dict[str, set[str]] = {}
+        skipped = 0
+        for branch_id, fact in facts:
             try:
-                auto_split_node(
+                node_id = find_best_node(
                     store=store,
-                    node_id=node_id,
+                    fragment=fact,
                     cfg=cfg,
                     chat_model=chat_model,
-                    timeout_sec=45.0,
+                    timeout_sec=15.0,
                     thinking=thinking,
+                    picker_model=picker_model,
+                    branch_root_id=branch_id,
                 )
             except Exception as e:
-                debug_log(f"graph update: auto-split failed for '{node_name}' — {e}", "memory")
+                debug_log(f"graph update: traversal failed for '{fact[:50]}...' — {e}", "memory")
+                continue
 
-    debug_log(
-        f"graph update: stored {len(stored)}/{len(facts)} facts "
-        f"({skipped} duplicate{'' if skipped == 1 else 's'} skipped)",
-        "memory",
-    )
-    return GraphUpdateResult(stored=stored, skipped=skipped)
+            # Exact-match dedupe (fast-path, no LLM): skip facts already
+            # stored verbatim on the chosen node. Cumulative daily summaries
+            # re-extract the same facts on every flush; the SQL-only check
+            # short-circuits the merge LLM call for the most common no-op
+            # case. Re-extractions are not fresh learning — we don't report
+            # them as newly stored and we don't touch the access score.
+            # Skips are still counted so callers can log "nothing new (N
+            # duplicates skipped)" on all-duplicate flushes.
+            if store.node_contains_fact(node_id, fact):
+                target = store.get_node(node_id)
+                target_name = target.name if target else node_id[:8]
+                skipped += 1
+                debug_log(
+                    f"graph update: skipped duplicate '{fact[:50]}...' → "
+                    f"'{target_name}' [{branch_id}]",
+                    "memory",
+                )
+                continue
+
+            # Within a single flush, two extractor outputs that fold to the
+            # same key should also dedupe against each other before reaching
+            # the merge step.
+            key = normalise_fact(fact)
+            node_keys = seen_keys_per_node.setdefault(node_id, set())
+            if key and key in node_keys:
+                debug_log(
+                    f"graph update: skipped intra-flush duplicate '{fact[:50]}...'",
+                    "memory",
+                )
+                continue
+            if key:
+                node_keys.add(key)
+
+            pending.append((branch_id, fact, node_id))
+
+        if not pending:
+            debug_log("graph update: nothing to merge after dedupe", "memory")
+            return GraphUpdateResult(stored=[], skipped=skipped)
+
+        # Group by destination node so each node gets a single merge call.
+        by_node: dict[str, list[tuple[str, str]]] = {}
+        for branch_id, fact, node_id in pending:
+            by_node.setdefault(node_id, []).append((branch_id, fact))
+
+        stored: "list[tuple[str, str]]" = []
+        for node_id, items in by_node.items():
+            node_facts = [fact for _, fact in items]
+            node = store.get_node(node_id)
+            node_name = node.name if node else node_id[:8]
+
+            # Step 3: Merge — combine the existing node data with all
+            # queued new facts in a single LLM rewrite. Subsumes
+            # supersession (contradictions drop the old line),
+            # near-duplicate dedupe (different wordings collapse), and
+            # ongoing consolidation (repeated activities fold into
+            # patterns). The latest prompt always rewrites the whole
+            # node, so updated conventions propagate to old data without
+            # a separate migration step.
+            #
+            # Fail-open: if the merge returns success=False (empty node,
+            # LLM failure, parse failure, empty rewrite, or rewrite that
+            # tripped the hallucination guard), each fact falls back to
+            # plain append below. We never let a flaky LLM erase data —
+            # a contradiction is recoverable, a silent wipe is not.
+            merge_result = MergeResult(success=False)
+            try:
+                merge_result = merge_node_data(
+                    store=store,
+                    node_id=node_id,
+                    new_facts=node_facts,
+                    cfg=cfg,
+                    chat_model=chat_model,
+                    timeout_sec=20.0,
+                    thinking=thinking,
+                    picker_model=picker_model,
+                    node=node,
+                )
+            except Exception as e:
+                debug_log(f"graph update: merge failed for node '{node_name}' — {e}", "memory")
+
+            if merge_result.success:
+                # Merge wrote the consolidated data. Only the facts the
+                # rewrite actually retained get reported as stored — a
+                # fact that was consolidated out (e.g. folded into a
+                # pattern, or treated as a near-duplicate) was not
+                # newly learned and shouldn't be claimed as such.
+                incorporated = set(merge_result.incorporated_indices)
+                for idx, (branch_id, fact) in enumerate(items):
+                    if idx in incorporated:
+                        stored.append((fact, node_name))
+                        debug_log(
+                            f"graph update: merged '{fact[:50]}...' → "
+                            f"'{node_name}' [{branch_id}]",
+                            "memory",
+                        )
+                    else:
+                        debug_log(
+                            f"graph update: '{fact[:50]}...' consolidated "
+                            f"out by merge on '{node_name}' — not reported",
+                            "memory",
+                        )
+            else:
+                # Cold start, merge failure, or guard rejection — fall
+                # back to plain append for every queued fact so nothing
+                # is lost.
+                for branch_id, fact in items:
+                    store.append_to_node(node_id, fact)
+                    stored.append((fact, node_name))
+                    debug_log(
+                        f"graph update: appended '{fact[:50]}...' → "
+                        f"'{node_name}' [{branch_id}] (merge skipped)",
+                        "memory",
+                    )
+
+            store.touch_node(node_id)
+
+            # Step 4: Auto-split if the node has grown too large.
+            refreshed = store.get_node(node_id)
+            if refreshed is not None and refreshed.data_token_count > SPLIT_THRESHOLD:
+                debug_log(
+                    f"graph update: node '{node_name}' exceeded threshold, splitting",
+                    "memory",
+                )
+                try:
+                    auto_split_node(
+                        store=store,
+                        node_id=node_id,
+                        cfg=cfg,
+                        chat_model=chat_model,
+                        timeout_sec=45.0,
+                        thinking=thinking,
+                    )
+                except Exception as e:
+                    debug_log(f"graph update: auto-split failed for '{node_name}' — {e}", "memory")
+
+        debug_log(
+            f"graph update: stored {len(stored)}/{len(facts)} facts "
+            f"({skipped} duplicate{'' if skipped == 1 else 's'} skipped)",
+            "memory",
+        )
+        return GraphUpdateResult(stored=stored, skipped=skipped)
 
 
 def consolidate_all_populated_nodes(
