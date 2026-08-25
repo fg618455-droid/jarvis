@@ -156,7 +156,10 @@ Each entry holds the vault-relative path, the note title (H1 if present, else fi
 
 Search is keyword-based over title, tags, and body, ranked by number of distinct query terms matched, then by term frequency, then by recency of mtime. Matching is Unicode-aware, reusing the same NFKC + casefold folding as `normalise_fact` in `graph.py` so German umlauts and casing behave. There are no hardcoded language patterns; content words come from the existing extractor, and stop-wording is the reader's caller's job, exactly as it is for graph enrichment.
 
-Results are returned as `VaultHit(path, title, snippet, score)` where the snippet is the matching region padded to whole lines and capped at 300 characters.
+Results are returned as `VaultHit(path, title, snippet, score, provenance)`
+where the snippet is the matching region padded to whole lines and capped at
+300 characters. `provenance` carries the vault-relative path known by the
+index at retrieval time.
 
 ### Reads Are Untrusted Input
 
@@ -168,12 +171,20 @@ The reader is a third enrichment channel alongside diary and graph in `engine.py
 
 It runs on the extractor's *keywords* rather than the implicit questions, because a vault is a topic index: unlike the knowledge graph, matching on a topic term is exactly the right retrieval mode for a folder of notes about topics. It shares the graph's minimum of two content words to avoid noisy single-term matches.
 
-Hits are injected under their own heading with the file path preserved, so provenance is explicit and the assistant can say where something came from:
+Hits are injected under their own heading without a title or file path:
 
 ```
 Notes from the user's personal knowledge base (read-only files on their machine):
-[03 - Knowledge/Ernährung.md] ...
+[Local vault note excerpt] ...
 ```
+
+The vault-relative path remains attached to the local `VaultHit` and the
+reply engine's `RetrievedSnippet`. It is rendered only by a deliberate
+`vaultSearch` call or by `memoryProvenance` after the user asks for the origin.
+This keeps folder names out of ordinary cloud-routed FAST and CHAT prompts.
+`memoryProvenance` calls and results do not enter tool carryover, and a path in
+its visible answer is replaced with a placeholder before that answer is stored
+in the hot conversation window.
 
 Raw hits also feed `digest_memory_for_query` for small models, alongside the existing diary and graph parts.
 
@@ -195,7 +206,10 @@ Full-note reads go through the existing `localFiles` tool, which already fences 
 
 The vault is the most sensitive store Jarvis touches: it is the user's private notes about school, applications, health, and projects. Three consequences:
 
-- Vault content never leaves the machine. It reaches only the locally-configured LLM backend, which is subject to the offline-first rule in the project CLAUDE.md.
+- Selected vault snippets can reach the configured FAST or CHAT route for
+  memory distillation and reply synthesis. Exact note titles and paths stay
+  local unless the user deliberately invokes `vaultSearch` or asks for memory
+  provenance.
 - Vault snippets are subject to the same redaction pass as any other prompt content before they reach a model.
 - The reader is a pure `Path.read_text`. There is no upload, no telemetry, no index shipped anywhere, and no dependency on Obsidian Sync, iCloud, or any account.
 

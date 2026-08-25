@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from jarvis.memory.remio import MemoryHit
+from jarvis.memory.provenance import MemoryProvenance, RetrievedSnippet
 
 
 def _reply(text: str = "ready") -> dict:
@@ -50,11 +50,9 @@ def test_planned_memory_search_adds_attributable_remio_context(
          ), \
          patch(
              "jarvis.memory.remio.RemioAdapter.search",
-             return_value=[MemoryHit(
-                 text="Alpha launches on Friday.",
-                 source="remio",
-                 title="Project Alpha",
-                 note_id="note-1",
+             return_value=[RetrievedSnippet(
+                 "Alpha launches on Friday.",
+                 MemoryProvenance.remio("Project Alpha"),
              )],
          ), \
          patch.object(engine_mod, "chat_with_messages", side_effect=fake_chat):
@@ -68,8 +66,13 @@ def test_planned_memory_search_adds_attributable_remio_context(
 
     assert result == "ready"
     assert captured_system
-    assert "[Remio: Project Alpha]" in captured_system[0]
+    assert "[Remio note excerpt]" in captured_system[0]
+    assert "Project Alpha" not in captured_system[0]
     assert "Alpha launches on Friday." in captured_system[0]
+    retained = dialogue_memory.hot_cache_get(
+        dialogue_memory.MEMORY_PROVENANCE_CACHE_KEY,
+    )
+    assert retained[0].provenance == MemoryProvenance.remio("Project Alpha")
 
 
 def test_reply_only_plan_does_not_start_remio(mock_config, db, dialogue_memory):
@@ -77,6 +80,13 @@ def test_reply_only_plan_does_not_start_remio(mock_config, db, dialogue_memory):
 
     mock_config.remio_memory_enabled = True
     mock_config.evaluator_enabled = False
+    dialogue_memory.hot_cache_put(
+        dialogue_memory.MEMORY_PROVENANCE_CACHE_KEY,
+        [RetrievedSnippet(
+            "stale source",
+            MemoryProvenance.remio("Previous note"),
+        )],
+    )
 
     with patch.object(engine_mod, "select_tools", return_value=["stop"]), \
          patch.object(engine_mod, "plan_query", return_value=["Reply to the user."]), \
@@ -92,3 +102,6 @@ def test_reply_only_plan_does_not_start_remio(mock_config, db, dialogue_memory):
 
     assert result == "ready"
     search.assert_not_called()
+    assert dialogue_memory.hot_cache_get(
+        dialogue_memory.MEMORY_PROVENANCE_CACHE_KEY,
+    ) == []

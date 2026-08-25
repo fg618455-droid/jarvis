@@ -180,6 +180,12 @@ At the start of each reply cycle, the reply engine enriches the system prompt wi
 2. **Question search**: Questions are joined, stop-worded, and used to find matching nodes (up to 5 results with data previews).
 3. Results are injected as "Stored knowledge about the user" — separate from diary history to preserve provenance.
 
+Each result is a `RetrievedSnippet` carrying `MemoryProvenance(kind="graph")`
+with the node id and its fixed branch. The prompt receives the fact text, while
+the exact node id and branch remain on the Python object for the
+`memoryProvenance` tool. A result from a fixed branch root uses that root as
+both the node id and branch.
+
 No tool calls needed. The LLM sees relevant graph memories as part of its system context.
 
 Controlled by `memory_enrichment_source` config:
@@ -266,4 +272,8 @@ Graph extraction ingests diary summaries, so the graph inherits whatever corrupt
 
 ## Privacy
 
-All data is stored locally in the user's SQLite database. No data leaves the device. The graph store has no network dependencies.
+All graph data is stored in the user's local SQLite database and the graph
+store has no network dependencies. Selected fact text can enter a configured
+FAST or CHAT route during retrieval and reply synthesis. Exact graph node ids
+and branches enter an LLM message only after the user asks for a memory origin
+and the model invokes `memoryProvenance`.

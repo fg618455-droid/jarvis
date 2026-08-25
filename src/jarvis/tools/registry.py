@@ -28,6 +28,7 @@ from .builtin.ask_crew import AskCrewTool
 from .builtin.browser_interact import BrowserInteractTool
 from .builtin.desktop_interact import DesktopInteractTool
 from .builtin.system_manager import SystemManagerTool
+from .builtin.memory_provenance import MemoryProvenanceTool
 from .types import ToolExecutionResult
 from ..config import Settings
 from .external.mcp_client import MCPClient
@@ -52,6 +53,7 @@ BUILTIN_TOOLS = {
     "openOnComputer": OpenOnComputerTool(),
     "toolSearchTool": ToolSearchTool(),
     "askCrew": AskCrewTool(),
+    "memoryProvenance": MemoryProvenanceTool(),
 }
 
 
@@ -364,6 +366,7 @@ def run_tool_with_retries(
     max_retries: int = 1,
     language: Optional[str] = None,
     deadline: Optional[Any] = None,
+    memory_snippets: Optional[List[Any]] = None,
 ) -> ToolExecutionResult:
     """Run one tool through the security gate and time it.
 
@@ -384,6 +387,7 @@ def run_tool_with_retries(
             db, cfg, tool_name, tool_args, system_prompt,
             original_prompt, redacted_text, max_retries, language,
             deadline,
+            memory_snippets,
         )
     except Exception as exc:
         record_tool(
@@ -422,6 +426,7 @@ def _run_tool_with_retries(
     max_retries: int = 1,
     language: Optional[str] = None,
     deadline: Optional[Any] = None,
+    memory_snippets: Optional[List[Any]] = None,
 ) -> ToolExecutionResult:
     # Normalize tool name to canonical camelCase
     raw_name = (tool_name or "").strip()
@@ -512,6 +517,7 @@ def _run_tool_with_retries(
             user_print=_user_print,
             language=language,
             deadline=deadline,
+            memory_snippets=memory_snippets,
         )
 
     # Unknown tool

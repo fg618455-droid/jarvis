@@ -23,6 +23,7 @@ class ToolContext:
         user_print: Callable[[str], None],
         language: Optional[str] = None,
         deadline: Optional[Any] = None,
+        memory_snippets: Optional[list[Any]] = None,
     ):
         self.db = db
         self.cfg = cfg
@@ -44,6 +45,7 @@ class ToolContext:
         # ceiling like ``llm_tools_timeout_sec`` (300s by default) alone —
         # that ceiling bounds one call, not what's left of the turn.
         self.deadline = deadline
+        self.memory_snippets = list(memory_snippets or [])
 
     def bounded_timeout(self, configured_sec: float) -> float:
         """Cap a tool-internal blocking call at what remains of the turn.
@@ -119,6 +121,7 @@ class Tool(ABC):
         user_print: Callable[[str], None],
         language: Optional[str] = None,
         deadline: Optional[Any] = None,
+        memory_snippets: Optional[list[Any]] = None,
     ) -> ToolExecutionResult:
         """Execute the tool (internal method used by registry).
 
@@ -135,5 +138,6 @@ class Tool(ABC):
             user_print=user_print,
             language=language,
             deadline=deadline,
+            memory_snippets=memory_snippets,
         )
         return self.run(tool_args, context)

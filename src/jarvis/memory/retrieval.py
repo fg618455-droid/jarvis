@@ -5,19 +5,19 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Iterable
 
-from .remio import MemoryHit
+from .provenance import RetrievedSnippet
 
 
 def retrieve_parallel(
-    sources: Iterable[Callable[[], list[MemoryHit]]],
+    sources: Iterable[Callable[[], list[RetrievedSnippet]]],
     *,
     timeout_sec: float,
-) -> list[MemoryHit]:
+) -> list[RetrievedSnippet]:
     """Collect partial results without waiting for a stalled source."""
     functions = list(sources)
     if not functions:
         return []
-    hits: list[MemoryHit] = []
+    hits: list[RetrievedSnippet] = []
     pool = ThreadPoolExecutor(max_workers=len(functions), thread_name_prefix="jarvis-memory")
     futures = [pool.submit(source) for source in functions]
     try:

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ...debug import debug_log
 from ...utils.redact import redact
+from ..provenance import MemoryProvenance
 from .render import END_MARKER, is_managed_markdown, parse_frontmatter
 
 
@@ -34,6 +35,7 @@ class VaultHit:
     title: str
     snippet: str
     score: tuple[int, int, int]
+    provenance: MemoryProvenance
 
 
 @dataclass
@@ -173,6 +175,7 @@ class VaultIndex:
                     title=entry.title,
                     snippet=self._snippet(entry.body, matched),
                     score=score,
+                    provenance=MemoryProvenance.vault(entry.relative_path),
                 )
             )
         ranked.sort(key=lambda hit: hit.score, reverse=True)
@@ -210,7 +213,9 @@ def get_vault_index(vault_root, memory_folder="Jarvis", max_file_kb=512) -> Vaul
         return index
 
 
-def format_hits_for_prompt(hits: list[VaultHit]) -> str:
+def format_hits_for_prompt(
+    hits: list[VaultHit], *, include_paths: bool = False,
+) -> str:
     """Render hits inside the untrusted-data envelope used for prompts."""
     if not hits:
         return ""
@@ -220,7 +225,11 @@ def format_hits_for_prompt(hits: list[VaultHit]) -> str:
         "<<<BEGIN UNTRUSTED VAULT DATA>>>",
     ]
     for hit in hits:
-        lines.append(f"[{redact(hit.path)}] {redact(hit.title)}\n{redact(hit.snippet)}")
+        label = (
+            f"[{redact(hit.path)}] {redact(hit.title)}"
+            if include_paths else "[Local vault note excerpt]"
+        )
+        lines.append(f"{label}\n{redact(hit.snippet)}")
     lines.append("<<<END UNTRUSTED VAULT DATA>>>")
     return "\n".join(lines)
 

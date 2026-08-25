@@ -60,4 +60,4 @@ class VaultSearchTool(Tool):
         hits = index.search(query, limit=limit)
         if not hits:
             return ToolExecutionResult(True, "🔎 No matching vault notes found.")
-        return ToolExecutionResult(True, format_hits_for_prompt(hits))
+        return ToolExecutionResult(True, format_hits_for_prompt(hits, include_paths=True))

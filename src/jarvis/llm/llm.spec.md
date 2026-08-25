@@ -117,7 +117,13 @@ Hits, failures, last safe error label, and future block time feed the control ce
 | `Tier.CHAT` | Configured chat routes, then local | reply loop, planner, step resolver, dictation cleanup, nutrition calls, other tool-specific completions |
 | `Tier.PRIVATE` | loopback Ollama only | diary summary, deflection rewrite, topic optimisation, graph extraction, node merge, graph auto-split |
 
-Memory retrieval may send the selected snippets into FAST or CHAT calls. Memory creation, graph mutation, and embeddings stay local.
+Memory retrieval may send the selected snippet text into FAST or CHAT calls.
+The added provenance fields stay attached to local Python objects and do not
+enter those prompts by default. Diary text retains its existing date prefix for
+recency handling; graph node ids and branches, vault paths, and Remio titles
+enter a CHAT tool-result message only after the user asks for the source and the
+model invokes `memoryProvenance`. Memory creation, graph mutation, and
+embeddings stay local.
 
 ## Chat backend selection
 

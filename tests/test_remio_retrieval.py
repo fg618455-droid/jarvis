@@ -20,8 +20,8 @@ def test_remio_reads_only_the_best_limited_search_hits():
 
     result = RemioAdapter(run=run, max_results=1, read_chars=100).search("project alpha")
 
-    assert result[0].source == "remio"
-    assert result[0].note_id == "one"
+    assert result[0].provenance.kind == "remio"
+    assert result[0].provenance.identifier == "One"
     assert len(commands) == 2
     assert commands[0][:2] == ["remio", "search_notes"]
 

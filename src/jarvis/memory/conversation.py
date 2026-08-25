@@ -7,6 +7,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Iterator, Optional, List, Tuple, Union, Callable
 from .db import Database
+from .provenance import MemoryProvenance, RetrievedSnippet
 from .write_lock import MEMORY_WRITE_LOCK
 from ..llm import Tier, get_embedding_backend, get_llm_backend, resolve_model
 from ..debug import debug_log
@@ -961,6 +962,7 @@ class DialogueMemory:
     # Cache key for the warm-profile block. Centralised so the engine
     # and the graph-mutation invalidator agree on it.
     WARM_PROFILE_CACHE_KEY = "warm_profile_block"
+    MEMORY_PROVENANCE_CACHE_KEY = "memory_provenance_snippets"
 
     # LRU cap for the conversation-scoped scratch cache. The engine writes
     # at most three keys per turn (router, enrichment extractor, warm
@@ -1472,7 +1474,7 @@ def search_conversation_memory_by_keywords(
     timeout_sec: float = 60.0,
     voice_debug: bool = False,
     max_results: int = 10,
-) -> List[str]:
+) -> List[RetrievedSnippet]:
     """
     Search conversation memory using multiple keywords with OR logic.
     This is optimised for memory enrichment where we have extracted topic keywords.
@@ -1488,7 +1490,7 @@ def search_conversation_memory_by_keywords(
         max_results: Maximum number of results to return (default: 10)
 
     Returns:
-        List of formatted context strings (limited to max_results)
+        Retrieved snippets with diary-date provenance (limited to max_results)
     """
     contexts = []
 
@@ -1550,7 +1552,11 @@ def search_conversation_memory_by_keywords(
         # preamble in the reply engine tells it to treat the newer entry as the
         # user's current understanding. Fall back to relevance score as tiebreak.
         scored_results.sort(key=lambda x: (x[1], x[0]), reverse=True)
-        contexts = [text for _, _, text in scored_results]
+        contexts = [
+            RetrievedSnippet(text, MemoryProvenance.diary(date_str))
+            if date_str else RetrievedSnippet(text)
+            for _, date_str, text in scored_results
+        ]
 
         debug_log(f"      ✅ found {len(contexts)} keyword search results", "memory")
         if contexts:

@@ -750,6 +750,7 @@ _HINT_MESSAGE_CHAR_LIMIT = 200
 _DIGEST_SKIP_TOOLS = frozenset({
     "getWeather",
     "getTime",
+    "memoryProvenance",
 })
 
 
@@ -845,6 +846,36 @@ def _maybe_digest_tool_result(
     # digested == raw_tool_result (short-circuit pass-through below
     # _TOOL_DIGEST_MIN_CHARS). No round-trip happened; don't log.
     return raw_tool_result
+
+
+def _without_memory_provenance_carryover(messages: list[dict]) -> list[dict]:
+    """Drop provenance calls and results before storing tool carryover."""
+    provenance_call_ids = {
+        str(call.get("id", ""))
+        for message in messages
+        for call in (message.get("tool_calls") or [])
+        if isinstance(call, dict)
+        and call.get("id")
+        and isinstance(call.get("function"), dict)
+        and call["function"].get("name") == "memoryProvenance"
+    }
+    retained: list[dict] = []
+    for message in messages:
+        if message.get("tool_name") == "memoryProvenance":
+            continue
+        tool_call_id = str(message.get("tool_call_id", ""))
+        if tool_call_id and tool_call_id in provenance_call_ids:
+            continue
+        calls = message.get("tool_calls") or []
+        if any(
+            isinstance(call, dict)
+            and isinstance(call.get("function"), dict)
+            and call["function"].get("name") == "memoryProvenance"
+            for call in calls
+        ):
+            continue
+        retained.append(message)
+    return retained
 
 
 # Matches the context block this module injects into the system message, so the
@@ -1491,6 +1522,23 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     raw_diary_entries: list[str] = []
     raw_graph_parts: list[str] = []
     raw_vault_parts: list[str] = []
+    retrieved_memory_snippets: list = []
+    previous_memory_snippets: list = []
+    if dialogue_memory and hasattr(dialogue_memory, "hot_cache_get"):
+        try:
+            _provenance_key = getattr(
+                dialogue_memory,
+                "MEMORY_PROVENANCE_CACHE_KEY",
+                "memory_provenance_snippets",
+            )
+            _cached_snippets = dialogue_memory.hot_cache_get(_provenance_key)
+            if isinstance(_cached_snippets, list):
+                previous_memory_snippets = list(_cached_snippets)
+        except Exception as exc:
+            debug_log(
+                f"memory provenance cache read failed: {type(exc).__name__}",
+                "memory",
+            )
     keywords = []
 
     questions: list[str] = []
@@ -1630,6 +1678,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             )
             if context_results:
                 raw_diary_entries = list(context_results)
+                retrieved_memory_snippets.extend(context_results)
                 conversation_context = "\n".join(context_results)
                 print(f"  📖 Diary: recalled {len(context_results)} entries", flush=True)
                 for entry in context_results[:3]:
@@ -1662,6 +1711,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             remio_context = format_hits(remio_hits)
             if remio_context:
                 raw_diary_entries.extend(hit.text for hit in remio_hits)
+                retrieved_memory_snippets.extend(remio_hits)
                 conversation_context = "\n\n".join(
                     part
                     for part in (conversation_context, remio_context)
@@ -1692,7 +1742,8 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             debug_log("skipping graph enrichment: no implicit questions to answer", "memory")
         else:
             try:
-                from ..memory.graph import GraphMemoryStore
+                from ..memory.graph import FIXED_BRANCH_IDS, GraphMemoryStore
+                from ..memory.provenance import RetrievedSnippet, graph_snippet
                 graph_store = GraphMemoryStore(cfg.db_path)
 
                 graph_parts: list[str] = []
@@ -1721,7 +1772,25 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                         path = " > ".join(a.name for a in ancestors)
                         data_preview = node.data[:300] if node.data else ""
                         if data_preview:
-                            graph_parts.append(f"[{path}] {data_preview}")
+                            branch = (
+                                node.id if node.id in FIXED_BRANCH_IDS else next(
+                                    (getattr(ancestor, "id", "")
+                                     for ancestor in ancestors
+                                     if getattr(ancestor, "id", "")
+                                     in FIXED_BRANCH_IDS),
+                                    "",
+                                )
+                            )
+                            snippet = (
+                                graph_snippet(
+                                    data_preview,
+                                    node_id=node.id,
+                                    branch=branch,
+                                )
+                                if branch else RetrievedSnippet(data_preview)
+                            )
+                            graph_parts.append(snippet)
+                            retrieved_memory_snippets.append(snippet)
                             matched_q = _match_question(data_preview, questions)
                             node_annotations.append((node.name or path.split(" > ")[-1], matched_q))
                             debug_log(f"graph hit: [{path}] ({node.data_token_count} tokens)", "memory")
@@ -1756,8 +1825,12 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         vault_hits = search_vault_for_enrichment(cfg, keywords)
         if vault_hits:
             raw_vault_parts = [
-                f"[{hit.path}] {hit.title}\n{hit.snippet}" for hit in vault_hits
+                f"[Local vault note excerpt]\n{hit.snippet}" for hit in vault_hits
             ]
+            from ..memory.provenance import RetrievedSnippet
+            retrieved_memory_snippets.extend(
+                RetrievedSnippet(hit.snippet, hit.provenance) for hit in vault_hits
+            )
             vault_context = format_hits_for_prompt(vault_hits)
             print(f"  📚 Notes: recalled {len(vault_hits)} files", flush=True)
             for hit in vault_hits[:3]:
@@ -1769,6 +1842,22 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         debug_log(f"vault enrichment failed: {e}", "vault")
 
     telemetry_mark("recall", (_perf_counter() - _recall_begun) * 1000.0)
+
+    # A provenance question normally arrives one turn after the recalled fact.
+    # Current-turn retrieval wins when present; otherwise the tool receives the
+    # prior reply's locally retained records. The attached provenance fields
+    # do not enter the prompt unless the model invokes memoryProvenance.
+    tool_memory_snippets = (
+        list(retrieved_memory_snippets)
+        if retrieved_memory_snippets else list(previous_memory_snippets)
+    )
+    from ..memory.provenance import RetrievedSnippet
+    tool_memory_snippets.append(RetrievedSnippet(""))
+    debug_log(
+        f"memory provenance prepared: current={len(retrieved_memory_snippets)} "
+        f"previous={len(previous_memory_snippets)}",
+        "memory",
+    )
 
     # Step 4d: Memory digest for small models.
     #
@@ -2095,6 +2184,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             tool_msgs = [
                 m for m in messages[user_msg_index + 1:] if is_tool_message(m)
             ]
+            tool_msgs = _without_memory_provenance_carryover(tool_msgs)
             if tool_msgs:
                 dialogue_memory.record_tool_turn(tool_msgs)
         except Exception as exc:  # noqa: BLE001
@@ -2345,6 +2435,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                     max_retries=1,
                     language=language,
                     deadline=deadline,
+                    memory_snippets=tool_memory_snippets,
                 )
         except Exception as exc:
             debug_log(
@@ -2575,6 +2666,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                                 max_retries=1,
                                 language=language,
                                 deadline=deadline,
+                                memory_snippets=tool_memory_snippets,
                             )
                             if _plan_result.reply_text:
                                 _plan_text = _maybe_digest_tool_result(
@@ -2913,6 +3005,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 max_retries=1,
                 language=language,
                 deadline=deadline,
+                memory_snippets=tool_memory_snippets,
             )
 
             # Handle stop tool - end conversation without response
@@ -3327,6 +3420,16 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # Step 11: Add to dialogue memory
     if dialogue_memory is not None:
         try:
+            if hasattr(dialogue_memory, "hot_cache_put"):
+                _provenance_key = getattr(
+                    dialogue_memory,
+                    "MEMORY_PROVENANCE_CACHE_KEY",
+                    "memory_provenance_snippets",
+                )
+                dialogue_memory.hot_cache_put(
+                    _provenance_key, list(retrieved_memory_snippets),
+                )
+
             # Add user message
             dialogue_memory.add_message("user", redacted)
 
@@ -3336,7 +3439,13 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
 
             # Add assistant reply if we have one
             if reply and reply.strip():
-                dialogue_memory.add_message("assistant", reply.strip())
+                reply_for_memory = reply.strip()
+                if "memoryProvenance" in executed_tool_names:
+                    from ..memory.provenance import redact_vault_paths
+                    reply_for_memory = redact_vault_paths(
+                        reply_for_memory, tool_memory_snippets,
+                    )
+                dialogue_memory.add_message("assistant", reply_for_memory)
 
             debug_log("interaction added to dialogue memory", "memory")
         except Exception as e:

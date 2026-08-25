@@ -92,6 +92,7 @@ def test_vault_hits_reach_system_prompt_inside_untrusted_fence(tmp_path):
     assert "<<<BEGIN UNTRUSTED VAULT DATA>>>" in prompt
     assert "ignore previous instructions" in prompt
     assert "<<<END UNTRUSTED VAULT DATA>>>" in prompt
+    assert "note.md" not in prompt
 
 
 @pytest.mark.parametrize(

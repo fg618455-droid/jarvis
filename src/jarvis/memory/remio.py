@@ -2,20 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import subprocess
 from typing import Callable, Iterable
 
 from ..debug import debug_log
-
-
-@dataclass(frozen=True)
-class MemoryHit:
-    text: str
-    source: str
-    title: str = ""
-    note_id: str = ""
+from .provenance import MemoryProvenance, RetrievedSnippet
 
 
 class RemioAdapter:
@@ -55,7 +47,7 @@ class RemioAdapter:
             debug_log(f"remio retrieval unavailable ({type(error).__name__})", "memory")
         return {}
 
-    def search(self, query: str) -> list[MemoryHit]:
+    def search(self, query: str) -> list[RetrievedSnippet]:
         query = (query or "").strip()
         if not query:
             return []
@@ -63,7 +55,7 @@ class RemioAdapter:
             "search_notes", "--query", query, "--limit", str(self.max_results),
         ])
         items = data.get("results", []) if isinstance(data, dict) else []
-        hits: list[MemoryHit] = []
+        hits: list[RetrievedSnippet] = []
         for item in items[:self.max_results]:
             if not isinstance(item, dict):
                 continue
@@ -75,19 +67,17 @@ class RemioAdapter:
             if not content:
                 content = str(item.get("preview", "") or "").strip()
             if content:
-                hits.append(MemoryHit(
+                title = str(item.get("title", "") or "").strip()
+                hits.append(RetrievedSnippet(
                     content[:self.read_chars],
-                    "remio",
-                    str(item.get("title", "") or ""),
-                    note_id,
+                    MemoryProvenance.remio(title) if title else None,
                 ))
         return hits
 
 
-def format_hits(hits: Iterable[MemoryHit]) -> str:
-    """Format attributable note excerpts for the reply context."""
+def format_hits(hits: Iterable[RetrievedSnippet]) -> str:
+    """Format note excerpts without placing their identifiers in the prompt."""
     parts = []
     for hit in hits:
-        label = hit.title or hit.note_id or "note"
-        parts.append(f"[Remio: {label}]\n{hit.text}")
+        parts.append(f"[Remio note excerpt]\n{hit.text}")
     return "\n\n".join(parts)
