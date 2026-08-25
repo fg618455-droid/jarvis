@@ -29,6 +29,7 @@ from .builtin.browser_interact import BrowserInteractTool
 from .builtin.desktop_interact import DesktopInteractTool
 from .builtin.system_manager import SystemManagerTool
 from .builtin.memory_provenance import MemoryProvenanceTool
+from .builtin.exam_countdown import ExamCountdownTool
 from .types import ToolExecutionResult
 from ..config import Settings
 from .external.mcp_client import MCPClient
@@ -54,6 +55,7 @@ BUILTIN_TOOLS = {
     "toolSearchTool": ToolSearchTool(),
     "askCrew": AskCrewTool(),
     "memoryProvenance": MemoryProvenanceTool(),
+    "getExamCountdown": ExamCountdownTool(),
 }
 
 

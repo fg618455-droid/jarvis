@@ -113,8 +113,8 @@ Hits, failures, last safe error label, and future block time feed the control ce
 
 | Tier | Chain | Contexts |
 |---|---|---|
-| `Tier.FAST` | Configured fast routes, then local | intent judge, tool router, tool search, enrichment extractor, memory and tool digests, graph placement picker, evaluator, weather place extraction |
-| `Tier.CHAT` | Configured chat routes, then local | reply loop, planner, step resolver, dictation cleanup, nutrition calls, other tool-specific completions |
+| `Tier.FAST` | Configured fast routes, then local | intent judge, tool router, tool search, enrichment extractor, memory and tool digests, graph placement picker, evaluator, weather place extraction, school exam extraction |
+| `Tier.CHAT` | Configured chat routes, then local | reply loop, planner, step resolver, dictation cleanup, nutrition calls, spoken school morning briefing, other tool-specific completions |
 | `Tier.PRIVATE` | loopback Ollama only | diary summary, deflection rewrite, topic optimisation, graph extraction, node merge, graph auto-split |
 
 Memory retrieval may send the selected snippet text into FAST or CHAT calls.

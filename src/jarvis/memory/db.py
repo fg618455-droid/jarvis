@@ -75,6 +75,12 @@ CREATE TABLE IF NOT EXISTS passive_transcripts (
   source_app   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS passive_by_date ON passive_transcripts(date_utc);
+
+-- Small durable runtime gates that must survive daemon restarts.
+CREATE TABLE IF NOT EXISTS app_state (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 """
 
 _VSS_SCHEMA_SQL = """
@@ -148,6 +154,25 @@ class Database:
             self.conn.commit()
         if self.is_vss_enabled:
             self._cleanup_orphaned_summary_embeddings()
+
+    def get_app_state(self, key: str) -> Optional[str]:
+        """Read one small persisted runtime value."""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT value FROM app_state WHERE key = ?",
+                (str(key),),
+            ).fetchone()
+        return str(row["value"]) if row is not None else None
+
+    def set_app_state(self, key: str, value: str) -> None:
+        """Persist one small runtime value atomically."""
+        with self._lock:
+            self.conn.execute(
+                """INSERT INTO app_state (key, value) VALUES (?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                (str(key), str(value)),
+            )
+            self.conn.commit()
 
     def _cleanup_orphaned_summary_embeddings(self) -> int:
         """Delete ``summary_vec``/``embeddings`` rows left behind by a

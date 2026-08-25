@@ -167,9 +167,10 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 - **Control Centre** - A local web interface the daemon serves at `http://127.0.0.1:5055`: live state, memory, conversation, tools, security, technical readings, and every setting. Offline, no build step, nothing leaves the machine.
 - **Face/Visualizer** - A face in the Control Centre that idles, listens, thinks, and speaks in step with the real conversation, reading Jarvis's own live state directly (no signal files, no second server). The face gallery itself is a vendored, AGPL-3.0-licensed third-party component; see `THIRD_PARTY_NOTICES.md`.
 - **Passive Capture (opt-in)** - Keep a local, text-only record of speech the recogniser already transcribed, including ambient conversation not addressed to Jarvis. It is off by default, visibly indicated while active, and deletable by line, day, or in full. No audio is written to disk.
+- **School Briefing (opt-in)** - Ask for a raw countdown to examinations at any time, or enable one short spoken School-memory briefing after a chosen local time each morning. Proactive speech is off by default and defers whenever the user or Jarvis is already speaking.
 - **Adaptive Tone** - Automatically surgical for code, pragmatic for business, encouraging for wellbeing — no manual mode switching
 - **Smart Tool Selection** - Embedding-based relevance filtering picks only the tools needed per query — add unlimited MCP tools without performance degradation
-- **Built-in Tools** - Screenshot OCR, web search (DuckDuckGo → Brave → Wikipedia fallback chain with auto-fetch), weather, current time in any city or timezone, home-directory file access, memory provenance for recalled facts, opening websites, apps and folders on your own machine, opt-in structured package management and broader file and named Windows settings management, opt-in semantic browser interaction through isolated Playwright, opt-in native Windows control through UI Automation, nutrition tracking, location awareness, optional Hermes crew delegation, plus a tool-discovery escape hatch the agent uses to widen its own toolset mid-reply. With the crew channel configured, a local turn that is not close to done at 3 seconds is delegated; close-to-done local work has a 5-second hard cutoff. The crew result arrives later in Mission Control or the shared vault, not inline.
+- **Built-in Tools** - Screenshot OCR, web search (DuckDuckGo → Brave → Wikipedia fallback chain with auto-fetch), weather, current time in any city or timezone, School-memory exam countdowns, home-directory file access, memory provenance for recalled facts, opening websites, apps and folders on your own machine, opt-in structured package management and broader file and named Windows settings management, opt-in semantic browser interaction through isolated Playwright, opt-in native Windows control through UI Automation, nutrition tracking, location awareness, optional Hermes crew delegation, plus a tool-discovery escape hatch the agent uses to widen its own toolset mid-reply. With the crew channel configured, a local turn that is not close to done at 3 seconds is delegated; close-to-done local work has a 5-second hard cutoff. The crew result arrives later in Mission Control or the shared vault, not inline.
   - `browserInteract` reads and acts through named page controls in a headed, isolated Playwright browser. It is opt-in and confirms each consequential action.
   - `desktopInteract` reads and acts through named UI Automation controls in one already-running Windows application. It is opt-in and confirms each consequential action.
   - `systemManager` is separately opt-in and exposes only structured actions for exact winget package IDs, absolute-path file operations outside protected system roots, Windows dark mode, and the balanced, power-saver or high-performance power plan. Inspection is unconfirmed at the default security level; mutations require confirmation.
@@ -223,6 +224,26 @@ The Conversation view can delete one line, one UTC day, or the whole passive rec
 ```
 
 Set retention to `0` to keep transcript lines until manual deletion.
+
+</details>
+
+<details>
+<summary><strong>School morning briefing</strong></summary>
+
+The `getExamCountdown` tool reads upcoming assessments from the School branch
+and returns the recorded subject, date text, and a local-day countdown. A date
+that cannot be normalised safely stays unknown instead of being guessed.
+
+The spoken morning briefing uses the same School branch. It is off by default,
+fires at most once per local day after the configured time, and waits when a
+voice, text, dictation, or follow-up conversation is active.
+
+```json
+{
+  "morning_briefing_enabled": false,
+  "morning_briefing_time": "07:00"
+}
+```
 
 </details>
 
@@ -766,7 +787,8 @@ Running from source enables Chatterbox and Kokoro TTS (both use PyTorch, exclude
   "location_auto_detect": false,
   "location_cgnat_resolve_public_ip": false,
   "location_enabled": false,
-  "passive_capture_enabled": false
+  "passive_capture_enabled": false,
+  "morning_briefing_enabled": false
 }
 ```
 

@@ -202,6 +202,12 @@ Note: the always-on warm profile (User + Directives injected on every turn) is s
 
 School is deliberately excluded from the warm profile. Timetables, homework, marks, and exam dates matter for school-related queries, but carrying the entire School subtree on every turn would spend prompt tokens even for unrelated requests. School facts remain available through query-driven graph enrichment.
 
+School-specific consumers use `school_context.read_school_branch()` for a
+bounded traversal of populated School nodes. The exam countdown tool extracts
+raw examination records from this snapshot. The optional morning briefing
+uses the same snapshot for a short CHAT-tier spoken summary. Neither consumer
+adds School to the always-on warm profile.
+
 ## Configuration
 
 | Setting | Default | Description |

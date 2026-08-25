@@ -940,7 +940,8 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
 
     # Passive retention is enforced even while capture is switched off, so an
     # old record is not stranded. Both jobs stay off the startup and audio
-    # threads. The digest worker exists only while the live switch is on.
+    # threads. The shared periodic worker exists only while passive capture
+    # or the optional morning School briefing needs it.
     from .listening.passive_capture import (
         PassiveRetentionWorker,
         initialise_passive_capture,
@@ -957,15 +958,28 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
     passive_retention_worker.start()
     ambient_worker_lock = threading.Lock()
     ambient_worker = None
+    morning_briefing_scheduler = None
 
-    def _set_ambient_worker(enabled: bool, stop_timeout: float = 3.0) -> None:
+    def _set_ambient_worker(
+        enabled: bool,
+        stop_timeout: float = 3.0,
+        *,
+        shutdown: bool = False,
+    ) -> None:
         nonlocal ambient_worker
         worker_to_start = None
         worker_to_stop = None
         with ambient_worker_lock:
-            if enabled:
+            should_run = bool(enabled) or bool(
+                getattr(cfg, "morning_briefing_enabled", False)
+            )
+            if should_run and not shutdown:
                 if ambient_worker is None:
-                    ambient_worker = AmbientDigestWorker(db, cfg)
+                    ambient_worker = AmbientDigestWorker(
+                        db,
+                        cfg,
+                        morning_briefing=morning_briefing_scheduler,
+                    )
                 worker_to_start = ambient_worker
             elif ambient_worker is not None:
                 worker_to_stop = ambient_worker
@@ -1208,6 +1222,34 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
     voice_thread: Optional[threading.Thread] = None
     voice_thread = VoiceListener(db, cfg, tts, _global_dialogue_memory)
     voice_thread.start()
+
+    from .memory.morning_briefing import MorningBriefingScheduler
+
+    def _morning_briefing_available() -> bool:
+        if not bool(getattr(tts, "enabled", False)) or tts.is_speaking():
+            return False
+        if runtime_state.phase is not Phase.IDLE or _chat_query_lock.locked():
+            return False
+        if bool(getattr(voice_thread, "is_speech_active", False)):
+            return False
+        state_manager = getattr(voice_thread, "state_manager", None)
+        if state_manager is None:
+            return False
+        return not (
+            state_manager.is_conversation_active
+            or state_manager.is_hot_window_active()
+            or state_manager.is_command_capture_active
+        )
+
+    morning_briefing_scheduler = MorningBriefingScheduler(
+        db,
+        cfg,
+        tts,
+        is_available=_morning_briefing_available,
+    )
+    with ambient_worker_lock:
+        if ambient_worker is not None:
+            ambient_worker.set_morning_briefing(morning_briefing_scheduler)
     _set_ambient_worker(passive_capture_enabled())
     from .security.voice_confirm import set_voice_confirmation_requester
     set_voice_confirmation_requester(
@@ -1316,7 +1358,11 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
         set_voice_confirmation_requester(None)
 
         unregister_passive_switch_listener(_set_ambient_worker)
-        _set_ambient_worker(False, stop_timeout=SHUTDOWN_DIARY_TIMEOUT_SEC)
+        _set_ambient_worker(
+            False,
+            stop_timeout=SHUTDOWN_DIARY_TIMEOUT_SEC,
+            shutdown=True,
+        )
         passive_retention_worker.stop()
 
         if tts is not None:
@@ -1403,7 +1449,11 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
         from .security.voice_confirm import set_voice_confirmation_requester
         set_voice_confirmation_requester(None)
         unregister_passive_switch_listener(_set_ambient_worker)
-        _set_ambient_worker(False, stop_timeout=SHUTDOWN_DIARY_TIMEOUT_SEC)
+        _set_ambient_worker(
+            False,
+            stop_timeout=SHUTDOWN_DIARY_TIMEOUT_SEC,
+            shutdown=True,
+        )
         passive_retention_worker.stop()
 
         if telegram_router is not None:

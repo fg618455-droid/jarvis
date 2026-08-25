@@ -109,8 +109,11 @@ Raw ambient lines never enter a reply prompt. They reach memory only through
 a digest, so that a day of room chatter costs the reply path nothing and
 cannot flood it.
 
-A worker thread wakes every `passive_digest_interval_min` (default 15) and,
-if there is anything undigested and not `addressed`:
+The shared `AmbientDigestWorker` wakes at most every 30 seconds because it
+also hosts the timer-free morning School briefing gate. Ambient processing
+still runs only every `passive_digest_interval_min` (default 15), only while
+passive capture is enabled, and only when there is anything undigested and
+not `addressed`:
 
 1. Takes the undigested lines for one UTC day, oldest day first, capped at
    `passive_digest_max_lines` (default 120) per pass so a backlog is worked
@@ -205,6 +208,11 @@ Passive capture is a bystander to the voice path and fails like one.
 
 Nothing in this feature may block the audio loop, delay a reply, or stop the
 daemon from starting.
+
+The worker exists while passive capture or the morning School briefing is
+enabled. Switching passive capture off stops it only when the morning feature
+does not need it. Both features share this one thread and daemon shutdown
+stops it once.
 
 ## Regression guards
 

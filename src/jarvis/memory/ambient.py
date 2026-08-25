@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any, Iterable, Optional
 
 from ..debug import debug_log
@@ -181,13 +182,34 @@ def process_ambient_digest_once(db, cfg) -> bool:
 
 
 class AmbientDigestWorker:
-    """A stoppable worker that runs one ambient pass at each interval."""
+    """A stoppable worker for periodic ambient and morning work."""
 
-    def __init__(self, db, cfg) -> None:
+    def __init__(self, db, cfg, *, morning_briefing=None) -> None:
         self.db = db
         self.cfg = cfg
+        self._morning_briefing = morning_briefing
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+
+    def set_morning_briefing(self, morning_briefing) -> None:
+        """Attach the timer-free morning gate before or after worker start."""
+        self._morning_briefing = morning_briefing
+
+    def run_periodic_once(self, *, ambient_due: bool) -> None:
+        """Run due work once, keeping each feature independently gated."""
+        if self._morning_briefing is not None:
+            try:
+                self._morning_briefing.tick()
+            except Exception as exc:
+                debug_log(
+                    f"morning briefing pass failed: {type(exc).__name__}",
+                    "school",
+                )
+        if ambient_due:
+            from ..listening.passive_capture import passive_capture_enabled
+
+            if passive_capture_enabled():
+                process_ambient_digest_once(self.db, self.cfg)
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -204,6 +226,8 @@ class AmbientDigestWorker:
 
     def stop(self, timeout: float = 3.0) -> None:
         self._stop.set()
+        if self._morning_briefing is not None:
+            self._morning_briefing.stop()
         if self._thread is not None:
             self._thread.join(timeout=timeout)
             if not self._thread.is_alive():
@@ -220,5 +244,13 @@ class AmbientDigestWorker:
             0.01,
             float(getattr(self.cfg, "passive_digest_interval_min", 15.0)),
         ) * 60.0
-        while not self._stop.wait(interval):
-            process_ambient_digest_once(self.db, self.cfg)
+        # A short wake lets the configured clock time be honoured without a
+        # second timer thread. Ambient digest cadence remains independent.
+        poll_interval = min(30.0, interval)
+        next_ambient = time.monotonic() + interval
+        while not self._stop.wait(poll_interval):
+            now = time.monotonic()
+            ambient_due = now >= next_ambient
+            self.run_periodic_once(ambient_due=ambient_due)
+            if ambient_due:
+                next_ambient = now + interval

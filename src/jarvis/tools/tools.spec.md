@@ -18,3 +18,10 @@ not a phrase matcher, tells the ordinary router when to select it.
 When sourced retrieval coexists with warm-profile or hot-window context, the
 tool reports `status: partial`; the model cites a record only when its snippet
 supports the questioned fact.
+
+`getExamCountdown` is a read-only School-memory tool. It returns an
+`as_of_date` and raw examination records containing subject, the exact stored
+date text, and a nullable local-day countdown. It never composes an answer or
+chooses urgency wording. Date normalisation is conservative: an extractor's
+ISO candidate is accepted only when the stored date text supplies explicit
+day and year evidence; all uncertain dates keep `days_remaining: null`.

@@ -76,6 +76,7 @@ CATEGORIES = [
     ("vad", "📊 Voice Activity Detection"),
     ("timing", "⏱️ Timing & Windows"),
     ("memory", "🧠 Memory & Dialogue"),
+    ("school", "🎓 School"),
     ("passive", "📝 Passive Capture"),
     ("security", "🔐 Security"),
     ("location", "📍 Location"),
@@ -434,6 +435,14 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("agentic_max_turns", "Agentic Max Turns",
       "Maximum turns in agentic tool-use loops",
       "memory", "int", min_val=1, max_val=30)
+
+    # --- School ---
+    f("morning_briefing_enabled", "Morning Briefing",
+      "Speak one short School memory summary after the configured time each day. Off by default",
+      "school", "bool")
+    f("morning_briefing_time", "Briefing Time",
+      "Local time after which today's school briefing may be spoken, in 24-hour HH:MM format",
+      "school", "str")
 
     # --- Passive Capture ---
     f("passive_capture_enabled", "Enable Passive Capture",

@@ -3,6 +3,7 @@ import sys
 import json
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 from dotenv import load_dotenv
@@ -290,6 +291,10 @@ class Settings:
     passive_capture_min_words: int
     passive_digest_interval_min: float
     passive_digest_max_lines: int
+
+    # Optional spoken summary sourced only from the School graph branch.
+    morning_briefing_enabled: bool
+    morning_briefing_time: str
 
     # Agentic Loop
     agentic_max_turns: int
@@ -957,6 +962,10 @@ def get_default_config() -> Dict[str, Any]:
         "passive_digest_interval_min": 15.0,
         "passive_digest_max_lines": 120,
 
+        # Morning school briefing
+        "morning_briefing_enabled": False,
+        "morning_briefing_time": "07:00",
+
         # Agentic Loop
         "agentic_max_turns": 8,
         "tool_selection_strategy": "llm",
@@ -1358,6 +1367,17 @@ def load_settings() -> Settings:
     passive_digest_max_lines = max(
         1, int(merged.get("passive_digest_max_lines", 120))
     )
+    morning_briefing_enabled = bool(
+        merged.get("morning_briefing_enabled", False)
+    )
+    morning_briefing_time = str(
+        merged.get("morning_briefing_time", "07:00") or "07:00"
+    ).strip()
+    try:
+        datetime.strptime(morning_briefing_time, "%H:%M")
+    except ValueError:
+        print("  ⚠️ Morning briefing time is invalid; using 07:00", flush=True)
+        morning_briefing_time = "07:00"
     agentic_max_turns = int(merged.get("agentic_max_turns", 8))
     tool_selection_strategy = str(merged.get("tool_selection_strategy", "llm")).lower()
     if tool_selection_strategy not in ("all", "keyword", "embedding", "llm"):
@@ -1643,6 +1663,8 @@ def load_settings() -> Settings:
         passive_capture_min_words=passive_capture_min_words,
         passive_digest_interval_min=passive_digest_interval_min,
         passive_digest_max_lines=passive_digest_max_lines,
+        morning_briefing_enabled=morning_briefing_enabled,
+        morning_briefing_time=morning_briefing_time,
         agentic_max_turns=agentic_max_turns,
         tool_selection_strategy=tool_selection_strategy,
         evaluator_enabled=evaluator_enabled,

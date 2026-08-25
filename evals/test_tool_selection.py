@@ -50,6 +50,12 @@ TOOL_SELECTION_CASES = [
         5,
         id="web search query selects webSearch and few others",
     ),
+    pytest.param(
+        "which exams are coming up and how long do I have",
+        ["getExamCountdown"],
+        5,
+        id="exam countdown query selects getExamCountdown and few others",
+    ),
 ]
 
 

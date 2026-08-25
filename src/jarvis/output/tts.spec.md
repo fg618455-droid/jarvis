@@ -12,6 +12,10 @@ listener's echo detection, the face/visualizer waveform feed) never branches
 on which engine is running. An unrecognised value falls back to Piper, the
 default.
 
+The optional morning School briefing enters through the same `speak` queue.
+Its scheduler checks that TTS, listening, conversation, and query state are
+idle immediately before queueing; a busy state defers rather than interrupts.
+
 The default is `"piper"`. Cloud speech is opt-in: an absent, old, or fresh
 configuration cannot select it and cannot send text off the computer. TTS is
 an output-only path. Wake-word detection and passive or always-on microphone
