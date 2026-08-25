@@ -210,6 +210,15 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("llm_chat_model", "Chat Model",
       "Model name the provider exposes. Leave empty to use the Ollama chat model.",
       "llm_provider", "str", nullable=True)
+    f("chat_backend_override", "Chat Backend Override",
+      "Backend to try first for main CHAT replies. An unavailable choice falls "
+      "through to the configured route chain.",
+      "llm_provider", "choice",
+      choices=[("auto", "Automatic"),
+               ("ollama", "Ollama"),
+               ("claude_subscription", "Claude subscription"),
+               ("codex_subscription", "Codex subscription"),
+               ("crew_chat", "Crew chat (Hermes)")])
     f("embedding_provider", "Embedding Provider",
       "Runtime for embeddings. Leave on 'Same as chat provider' unless your "
       "chat runtime has no embeddings endpoint (then route them to Ollama).",

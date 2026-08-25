@@ -20,6 +20,7 @@ from .backend import (
     ToolsNotSupportedError,
 )
 from .claude_subscription import ClaudeSubscriptionBackend
+from .codex_subscription import CodexSubscriptionBackend
 from .crew_chat import CrewChatBackend
 from .ollama import OllamaBackend
 from .openai_compatible import OpenAICompatibleBackend
@@ -85,6 +86,8 @@ def _build_backend(route: Route, settings: Any = None) -> LLMBackend:
         return OpenAICompatibleBackend(route.base_url, api_key=api_key or None)
     if route.provider == "claude_subscription":
         return ClaudeSubscriptionBackend()
+    if route.provider == "codex_subscription":
+        return CodexSubscriptionBackend()
     if route.provider == "crew_chat":
         return CrewChatBackend(
             getattr(settings, "crew_api_url", "") or "",
@@ -191,11 +194,14 @@ class RoutedBackend(LLMBackend):
         *,
         capability: str = "chat",
         preferred_provider: str | None = None,
+        deadline: RequestDeadline | None = None,
     ):
         candidates = self._ordered_for_preference(
             list(self._available(self._tier(model), capability)), preferred_provider,
         )
         for route in candidates:
+            if deadline is not None and deadline.expired(clock=self._clock):
+                break
             try:
                 result = invoke(self._backend(route), route)
             except ToolsNotSupportedError:
@@ -328,7 +334,8 @@ class RoutedBackend(LLMBackend):
         return None
 
     def chat(self, chat_model, messages, timeout_sec=30.0, extra_options=None,
-             tools=None, thinking=False, on_token=None, preferred_provider=None):
+             tools=None, thinking=False, on_token=None, preferred_provider=None,
+             deadline: RequestDeadline | None = None):
         # A route that cannot stream still answers, it just answers all at
         # once — so falling back through the chain never depends on whether
         # the caller wanted its text early.
@@ -338,10 +345,17 @@ class RoutedBackend(LLMBackend):
         # ``_ordered_for_preference``); it never removes the rest of the
         # chain, so a promoted route that is missing or fails still falls
         # through exactly as it would with no preference at all.
+        deadline = deadline or RequestDeadline.after(timeout_sec, clock=self._clock)
+
         def invoke(backend, route):
             listener = on_token if "stream" in route.capabilities else None
             return backend.chat(
-                route.model, messages, timeout_sec=self._timeout(timeout_sec, route),
+                route.model,
+                messages,
+                timeout_sec=min(
+                    self._timeout(timeout_sec, route),
+                    deadline.remaining(clock=self._clock),
+                ),
                 extra_options=extra_options, tools=tools, thinking=thinking,
                 on_token=listener,
             )
@@ -350,6 +364,7 @@ class RoutedBackend(LLMBackend):
             chat_model, invoke,
             capability="tools" if tools else "chat",
             preferred_provider=preferred_provider,
+            deadline=deadline,
         )
 
     def embed(self, text, model, timeout_sec=15.0):

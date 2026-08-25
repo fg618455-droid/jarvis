@@ -24,6 +24,7 @@ from .tiers import Tier
 _OLLAMA = "ollama"
 _OPENAI_COMPATIBLE = "openai_compatible"
 _CLAUDE_SUBSCRIPTION = "claude_subscription"
+_CODEX_SUBSCRIPTION = "codex_subscription"
 _CREW_CHAT = "crew_chat"
 _DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 _ROUTER_CACHE: dict[int, tuple[weakref.ReferenceType[Any], RoutedBackend]] = {}
@@ -57,7 +58,8 @@ def _resolve_route_provider(value: Any) -> str:
 
     Unlike :func:`_resolve_provider` (used for the single-endpoint
     ``llm_provider``/``embedding_provider`` settings), this also accepts
-    ``claude_subscription`` and ``crew_chat``: both are CHAT-chain-only
+    ``claude_subscription``, ``codex_subscription``, and ``crew_chat`` are
+    CHAT-chain-only
     alternatives, never a blanket single-endpoint choice, because the
     single-endpoint path also serves the FAST tier and embeddings, and a
     cloud subscription or crew relay call has no place answering either —
@@ -66,7 +68,13 @@ def _resolve_route_provider(value: Any) -> str:
     """
     if isinstance(value, str):
         v = value.strip().lower()
-        if v in (_OLLAMA, _OPENAI_COMPATIBLE, _CLAUDE_SUBSCRIPTION, _CREW_CHAT):
+        if v in (
+            _OLLAMA,
+            _OPENAI_COMPATIBLE,
+            _CLAUDE_SUBSCRIPTION,
+            _CODEX_SUBSCRIPTION,
+            _CREW_CHAT,
+        ):
             return v
     return _OLLAMA
 
@@ -120,6 +128,8 @@ def get_llm_backend(settings: Any) -> LLMBackend:
             if tier is Tier.PRIVATE:
                 continue
             provider = _resolve_route_provider(raw.get("provider"))
+            if provider == _CODEX_SUBSCRIPTION and tier is not Tier.CHAT:
+                continue
             base_url = str(raw.get("base_url", "") or "").strip()
             model = str(raw.get("model", "") or "").strip()
             if not base_url or not model:
@@ -154,6 +164,18 @@ def get_llm_backend(settings: Any) -> LLMBackend:
                 enabled=bool(raw.get("enabled", True)),
                 capabilities=capabilities,
             ))
+
+    # A Codex CLI process has materially higher startup latency than the
+    # ordinary configured endpoints. Keep every faster CHAT candidate in its
+    # configured relative order, then try Codex before the local fallback.
+    codex_chat_routes = [
+        route
+        for route in routes
+        if route.tier is Tier.CHAT and route.provider == _CODEX_SUBSCRIPTION
+    ]
+    if codex_chat_routes:
+        routes = [route for route in routes if route not in codex_chat_routes]
+        routes.extend(codex_chat_routes)
 
     configured_ollama_url = _str_attr(
         settings, "ollama_base_url", _DEFAULT_OLLAMA_URL

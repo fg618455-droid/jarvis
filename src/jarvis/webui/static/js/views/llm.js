@@ -102,7 +102,7 @@ export async function mount(root) {
   await refresh();
 }
 
-const CHAT_BACKEND_CHOICES = ["auto", "ollama", "claude_subscription", "crew_chat"];
+const CHAT_BACKEND_CHOICES = ["auto", "ollama", "claude_subscription", "codex_subscription", "crew_chat"];
 const CREW_CHAT_AGENTS = ["", "jarvis", "dev", "research", "assistant", "schule", "scribe", "reach"];
 
 function paintBackendSelectors(container, currentPayload) {
