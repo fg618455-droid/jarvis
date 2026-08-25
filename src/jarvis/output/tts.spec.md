@@ -3,14 +3,126 @@
 ## Engine selection
 
 `create_tts_engine(engine=cfg.tts_engine, ...)` in `tts.py` is the one place
-that turns `tts_engine` (`"piper"` | `"chatterbox"` | `"kokoro"`) into a
-concrete engine instance. `debug_log` records which engine was selected.
+that turns `tts_engine` (`"piper"` | `"chatterbox"` | `"kokoro"` | `"cloud"`)
+into a concrete engine instance. `debug_log` records which engine was selected.
 Every engine shares one interface (`start`, `stop`, `speak`, `end_of_reply`,
 `interrupt`, `is_speaking`, `get_last_spoken_text`) and one queue-of-`Utterance`
 worker-thread shape, so the rest of the daemon (the reply engine, the
 listener's echo detection, the face/visualizer waveform feed) never branches
 on which engine is running. An unrecognised value falls back to Piper, the
 default.
+
+The default is `"piper"`. Cloud speech is opt-in: an absent, old, or fresh
+configuration cannot select it and cannot send text off the computer. TTS is
+an output-only path. Wake-word detection and passive or always-on microphone
+paths remain local.
+
+## Cloud: ordered providers with a local final stage
+
+`CloudTTS` owns the same queue, worker thread, playback stream, per-utterance
+callbacks, interruption events and loopback state as the local engines. For
+each utterance it tries configured, enabled and healthy cloud providers in
+list order. The first provider to return usable audio supplies the utterance.
+Quota exhaustion, rate limiting, authentication failure, timeout, network
+failure, unavailable audio and an empty response fall through. Selection and
+every fall-through are recorded with `debug_log` without credentials or
+spoken text.
+
+The final candidate is always a local engine constructed by
+`create_tts_engine` from `tts_local_fallback_engine`. The setting accepts
+`"piper"`, `"chatterbox"` or `"kokoro"` and defaults to `"piper"`; an invalid
+value also resolves to Piper. It cannot select `"cloud"`, so the chain cannot
+recurse or configure away its local end. When that local engine fails,
+`CloudTTS` logs and prints a warning and skips the utterance. No raw speech
+exception reaches the reply engine.
+
+An interrupt sets the cloud engine's cancellation event, aborts an active
+audio stream and interrupts the local engine. The provider loop checks that
+event before synthesis, between yielded chunks, after synthesis and before
+every fall-through. An interrupted attempt never starts the next provider.
+
+### Provider interface and audio
+
+One vendor client implements `CloudTTSProvider.synthesise(text, voice_id,
+model, timeout_sec, cancelled)` and yields `TTSAudioChunk` objects. The
+cancellation event gives a network-free fake and a real streaming client the
+same observable interruption contract. A client raises one of these typed
+failures when it cannot provide audio:
+
+| Failure | Meaning |
+|---|---|
+| `TTSRateLimited` | Temporary request-rate limit, optionally with `retry_after` seconds |
+| `TTSQuotaExhausted` | Allowance exhausted, optionally with an absolute UTC `reset_at` timestamp |
+| `TTSAuthenticationError` | Missing, rejected or expired credential |
+| `TTSProviderTimeout` | The configured provider deadline expired |
+| `TTSNetworkError` | Transport or remote connectivity failure |
+| `TTSProviderUnavailable` | Client unavailable or response audio unsupported or malformed |
+
+Chunks carry either signed 16-bit little-endian mono PCM and its sample rate,
+or one complete uncompressed mono 16-bit PCM WAV response. WAV parsing uses
+the standard-library `wave` module. MP3 and other compressed formats are not
+accepted or decoded. A provider whose plan cannot return PCM or WAV raises
+`TTSProviderUnavailable`, allowing the chain to continue without an audio
+decoder dependency.
+
+Provider clients yield chunks as the response arrives. `CloudTTS` checks for
+interruptions between chunks, then joins one successful attempt for playback
+through the same sounddevice callback and visualiser waveform feed used by
+Kokoro. Keeping attempt audio separate prevents a partly failed provider from
+being followed by a duplicate rendition of the utterance.
+
+The architecture supplies no vendor SDK or vendor HTTP client. A configured
+provider without an installed client reports `TTSProviderUnavailable` and
+falls through to the next provider or the local final stage.
+
+### Provider health and cooldown state
+
+`TTSProviderStateStore` writes `~/.jarvis/tts_provider_state.json` atomically
+with mode `0o600` where the platform supports POSIX permissions. Keys are
+hashes of non-secret provider identity fields. Values contain only hit,
+failure, rate-limit and block counters plus the last safe error class. The
+file never contains a URL, credential, environment variable name, voice id,
+model name or spoken text.
+
+| Failure | Block |
+|---|---|
+| Rate limit with `retry_after` | Exactly the stated duration |
+| Rate limit without a duration | 60 seconds, then 300 seconds, then 900 seconds |
+| Quota exhaustion with `reset_at` | Until the stated reset |
+| Quota exhaustion without a reset | Until midnight UTC |
+| Authentication failure | Invalid for the process lifetime only |
+| Timeout, network, unavailable or empty audio | Recorded, then the next utterance may retry |
+
+Rate-limit and quota blocks persist across process restarts. Authentication
+invalidation is process-local and is not written as a persisted block, so a
+restart can retry a corrected environment credential.
+
+### Configuration
+
+`tts_cloud_providers` is an ordered list. Malformed entries are ignored. Each
+valid entry has `name`, `provider`, `api_key_env`, `voice_id`, `model`,
+`enabled` and `timeout_sec`. Credentials never appear in this list. The value
+of `api_key_env` names an environment variable; its value is read lazily when
+the provider client is first built and is never copied into configuration,
+logged or represented by the engine.
+
+```json
+{
+  "tts_engine": "cloud",
+  "tts_cloud_providers": [
+    {
+      "name": "primary-speech",
+      "provider": "vendor-client-id",
+      "api_key_env": "JARVIS_PRIMARY_TTS_KEY",
+      "voice_id": "voice-opaque-id",
+      "model": "speech-model",
+      "enabled": true,
+      "timeout_sec": 8.0
+    }
+  ],
+  "tts_local_fallback_engine": "piper"
+}
+```
 
 ## Kokoro: a sidecar engine
 

@@ -1560,6 +1560,9 @@ def create_tts_engine(
     # Kokoro parameters
     kokoro_voice: str = "bm_lewis",
     kokoro_speed: float = 1.0,
+    # Cloud chain parameters
+    cloud_providers: Optional[list[dict]] = None,
+    local_fallback_engine: str = "piper",
 ):
     """Factory function to create the appropriate TTS engine.
 
@@ -1567,10 +1570,46 @@ def create_tts_engine(
     - "piper" (default): Neural TTS with auto-download, exact duration tracking
     - "chatterbox": AI voice with emotion control (requires PyTorch)
     - "kokoro": Local neural TTS vendored from backtalk, exact duration tracking
+    - "cloud": Ordered cloud provider chain with a mandatory local final stage
     """
     debug_log(f"selecting TTS engine: {engine}", "tts")
     engine_key = engine.lower()
-    if engine_key == "chatterbox":
+    if engine_key == "cloud":
+        from .cloud_tts import CloudProviderConfig, CloudTTS
+
+        fallback_key = str(local_fallback_engine or "piper").lower()
+        if fallback_key not in {"piper", "chatterbox", "kokoro"}:
+            fallback_key = "piper"
+        local_engine = create_tts_engine(
+            engine=fallback_key,
+            enabled=enabled,
+            voice=voice,
+            rate=rate,
+            device=device,
+            audio_prompt_path=audio_prompt_path,
+            exaggeration=exaggeration,
+            cfg_weight=cfg_weight,
+            piper_model_path=piper_model_path,
+            piper_speaker=piper_speaker,
+            piper_length_scale=piper_length_scale,
+            piper_noise_scale=piper_noise_scale,
+            piper_noise_w=piper_noise_w,
+            piper_sentence_silence=piper_sentence_silence,
+            output_device=output_device,
+            kokoro_voice=kokoro_voice,
+            kokoro_speed=kokoro_speed,
+        )
+        provider_configs = tuple(
+            item if isinstance(item, CloudProviderConfig) else CloudProviderConfig(**item)
+            for item in (cloud_providers or [])
+        )
+        return CloudTTS(
+            providers=provider_configs,
+            local_engine=local_engine,
+            enabled=enabled,
+            output_device=output_device,
+        )
+    elif engine_key == "chatterbox":
         return ChatterboxTTS(
             enabled=enabled,
             voice=voice,

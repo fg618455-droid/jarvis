@@ -8,6 +8,7 @@ list that has drifted from the config makes a setting unreachable in both.
 from jarvis.config import get_default_config
 from jarvis.config_metadata import (
     CATEGORIES,
+    CLOUD_TTS_PROVIDER_FIELD_METADATA,
     FIELD_METADATA,
     FieldMeta,
     LLM_ROUTE_FIELD_METADATA,
@@ -41,6 +42,14 @@ class TestFieldMetadata:
             field for field in LLM_ROUTE_FIELD_METADATA if field.key == "api_key"
         )
         assert api_key.field_type == "password"
+
+    def test_cloud_tts_metadata_stores_only_the_environment_name(self):
+        keys = {field.key for field in CLOUD_TTS_PROVIDER_FIELD_METADATA}
+        assert keys == {
+            "name", "provider", "api_key_env", "voice_id", "model",
+            "enabled", "timeout_sec",
+        }
+        assert "api_key" not in keys
 
     def test_no_duplicate_keys(self):
         """Each config key should appear at most once in the metadata."""

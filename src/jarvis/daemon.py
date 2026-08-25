@@ -1192,6 +1192,9 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
         # Kokoro parameters
         kokoro_voice=cfg.tts_kokoro_voice,
         kokoro_speed=cfg.tts_kokoro_speed,
+        # Cloud chain parameters
+        cloud_providers=cfg.tts_cloud_providers,
+        local_fallback_engine=cfg.tts_local_fallback_engine,
     )
     _global_tts_engine = tts  # Expose for face widget speaking animation
     if tts.enabled:

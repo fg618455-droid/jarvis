@@ -87,6 +87,8 @@ class MockConfig:
     voice_debug: bool = True
     tts_enabled: bool = False
     tts_engine: str = "piper"
+    tts_cloud_providers: list = field(default_factory=list)
+    tts_local_fallback_engine: str = "piper"
     tts_output_device: Optional[str] = None
     tts_voice: Optional[str] = None
     tts_rate: int = 200

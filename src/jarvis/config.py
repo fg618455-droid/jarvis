@@ -171,9 +171,11 @@ class Settings:
 
     # Text-to-Speech
     tts_enabled: bool
-    tts_engine: str  # "piper" (default), "chatterbox", or "kokoro"
+    tts_engine: str  # "piper" (default), "chatterbox", "kokoro", or "cloud"
     tts_voice: str | None
     tts_rate: int | None  # Words per minute (WPM), 200=normal
+    tts_cloud_providers: list[Dict[str, Any]]
+    tts_local_fallback_engine: str
     tts_chatterbox_device: str  # "cuda", "auto", or "cpu" for Chatterbox
     tts_chatterbox_audio_prompt: str | None  # Path to audio file for voice cloning with Chatterbox
     tts_chatterbox_exaggeration: float  # Emotion exaggeration control (0.0-1.0+)
@@ -810,9 +812,11 @@ def get_default_config() -> Dict[str, Any]:
 
         # Text-to-Speech
         "tts_enabled": True,
-        "tts_engine": "piper",  # "piper" (default), "chatterbox", or "kokoro"
+        "tts_engine": "piper",  # "piper" (default), "chatterbox", "kokoro", or "cloud"
         "tts_voice": None,
         "tts_rate": 200,  # Words per minute (WPM), 200=normal
+        "tts_cloud_providers": [],
+        "tts_local_fallback_engine": "piper",
         "tts_chatterbox_device": "cuda",  # "cuda" (recommended), "auto", or "cpu"
         "tts_chatterbox_audio_prompt": None,  # Path to audio file for voice cloning
         "tts_chatterbox_exaggeration": 0.5,  # Emotion exaggeration (0.0-1.0+)
@@ -1126,8 +1130,39 @@ def load_settings() -> Settings:
     active_profiles = _ensure_list(merged.get("active_profiles"))
     tts_enabled = bool(merged.get("tts_enabled", True))
     tts_engine = str(merged.get("tts_engine", "piper")).lower()
-    if tts_engine not in ("piper", "chatterbox", "kokoro"):
+    if tts_engine not in ("piper", "chatterbox", "kokoro", "cloud"):
         tts_engine = "piper"  # Default to piper if invalid value
+    tts_cloud_providers: list[Dict[str, Any]] = []
+    raw_cloud_providers = merged.get("tts_cloud_providers", [])
+    if isinstance(raw_cloud_providers, list):
+        for raw in raw_cloud_providers:
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("name", "") or "").strip()
+            provider = str(raw.get("provider", "") or "").strip().lower()
+            api_key_env = str(raw.get("api_key_env", "") or "").strip()
+            voice_id = str(raw.get("voice_id", "") or "").strip()
+            model = str(raw.get("model", "") or "").strip()
+            if not all((name, provider, api_key_env, voice_id, model)):
+                continue
+            try:
+                timeout_sec = max(0.1, float(raw.get("timeout_sec", 10.0)))
+            except (TypeError, ValueError):
+                timeout_sec = 10.0
+            tts_cloud_providers.append({
+                "name": name,
+                "provider": provider,
+                "api_key_env": api_key_env,
+                "voice_id": voice_id,
+                "model": model,
+                "enabled": bool(raw.get("enabled", True)),
+                "timeout_sec": timeout_sec,
+            })
+    tts_local_fallback_engine = str(
+        merged.get("tts_local_fallback_engine", "piper") or "piper"
+    ).strip().lower()
+    if tts_local_fallback_engine not in ("piper", "chatterbox", "kokoro"):
+        tts_local_fallback_engine = "piper"
     tts_voice_val = merged.get("tts_voice")
     tts_voice = None if tts_voice_val in (None, "", "null") else str(tts_voice_val)
     tts_rate_val = merged.get("tts_rate")
@@ -1499,6 +1534,8 @@ def load_settings() -> Settings:
         tts_engine=tts_engine,
         tts_voice=tts_voice,
         tts_rate=tts_rate,
+        tts_cloud_providers=tts_cloud_providers,
+        tts_local_fallback_engine=tts_local_fallback_engine,
         tts_chatterbox_device=tts_chatterbox_device,
         tts_chatterbox_audio_prompt=tts_chatterbox_audio_prompt,
         tts_chatterbox_exaggeration=tts_chatterbox_exaggeration,

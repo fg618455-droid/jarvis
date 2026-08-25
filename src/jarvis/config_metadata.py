@@ -50,6 +50,18 @@ LLM_ROUTE_FIELD_METADATA = (
 )
 
 
+CLOUD_TTS_PROVIDER_FIELD_METADATA = (
+    FieldMeta("name", "Name", "Display name for this provider", "tts_cloud_providers", "str"),
+    FieldMeta("provider", "Provider", "Vendor client identifier", "tts_cloud_providers", "str"),
+    FieldMeta("api_key_env", "API Key Environment", "Environment variable containing the credential", "tts_cloud_providers", "str"),
+    FieldMeta("voice_id", "Voice ID", "Opaque provider voice identifier", "tts_cloud_providers", "str"),
+    FieldMeta("model", "Model", "Provider model name", "tts_cloud_providers", "str"),
+    FieldMeta("enabled", "Enabled", "Whether this provider participates in the chain", "tts_cloud_providers", "bool"),
+    FieldMeta("timeout_sec", "Timeout", "Seconds before trying the next provider", "tts_cloud_providers", "float",
+              min_val=0.1, max_val=600, step=0.5, suffix="s"),
+)
+
+
 # Categories and their display order
 CATEGORIES = [
     ("llm", "🤖 LLM & AI Models"),
@@ -221,7 +233,13 @@ def _build_field_metadata() -> List[FieldMeta]:
       "tts", "bool")
     f("tts_engine", "TTS Engine", "Speech synthesis engine",
       "tts", "choice", choices=[("piper", "Piper (Neural)"), ("chatterbox", "Chatterbox (Voice Cloning)"),
-                                 ("kokoro", "Kokoro (Neural)")])
+                                 ("kokoro", "Kokoro (Neural)"),
+                                 ("cloud", "Cloud chain (opt-in)")])
+    f("tts_local_fallback_engine", "Local Fallback",
+      "Local engine used after every cloud provider fails",
+      "tts", "choice", choices=[("piper", "Piper (Neural)"),
+                                  ("chatterbox", "Chatterbox (Voice Cloning)"),
+                                  ("kokoro", "Kokoro (Neural)")])
     f("tts_rate", "Speech Rate", "Words per minute (200 = normal)",
       "tts", "int", min_val=80, max_val=400, step=10, suffix="WPM", nullable=True)
 

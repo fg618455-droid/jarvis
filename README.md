@@ -502,6 +502,28 @@ The voice's first letter selects its language pipeline (`a` American English, `b
 
 Kokoro's own code and the `kokoro` package run in their own subprocess, launched the first time Kokoro is actually asked to speak, so the AGPL-licensed synthesis code stays out of the main daemon process (see `src/jarvis/output/tts.spec.md`).
 
+**Cloud provider chain (opt-in architecture)** - Tries enabled speech providers in configuration order and always ends at a local engine. Cloud speech stays off unless `tts_engine` is explicitly set to `"cloud"`. Credentials are read from environment variables, not `config.json`.
+
+```json
+{
+  "tts_engine": "cloud",
+  "tts_cloud_providers": [
+    {
+      "name": "primary-speech",
+      "provider": "vendor-client-id",
+      "api_key_env": "JARVIS_PRIMARY_TTS_KEY",
+      "voice_id": "voice-opaque-id",
+      "model": "speech-model",
+      "enabled": true,
+      "timeout_sec": 8.0
+    }
+  ],
+  "tts_local_fallback_engine": "piper"
+}
+```
+
+The core includes the fallback architecture and PCM/WAV provider interface. It does not include a vendor client. A provider without an installed client falls through safely to the next entry or the local final stage.
+
 </details>
 
 <details>
