@@ -1081,13 +1081,13 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
     vault_graph_listener = None
 
     # Knowledge graph: wipe + re-seed if the on-disk shape predates the
-    # User/Directives/World taxonomy. Non-destructive to the diary —
+    # fixed purpose taxonomy. Non-destructive to the diary —
     # users can re-import from the control centre's Memory view.
     try:
         from .memory.graph import GraphMemoryStore
         _graph_store_boot = GraphMemoryStore(cfg.db_path)
         if _graph_store_boot.migrate_legacy_shape():
-            print("🧹 Wiped legacy knowledge graph; re-seeded User / Directives / World branches", flush=True)
+            print("🧹 Wiped legacy knowledge graph; re-seeded User / Directives / School / World branches", flush=True)
             print("   📥 Open the control centre's Memory view and use 'Import diary' to repopulate.", flush=True)
         _graph_store_boot.close()
     except Exception as e:

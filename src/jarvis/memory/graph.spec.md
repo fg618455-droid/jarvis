@@ -8,21 +8,24 @@ The graph dynamically structures knowledge by topic relevance using a hierarchic
 
 ## Fixed Top-Level Branches
 
-On first bootstrap the graph seeds three non-deletable branches under root, defined in `FIXED_BRANCHES` in `graph.py`:
+On first bootstrap the graph seeds four non-deletable branches under root, defined in `FIXED_BRANCHES` in `graph.py`:
 
 | Branch ID | Name | Purpose |
 |-----------|------|---------|
 | `user` | User | Everything about the user: identity, location, tastes, habits, history |
 | `directives` | Directives | Imperatives the user issued at the assistant: reply style, tone rules, standing instructions |
+| `school` | School | Felix's schooling: subjects, teachers, homework, exam dates, marks, timetable, and academic progress |
 | `world` | World | External facts the assistant has learned: discoveries, practical knowledge, current events |
 
 These branches are created idempotently via `INSERT OR IGNORE` on stable IDs. The structure is intentionally shallow and purpose-driven — splits deepen each subtree over time, but the top layer stays fixed so the **warm profile** (see below) has a stable shape.
+
+The User/School boundary follows the fact's scope. A fact about Felix as a person in general belongs in User. A fact specifically tied to his participation in school belongs in School, even when Felix is the grammatical subject. Therefore "Felix finds mathematics difficult at school" is School, while a broad personal hobby or trait unrelated to schooling is User.
 
 No Other branch: the extractor defaults unknown classifications to `world`. A `user` fact is loaded into every future prompt as an established truth about the person, so an unclear or misclassified fact — including overheard/third-party content the extractor failed to route correctly — is filed as general knowledge instead.
 
 ### Legacy-Shape Migration (destructive)
 
-`GraphMemoryStore.migrate_legacy_shape()` checks the on-disk graph against the expected shape at daemon start-up. The graph is considered non-conforming if root has any direct child that isn't one of the fixed branches, or if root's own `data` column is non-empty (cold-start writes that landed on root before the taxonomy existed). In either case the entire `memory_nodes` table is wiped and root + the three fixed branches are re-seeded.
+`GraphMemoryStore` idempotently seeds any missing fixed branch before `migrate_legacy_shape()` checks the on-disk graph at daemon start-up. Adding a fixed branch therefore preserves all existing nodes and data. The graph is non-conforming only if root has a direct child that is not one of the fixed branches, or if root's own `data` column is non-empty (cold-start writes that landed on root before the taxonomy existed). In either case the entire `memory_nodes` table is wiped and root plus all four fixed branches are re-seeded.
 
 Why destructive: nodes outside the fixed taxonomy would remain invisible to the warm profile forever. Carrying them as dead weight is worse than a clean slate. The diary is untouched, so users can repopulate the graph through Import diary in the control centre's Memory view. Knowledge nodes are in beta — the structure and classification are stable but the extractor quality is still being tuned.
 
@@ -97,7 +100,7 @@ The graph module exposes a small observer registry, `register_graph_mutation_lis
 
 Touch is intentionally NOT a mutation event: it changes access metadata only, not the warm-profile-relevant fields, so it does not need to invalidate caches.
 
-The reply layer uses this hook from `daemon.py` to invalidate `DialogueMemory`'s warm-profile cache when the User or Directives branches change mid-conversation. World-branch writes are filtered out because the warm profile does not include the world branch.
+The reply layer uses this hook from `daemon.py` to invalidate `DialogueMemory`'s warm-profile cache when the User or Directives branches change mid-conversation. School and World writes are filtered out because the warm profile includes neither branch.
 
 ### Access Decay
 
@@ -158,7 +161,7 @@ The graph memory system is fully automatic — no tool calls required. It integr
 Piggybacks on the existing diary update flow in `conversation.py`:
 
 1. After a successful diary update, the conversation summary is passed to `update_graph_from_dialogue()`
-2. **Extract + classify**: LLM extracts novel knowledge from the summary and classifies each fact into one of the three fixed branches (`USER` / `DIRECTIVES` / `WORLD`). Output is a JSON list of `{"branch": "...", "fact": "..."}` objects. Rough routing heuristic baked into the prompt: if the user is *telling the assistant how to behave* → DIRECTIVES; if the user is *telling the assistant about themselves* → USER; if the assistant *discovered a fact about the world* → WORLD. Overheard or reported speech about a third party (as produced by the ambient digest, see `passive_capture.spec.md`) must route to WORLD, never USER. Unknown branches also default to WORLD. Requests are reframed as knowledge ("user asked about CEX hours" → "CEX Kensington closes at 6pm on Sundays"). Patterns and consolidation emerge through auto-split.
+2. **Extract + classify**: LLM extracts novel knowledge from the summary and classifies each fact into one of the four fixed branches (`USER` / `DIRECTIVES` / `SCHOOL` / `WORLD`). Output is a JSON list of `{"branch": "...", "fact": "..."}` objects. If the user is telling the assistant how to behave, the fact is DIRECTIVES. If the fact is specifically about Felix's schooling, it is SCHOOL. If the user is telling the assistant about themselves outside that school scope, it is USER. External discoveries are WORLD. Overheard or reported speech about a third party (as produced by the ambient digest, see `passive_capture.spec.md`) must route to WORLD, never USER. Unknown branches also default to WORLD, never USER or SCHOOL. Requests are reframed as knowledge ("user asked about CEX hours" → "CEX Kensington closes at 6pm on Sundays"). Patterns and consolidation emerge through auto-split.
 3. **Traverse**: Each fact is placed in the best-fitting node using branch-pinned descent from its tagged branch root (recent/top shortcuts are skipped so cross-branch contamination is impossible):
    - **Recent nodes** — checked first; follows conversational momentum
    - **Top nodes** — checked second; matches frequently accessed knowledge domains
@@ -168,7 +171,7 @@ Piggybacks on the existing diary update flow in `conversation.py`:
 5. **Merge** (batched per node): `merge_node_data(store, node_id, new_facts: list[str], ...)` sends the existing node data + **all** new facts routed to that node in this flush to the picker model and asks it to produce a clean, consolidated, contradiction-free fact list, which is written back as the node's full `data`. The orchestrator groups the flush by `node_id` first so a 5-fact flush against the User node fires **one** rewrite that incorporates all five facts, not five separate rewrites of the same `data`. The call returns a `MergeResult(success: bool, incorporated_indices: list[int])` so the orchestrator can report only the facts that actually survived as new lines (consolidated-out facts aren't claimed as "newly stored"). One LLM call subsumes four behaviours: (a) **supersession** — contradictions, negations, and same-attribute updates drop the old line ("user does not need a daily check-in" replaces both "user has a need for a daily check-in" and the same need framed as an interest); (b) **near-duplicate dedupe** — different wordings of the same fact collapse to one canonical phrasing; (c) **consolidation** — repeated daily activities fold into patterns ("ate sushi on Monday", "ate sushi on Thursday" → "regularly eats sushi"); (d) **meta-narrative pruning** — lines that narrate the assistant's own behaviour, capabilities, or denials ("The assistant is unable to navigate to a web page", "The assistant suggested grilled salmon") are extractor artefacts from earlier prompt versions and get dropped. Counterpart to the extractor's BANNED FACT FORMS list: the extractor blocks them at write-time, the merge prompt scrubs the historical leftovers that a `consolidate-all` sweep can then surface. Genuine user-issued imperatives ("Always reply in British English") are not meta-narrative and survive. Independent facts coexist (a "user ate a Big Mac" line does not silently drop "user is vegetarian"; the contradiction stays visible). Because the latest prompt always rewrites the whole node, updated conventions propagate to old data without a separate migration. **Hallucination guard**: the rewrite is rejected if it returns more lines than `len(existing) + len(new) + 2` — a runaway model can't quietly inflate the node. Fail-open: empty/cold node, LLM error, parse failure, oversized rewrite, or an empty rewrite all fall back to plain `append_to_node` for each new fact so they still land — a contradiction is recoverable, a silent wipe or hallucinated bloat is not.
 6. **Split**: If the merge or fallback append pushes the node past `SPLIT_THRESHOLD`, auto-split is triggered
 
-Cold start: each fact lands directly on its tagged branch root (User / Directives / World) until enough data accumulates there for the first auto-split. The tree structure emerges organically under each branch.
+Cold start: each fact lands directly on its tagged branch root (User / Directives / School / World) until enough data accumulates there for the first auto-split. The tree structure emerges organically under each branch.
 
 LLM failure at any step is non-fatal — the diary update still succeeds, and the graph simply misses that cycle.
 
@@ -196,6 +199,8 @@ Controlled by `memory_enrichment_source` config:
 Default is `"all"` — both channels enrich replies. The graph has graduated from alpha to beta with the purpose-driven taxonomy and warm profile now always-on, so the default flipped from `"diary"` to include graph recall too. Both systems always receive writes regardless of this setting.
 
 Note: the always-on warm profile (User + Directives injected on every turn) is separate from query-driven enrichment. Warm profile covers "who the user is"; enrichment covers "what the user has said/seen about this specific topic". The graph contributes to both.
+
+School is deliberately excluded from the warm profile. Timetables, homework, marks, and exam dates matter for school-related queries, but carrying the entire School subtree on every turn would spend prompt tokens even for unrelated requests. School facts remain available through query-driven graph enrichment.
 
 ## Configuration
 
@@ -248,6 +253,12 @@ The Import diary action feeds every diary summary through the standard
 The endpoint streams `start`, `progress`, `complete`, and `error` NDJSON events
 so the action card stays responsive throughout the run. A failure on one
 summary is reported in its progress event and does not stop later summaries.
+
+### Import school notes
+
+`python -m jarvis.memory.school_import` is the explicit school-note import. `--vault <absolute path>` supplies a read-only vault path for that run without changing configuration. The import is never run during daemon start-up or as a background sweep. It reads only `05 - Schule/` and `Daily/Todo Liste.md` through the existing vault reader, with a maximum of 100 notes and 20,000 characters per note. Vault bodies are fenced as untrusted data and the extractor is scoped to school facts only.
+
+Every retained fact is pinned to the School branch and passed through the same `place_graph_facts()` traversal, Unicode-aware exact dedupe, merge, and split pipeline used by dialogue updates. A source ledger keyed by vault-relative path and versioned content hash skips unchanged notes before a model call, so model paraphrasing cannot turn an unchanged re-run into apparent new facts. Changed notes still use the shared fact placement and dedupe pipeline. A destructive graph-shape migration clears this ledger with the graph so a later import can repopulate the empty store. The importer performs no vault writes; SQLite remains authoritative, and the ordinary fenced mirror may project resulting graph nodes into the managed folder.
 
 ### Consolidate graph
 

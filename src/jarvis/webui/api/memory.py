@@ -1,7 +1,7 @@
 """🧠 Memory: the graph, the diary, and the meal log.
 
 Reads and writes the same stores the assistant uses, so a node edited here
-is the node the next reply reads. The graph is the point: three fixed
+is the node the next reply reads. The graph is the point: four fixed
 branches under a root, each node carrying its own access count and age, so
 what the assistant actually leans on is visible and what has gone stale is
 too.

@@ -6,7 +6,7 @@ import re
 import threading
 import unicodedata
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ...debug import debug_log
 from ...utils.redact import redact
@@ -36,6 +36,15 @@ class VaultHit:
     snippet: str
     score: tuple[int, int, int]
     provenance: MemoryProvenance
+
+
+@dataclass(frozen=True)
+class VaultNote:
+    """A bounded full-note read supplied by the vault reader."""
+
+    path: str
+    title: str
+    body: str
 
 
 @dataclass
@@ -182,6 +191,83 @@ class VaultIndex:
         result = ranked[:max(1, min(int(limit), 20))]
         debug_log(f"vault search matched {len(result)} notes", "vault")
         return result
+
+    def read_notes(
+        self,
+        relative_roots: tuple[str, ...],
+        *,
+        max_notes: int = 100,
+        max_chars_per_note: int = 20_000,
+    ) -> list[VaultNote]:
+        """Read notes under explicit vault-relative files or folders.
+
+        The reader applies the same exclusions, size cap, protected-region
+        handling, and refresh cache as keyword search. Results and content are
+        capped so an explicit bulk operation cannot ingest an unbounded vault.
+        """
+        selectors: list[tuple[PurePosixPath, bool]] = []
+        for value in relative_roots:
+            raw = str(value).replace("\\", "/").strip("/")
+            selector = PurePosixPath(raw)
+            if not raw or selector.is_absolute() or ".." in selector.parts:
+                raise ValueError("vault note roots must be safe relative paths")
+            selectors.append((selector, selector.suffix.casefold() == ".md"))
+
+        note_limit = max(1, min(int(max_notes), 100))
+        char_limit = max(1_000, min(int(max_chars_per_note), 50_000))
+        candidates: set[Path] = set()
+        for selector, is_file in selectors:
+            target = self.vault_root.joinpath(*selector.parts)
+            if not target.exists() or target.is_symlink():
+                continue
+            paths = [target] if is_file else target.rglob("*.md")
+            for path in paths:
+                try:
+                    relative = path.relative_to(self.vault_root)
+                    if any(part.startswith(".") for part in relative.parts):
+                        continue
+                    if (
+                        path.suffix.casefold() != ".md"
+                        or path.is_symlink()
+                        or not path.is_file()
+                        or path.stat().st_size > self.max_bytes
+                    ):
+                        continue
+                    candidates.add(path)
+                except OSError:
+                    continue
+
+        entries: list[_Entry] = []
+        for path in candidates:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            cached = self._entries.get(path)
+            if cached and cached.mtime_ns == stat.st_mtime_ns and cached.size == stat.st_size:
+                entries.append(cached)
+                continue
+            entry = self._read_entry(path)
+            if entry is not None:
+                self._entries[path] = entry
+                entries.append(entry)
+
+        selected: list[VaultNote] = []
+        for entry in sorted(entries, key=lambda item: item.relative_path.casefold()):
+            selected.append(VaultNote(
+                path=entry.relative_path,
+                title=entry.title,
+                body=entry.body[:char_limit],
+            ))
+            if len(selected) >= note_limit:
+                break
+
+        debug_log(
+            f"vault bounded read selected {len(selected)} note(s) from "
+            f"{len(selectors)} source root(s)",
+            "vault",
+        )
+        return selected
 
 
 _INDEX_CACHE: dict[tuple[str, str, int], VaultIndex] = {}

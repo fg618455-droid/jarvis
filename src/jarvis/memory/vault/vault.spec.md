@@ -56,7 +56,7 @@ The root node is not mirrored. It holds no data and exists only as a container.
 
 `<Branch label> — <Node name> (<short id>).md`
 
-- Short id is the first 8 characters of the node's UUID, or the whole id for the fixed branch roots (`user`, `directives`, `world`).
+- Short id is the first 8 characters of the node's UUID, or the whole id for the fixed branch roots (`user`, `directives`, `school`, `world`).
 - Node name is slugified: Obsidian-forbidden characters (`# ^ [ ] |`), path separators, Windows-reserved characters (`< > : " \ / ? *`), and control characters are stripped; whitespace collapses to single spaces; trailing dots and spaces are trimmed; the result is capped at 60 characters on a word boundary. An empty result becomes `Untitled`.
 - Total filename stays under 120 characters so the full path survives on Windows.
 
@@ -160,6 +160,8 @@ Results are returned as `VaultHit(path, title, snippet, score, provenance)`
 where the snippet is the matching region padded to whole lines and capped at
 300 characters. `provenance` carries the vault-relative path known by the
 index at retrieval time.
+
+`VaultIndex.read_notes(relative_roots, max_notes, max_chars_per_note)` is the bounded full-note path for explicit local imports. It applies the same file exclusions, size cap, cache refresh, managed-folder protected-region handling, and vault-relative path validation as the index. It returns at most 100 notes and at most 50,000 characters per note, with lower caller-supplied caps honoured. The school import uses this method for `05 - Schule/` and `Daily/Todo Liste.md`; it does not traverse or write the vault itself.
 
 ### Reads Are Untrusted Input
 

@@ -97,6 +97,16 @@ class TestExtractGraphMemories:
         assert facts == [("directives", "Always answer in British English")]
 
     @patch("src.jarvis.memory.graph_ops.call_llm_direct")
+    def test_classifies_school_branch(self, mock_llm):
+        mock_llm.return_value = (
+            '[{"branch": "SCHOOL", "fact": "The biology exam is on 2 October"}]'
+        )
+
+        facts = extract_graph_memories("summary", "http://localhost", "model")
+
+        assert facts == [("school", "The biology exam is on 2 October")]
+
+    @patch("src.jarvis.memory.graph_ops.call_llm_direct")
     def test_returns_empty_when_nothing_worth_storing(self, mock_llm):
 
         mock_llm.return_value = "[]"
@@ -560,6 +570,38 @@ class TestUpdateGraphFromDialogue:
         root = store.get_node("root")
         assert "jazz" not in root.data
         assert "Acme" not in root.data
+
+    @patch("src.jarvis.memory.graph_ops._llm_pick_best_child")
+    @patch("src.jarvis.memory.graph_ops.call_llm_direct")
+    def test_school_fact_stays_inside_school_subtree(
+        self, mock_llm, mock_pick, store,
+    ):
+        school_child = store.create_node(
+            name="Biology",
+            description="Biology classes, assignments, and assessments",
+            parent_id="school",
+        )
+        world_child = store.create_node(
+            name="Biology reference",
+            description="General biology knowledge",
+            parent_id="world",
+        )
+        mock_llm.return_value = (
+            '[{"branch": "SCHOOL", "fact": "The biology exam is on 2 October"}]'
+        )
+        mock_pick.side_effect = lambda fragment, children, *args, **kwargs: children[0].id
+
+        result = update_graph_from_dialogue(
+            store=store,
+            summary="Felix's biology exam is on 2 October.",
+            cfg=None,
+            chat_model="model",
+        )
+
+        assert len(result.stored) == 1
+        assert "2 October" in store.get_node(school_child.id).data
+        assert "2 October" not in store.get_node(world_child.id).data
+        assert "2 October" not in store.get_node("user").data
 
     @patch("src.jarvis.memory.graph_ops.call_llm_direct")
     def test_no_facts_extracted(self, mock_llm, store):
@@ -1334,6 +1376,16 @@ class TestBuildWarmProfile:
         profile = build_warm_profile(store)
         assert profile["user"] == ""
         assert profile["directives"] == ""
+
+    def test_ignores_school_branch(self, store):
+        store.create_node(
+            name="Exams",
+            description="School assessments",
+            data="The biology exam is on 2 October.",
+            parent_id="school",
+        )
+        profile = build_warm_profile(store)
+        assert profile == {"user": "", "directives": ""}
 
     def test_respects_char_caps(self, store):
         long_fact = "x" * 5000

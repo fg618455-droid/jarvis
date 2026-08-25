@@ -145,6 +145,30 @@ def test_sync_never_writes_elsewhere_in_vault(tmp_path):
     assert all(path.startswith("Jarvis/") or path == "Projects/private.md" for path in after)
 
 
+def test_school_nodes_mirror_with_school_label_and_distinct_names(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    store = Store([
+        _node("root", "Root", None, data=""),
+        _node("school", "School", "root", data=""),
+        _node("11111111-1111-1111-1111-111111111111", "Biology", "school"),
+        _node("22222222-2222-2222-2222-222222222222", "Biology", "school"),
+    ])
+
+    apply_sync(plan_sync(store, _cfg(vault)), _cfg(vault))
+
+    names = {path.name for path in (vault / "Jarvis").glob("*.md")}
+    assert names == {
+        "School (school).md",
+        "School — Biology (11111111).md",
+        "School — Biology (22222222).md",
+    }
+    for path in (vault / "Jarvis").glob("*.md"):
+        content = path.read_text(encoding="utf-8")
+        assert "jarvis_branch: school" in content
+        assert "- jarvis/school" in content
+
+
 def test_delete_with_empty_protected_tail_unlinks_the_file(tmp_path):
     vault = tmp_path / "vault"
     vault.mkdir()

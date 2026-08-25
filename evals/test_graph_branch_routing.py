@@ -25,13 +25,19 @@ Run:
 
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Union
+from unittest.mock import patch
 
 import pytest
 
 from conftest import requires_judge_llm
 from helpers import MockConfig
 
-from jarvis.memory.graph import BRANCH_DIRECTIVES, BRANCH_USER, BRANCH_WORLD
+from jarvis.memory.graph import (
+    BRANCH_DIRECTIVES,
+    BRANCH_SCHOOL,
+    BRANCH_USER,
+    BRANCH_WORLD,
+)
 from jarvis.memory.graph_ops import extract_graph_memories
 
 
@@ -156,6 +162,41 @@ ROUTING_CASES = [
         ),
         id="Adversarial: all three branches in one summary",
     ),
+    # ── Clear SCHOOL facts ──────────────────────────────────────────────
+    pytest.param(
+        RoutingCase(
+            summary=(
+                "Felix's biology teacher is Ms Keller. His biology homework "
+                "is due on 24 September, and the biology exam is on 2 "
+                "October. He received a mark of 1.7 for his last biology "
+                "presentation."
+            ),
+            date_utc="2026-09-18",
+            expectations=[
+                ("Keller", BRANCH_SCHOOL),
+                ("24 September", BRANCH_SCHOOL),
+                ("2 October", BRANCH_SCHOOL),
+                ("1.7", BRANCH_SCHOOL),
+            ],
+        ),
+        id="SCHOOL: teacher, homework, exam date, mark",
+    ),
+    # ── Adversarial: person vs schooling boundary ───────────────────────
+    pytest.param(
+        RoutingCase(
+            summary=(
+                "Felix finds mathematics difficult at school and is working "
+                "with his teacher on algebra. Separately, Felix enjoys "
+                "woodworking at home and restores old furniture for fun."
+            ),
+            date_utc="2026-09-18",
+            expectations=[
+                ("mathemat", BRANCH_SCHOOL),
+                (("woodwork", "furniture"), BRANCH_USER),
+            ],
+        ),
+        id="Adversarial: school experience (SCHOOL) vs personal hobby (USER)",
+    ),
 ]
 
 
@@ -260,3 +301,20 @@ class TestGraphBranchRouting:
             f"Overheard third-party content must never be classified as "
             f"USER, got: {user_facts}"
         )
+
+    def test_unknown_label_still_defaults_to_world(self, mock_config):
+        """A malformed classifier label has the conservative WORLD fallback."""
+        with patch(
+            "jarvis.memory.graph_ops.call_llm_direct",
+            return_value=(
+                '[{"branch": "UNCLEAR", "fact": "A durable but unclear fact"}]'
+            ),
+        ):
+            facts = extract_graph_memories(
+                summary="An unclear durable fact was established.",
+                cfg=mock_config,
+                chat_model=mock_config.llm_chat_model,
+                thinking=False,
+            )
+
+        assert facts == [(BRANCH_WORLD, "A durable but unclear fact")]

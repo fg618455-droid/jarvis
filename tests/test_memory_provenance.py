@@ -45,6 +45,16 @@ def test_graph_snippet_carries_node_id_and_fixed_branch():
     )
 
 
+def test_school_is_a_valid_fixed_branch_for_graph_provenance():
+    provenance = MemoryProvenance.graph("school-node", "school")
+
+    assert provenance.public_dict() == {
+        "kind": "graph",
+        "node_id": "school-node",
+        "branch": "school",
+    }
+
+
 def test_vault_search_attaches_the_vault_relative_path(tmp_path):
     from jarvis.memory.vault.index import VaultIndex
 

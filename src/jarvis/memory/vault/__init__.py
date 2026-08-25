@@ -1,7 +1,7 @@
 """Local Obsidian vault reader and graph mirror."""
 
 from .guard import VaultWriteError, resolve_managed_path
-from .index import VaultHit, VaultIndex, get_vault_index
+from .index import VaultHit, VaultIndex, VaultNote, get_vault_index
 from .mirror import PlannedChange, SyncPlan, apply_sync, plan_sync
 
 __all__ = [
@@ -9,6 +9,7 @@ __all__ = [
     "SyncPlan",
     "VaultHit",
     "VaultIndex",
+    "VaultNote",
     "VaultWriteError",
     "apply_sync",
     "get_vault_index",

@@ -117,6 +117,24 @@ def test_fixed_branch_root_filename_matches_related_link_contract():
     assert filename_for_node(branch, "User") == "User (user).md"
 
 
+def test_school_fixed_root_and_children_have_collision_free_filenames():
+    branch = _node(id="school", name="School", parent_id="root")
+    first = _node(
+        id="11111111-1111-1111-1111-111111111111",
+        name="Biology",
+        parent_id="school",
+    )
+    second = _node(
+        id="22222222-2222-2222-2222-222222222222",
+        name="Biology",
+        parent_id="school",
+    )
+
+    assert filename_for_node(branch, "School") == "School (school).md"
+    assert filename_for_node(first, "School") == "School — Biology (11111111).md"
+    assert filename_for_node(second, "School") == "School — Biology (22222222).md"
+
+
 def test_protected_region_split_preserves_tail_verbatim():
     tail = "\n\nMy own text\n- [[Private link]]\n"
     machine, protected = split_protected_region("machine\n" + END_MARKER + tail)
