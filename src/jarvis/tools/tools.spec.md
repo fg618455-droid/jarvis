@@ -6,7 +6,7 @@ Every tool returns `ToolExecutionResult`. Failures carry a stable `ToolErrorCode
 
 `screenshot` selects a platform capture adapter, stores the image in a temporary directory, and returns OCR text only. Missing capture or OCR dependencies, permission denial, timeout, capture failure, and empty OCR results are explicit failures rather than successful empty output.
 
-MCP npm catalogue entries use exact versions. Tool errors retain stable codes across built-in and MCP execution paths.
+MCP npm catalogue entries use exact versions. Preflight reads the package specifier from the first non-flag argument of an `npx` command; every later argument belongs to the server being launched, so a server that takes a URL or a path is not mistaken for an unpinned package. A scoped name carries a leading `@` that is part of the name, so the version separator is the first `@` after the scope: `@scope/server` is unpinned and `@scope/server@1.2.3` is pinned. Tool errors retain stable codes across built-in and MCP execution paths.
 
 `memoryProvenance` is a read-only built-in for questions about the source of a
 remembered fact. It receives locally carried `RetrievedSnippet` records through
