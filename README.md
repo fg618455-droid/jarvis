@@ -512,27 +512,36 @@ The voice's first letter selects its language pipeline (`a` American English, `b
 
 Kokoro's own code and the `kokoro` package run in their own subprocess, launched the first time Kokoro is actually asked to speak, so the AGPL-licensed synthesis code stays out of the main daemon process (see `src/jarvis/output/tts.spec.md`).
 
-**Cloud provider chain (opt-in architecture)** - Tries enabled speech providers in configuration order and always ends at a local engine. Cloud speech stays off unless `tts_engine` is explicitly set to `"cloud"`. Credentials are read from environment variables, not `config.json`.
+**Cloud provider chain (opt-in)** - Tries Fish Audio, then ElevenLabs, and always ends at local Piper. Cloud speech stays off unless `tts_engine` is explicitly set to `"cloud"`. Credentials are read from environment variables, not `config.json`.
 
 ```json
 {
   "tts_engine": "cloud",
   "tts_cloud_providers": [
     {
-      "name": "primary-speech",
-      "provider": "vendor-client-id",
-      "api_key_env": "JARVIS_PRIMARY_TTS_KEY",
-      "voice_id": "voice-opaque-id",
-      "model": "speech-model",
+      "name": "Fish Audio",
+      "provider": "fish_audio",
+      "api_key_env": "FISH_AUDIO_API_KEY",
+      "voice_id": "fish-voice-id",
+      "model": "s2.1-pro-free",
       "enabled": true,
-      "timeout_sec": 8.0
+      "timeout_sec": 10.0
+    },
+    {
+      "name": "ElevenLabs",
+      "provider": "elevenlabs",
+      "api_key_env": "ELEVENLABS_API_KEY",
+      "voice_id": "elevenlabs-voice-id",
+      "model": "eleven_multilingual_v2",
+      "enabled": true,
+      "timeout_sec": 10.0
     }
   ],
   "tts_local_fallback_engine": "piper"
 }
 ```
 
-The core includes the fallback architecture and PCM/WAV provider interface. It does not include a vendor client. A provider without an installed client falls through safely to the next entry or the local final stage.
+Both clients stream 24 kHz raw PCM over plain HTTP using `requests`; no vendor SDK or compressed-audio decoder is required. To keep one recognisable voice across the cloud stages, manually clone the same human reference recording at both vendors and put each provider's resulting voice id in its own entry.
 
 </details>
 

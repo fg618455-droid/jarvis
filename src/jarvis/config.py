@@ -815,7 +815,26 @@ def get_default_config() -> Dict[str, Any]:
         "tts_engine": "piper",  # "piper" (default), "chatterbox", "kokoro", or "cloud"
         "tts_voice": None,
         "tts_rate": 200,  # Words per minute (WPM), 200=normal
-        "tts_cloud_providers": [],
+        "tts_cloud_providers": [
+            {
+                "name": "Fish Audio",
+                "provider": "fish_audio",
+                "api_key_env": "FISH_AUDIO_API_KEY",
+                "voice_id": "",
+                "model": "s2.1-pro-free",
+                "enabled": True,
+                "timeout_sec": 10.0,
+            },
+            {
+                "name": "ElevenLabs",
+                "provider": "elevenlabs",
+                "api_key_env": "ELEVENLABS_API_KEY",
+                "voice_id": "",
+                "model": "eleven_multilingual_v2",
+                "enabled": True,
+                "timeout_sec": 10.0,
+            },
+        ],
         "tts_local_fallback_engine": "piper",
         "tts_chatterbox_device": "cuda",  # "cuda" (recommended), "auto", or "cpu"
         "tts_chatterbox_audio_prompt": None,  # Path to audio file for voice cloning

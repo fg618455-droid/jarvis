@@ -404,7 +404,10 @@ def test_defaults_keep_cloud_speech_off():
     defaults = get_default_config()
 
     assert defaults["tts_engine"] == "piper"
-    assert defaults["tts_cloud_providers"] == []
+    assert [entry["provider"] for entry in defaults["tts_cloud_providers"]] == [
+        "fish_audio",
+        "elevenlabs",
+    ]
     assert defaults["tts_local_fallback_engine"] == "piper"
 
 

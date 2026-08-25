@@ -247,12 +247,13 @@ class TTSProviderStateStore:
 ProviderFactory = Callable[[CloudProviderConfig, str | None], CloudTTSProvider]
 
 
-def _missing_provider_client(
+def _default_provider_client(
     config: CloudProviderConfig,
     api_key: str | None,
 ) -> CloudTTSProvider:
-    del api_key
-    raise TTSProviderUnavailable(f"no client is installed for {config.provider}")
+    from .cloud_tts_vendors import create_cloud_tts_provider
+
+    return create_cloud_tts_provider(config, api_key)
 
 
 class CloudTTS:
@@ -266,7 +267,7 @@ class CloudTTS:
         enabled: bool = True,
         output_device: str | None = None,
         state_store: TTSProviderStateStore | None = None,
-        provider_factory: ProviderFactory = _missing_provider_client,
+        provider_factory: ProviderFactory = _default_provider_client,
     ) -> None:
         self.enabled = enabled
         self._providers = tuple(providers)

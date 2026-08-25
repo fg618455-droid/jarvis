@@ -71,9 +71,59 @@ through the same sounddevice callback and visualiser waveform feed used by
 Kokoro. Keeping attempt audio separate prevents a partly failed provider from
 being followed by a duplicate rendition of the utterance.
 
-The architecture supplies no vendor SDK or vendor HTTP client. A configured
-provider without an installed client reports `TTSProviderUnavailable` and
-falls through to the next provider or the local final stage.
+Fish Audio and ElevenLabs are built-in plain-HTTP clients using the pinned
+`requests` dependency. No vendor SDK runs in the daemon. An unknown provider
+identifier reports `TTSProviderUnavailable` and falls through to the next
+provider or the local final stage.
+
+### Fish Audio and ElevenLabs wire contracts
+
+Both clients request 24 kHz, signed 16-bit little-endian mono PCM and expose
+each complete sample-aligned block as `TTSAudioChunk.pcm16`. HTTP response
+chunks are transport framing, not sample framing, so a client carries an odd
+trailing byte into the next response chunk. An odd final byte, empty body,
+JSON body in a successful response, timeout during streaming or malformed
+chunk is a failure. `CloudTTS` does not play any part of an attempt until that
+attempt has completed successfully.
+
+Fish Audio uses `POST https://api.fish.audio/v1/tts`, authenticates with
+`Authorization: Bearer <key>`, places the configured model in the `model`
+header and sends `text`, `reference_id`, `format: "pcm"` and
+`sample_rate: 24000` as JSON. A successful response is raw PCM over HTTP
+chunked transfer encoding. Fish Audio documents WAV and PCM, including PCM
+on its free developer model, without an output-format plan restriction. Its
+API reference states that an unrecognised model header falls back to the
+service default rather than returning a model error; it does not define a
+distinct unknown-voice response.
+
+ElevenLabs uses
+`POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream`,
+authenticates with `xi-api-key`, sends `text` and `model_id` as JSON and sets
+the `output_format=pcm_24000` query parameter. A successful response is raw
+audio bytes over HTTP chunked transfer encoding. ElevenLabs documents 44.1
+kHz PCM as requiring its Pro tier, but does not state a plan restriction for
+24 kHz PCM. A `feature_not_available`, `subscription_required` or
+`invalid_output_format` response reports `TTSProviderUnavailable`, so a plan
+that cannot supply the required PCM format falls through safely.
+
+| Vendor response | Provider failure | Timing carried |
+|---|---|---|
+| Fish Audio HTTP 401 | `TTSAuthenticationError` | None |
+| Fish Audio HTTP 402 | `TTSQuotaExhausted` | No reset is documented |
+| Fish Audio HTTP 429 | `TTSRateLimited` | `Retry-After` seconds or HTTP date when present |
+| Fish Audio unknown voice or other non-success | `TTSProviderError` | None |
+| ElevenLabs HTTP 401 or `authentication_error` | `TTSAuthenticationError` | None |
+| ElevenLabs HTTP 402, `payment_required`, `insufficient_credits` or legacy `quota_exceeded` | `TTSQuotaExhausted` | No reset is documented |
+| ElevenLabs HTTP 429 or `rate_limit_error` | `TTSRateLimited` | `Retry-After` seconds or HTTP date when present |
+| ElevenLabs PCM plan or format rejection | `TTSProviderUnavailable` | None |
+| ElevenLabs unknown voice, unknown model or other non-success | `TTSProviderError` | None |
+| Missing credential or voice id | `TTSProviderUnavailable` | None, and no request is sent |
+| Request timeout, connection failure or interrupted response | `TTSProviderError` | None |
+
+Neither documented TTS response exposes a quota reset timestamp. An exhausted
+quota therefore uses the state store's midnight UTC fallback. Exception and
+log messages contain only safe provider and failure labels, never an endpoint,
+credential, voice id or spoken text.
 
 ### Provider health and cooldown state
 
@@ -99,30 +149,47 @@ restart can retry a corrected environment credential.
 
 ### Configuration
 
-`tts_cloud_providers` is an ordered list. Malformed entries are ignored. Each
-valid entry has `name`, `provider`, `api_key_env`, `voice_id`, `model`,
-`enabled` and `timeout_sec`. Credentials never appear in this list. The value
-of `api_key_env` names an environment variable; its value is read lazily when
-the provider client is first built and is never copied into configuration,
-logged or represented by the engine.
+`tts_cloud_providers` is an ordered list. The default order is Fish Audio,
+ElevenLabs and then the mandatory local Piper stage. Malformed entries are
+ignored. Each valid entry has `name`, `provider`, `api_key_env`, `voice_id`,
+`model`, `enabled` and `timeout_sec`. Credentials never appear in this list.
+The value of `api_key_env` names an environment variable; its value is read
+lazily when the provider client is first built and is never copied into
+configuration, logged or represented by the engine. The whole chain remains
+off until `tts_engine` is explicitly set to `"cloud"`.
 
 ```json
 {
   "tts_engine": "cloud",
   "tts_cloud_providers": [
     {
-      "name": "primary-speech",
-      "provider": "vendor-client-id",
-      "api_key_env": "JARVIS_PRIMARY_TTS_KEY",
-      "voice_id": "voice-opaque-id",
-      "model": "speech-model",
+      "name": "Fish Audio",
+      "provider": "fish_audio",
+      "api_key_env": "FISH_AUDIO_API_KEY",
+      "voice_id": "fish-voice-id",
+      "model": "s2.1-pro-free",
       "enabled": true,
-      "timeout_sec": 8.0
+      "timeout_sec": 10.0
+    },
+    {
+      "name": "ElevenLabs",
+      "provider": "elevenlabs",
+      "api_key_env": "ELEVENLABS_API_KEY",
+      "voice_id": "elevenlabs-voice-id",
+      "model": "eleven_multilingual_v2",
+      "enabled": true,
+      "timeout_sec": 10.0
     }
   ],
   "tts_local_fallback_engine": "piper"
 }
 ```
+
+Voice ids are opaque and specific to one provider. A recognisable voice across
+both cloud stages comes from manually cloning the same human reference
+recording once at Fish Audio and once at ElevenLabs, then placing the two
+resulting ids in their respective entries. There is no shared voice id and no
+voice-cloning upload flow in Jarvis.
 
 ## Kokoro: a sidecar engine
 
