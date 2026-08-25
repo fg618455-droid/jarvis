@@ -1069,7 +1069,10 @@ def load_settings() -> Settings:
             tier = str(raw.get("tier", "") or "").strip().lower()
             base_url = str(raw.get("base_url", "") or "").strip().rstrip("/")
             model = str(raw.get("model", "") or "").strip()
-            if provider not in ("ollama", "openai_compatible", "claude_subscription", "crew_chat"):
+            if provider not in (
+                "ollama", "openai_compatible", "claude_subscription",
+                "codex_subscription", "crew_chat",
+            ):
                 continue
             if tier not in ("fast", "chat") or not base_url or not model:
                 continue

@@ -78,7 +78,10 @@ def _normalise_routes(raw_routes: Any, existing: list[dict[str, Any]]) -> list[d
         tier = str(raw.get("tier", "") or "").strip().lower()
         if not name or not base_url or not model:
             raise ValueError(f"route {index + 1} needs name, base_url, and model")
-        if provider not in ("ollama", "openai_compatible", "claude_subscription", "crew_chat"):
+        if provider not in (
+            "ollama", "openai_compatible", "claude_subscription",
+            "codex_subscription", "crew_chat",
+        ):
             raise ValueError(f"route {index + 1} has an unsupported protocol")
         if tier not in ("fast", "chat"):
             raise ValueError(f"route {index + 1} has an unsupported tier")

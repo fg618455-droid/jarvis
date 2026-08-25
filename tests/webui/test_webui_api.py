@@ -57,6 +57,26 @@ class TestStatus:
 
         assert body["phase"] == "thinking"
         assert body["uptime_seconds"] >= 0
+        assert body["daemon_running"] is True
+
+    def test_standalone_status_does_not_claim_live_daemon_state(self):
+        from jarvis.webui.server import WebUIConfig, create_app
+
+        app = create_app(WebUIConfig(
+            host="127.0.0.1", port=5055, token="", standalone=True,
+        ))
+        app.config.update(TESTING=True)
+        response = app.test_client().get(
+            "/api/status", headers={"Host": "127.0.0.1:5055"},
+        )
+        body = response.get_json()
+
+        assert body["daemon_running"] is False
+        assert body["phase"] is None
+        assert body["uptime_seconds"] is None
+        assert body["passive"]["enabled"] is False
+        assert body["conversation"] == {"active": False}
+        assert body["models"] == {}
 
     def test_turns_returns_the_history(self, client):
         _record_turn(transcript="wie spät ist es")
@@ -104,6 +124,20 @@ class TestEvents:
 
         assert first.startswith("event: status")
         assert json.loads(first.split("data: ", 1)[1])["phase"] == "speaking"
+        response.close()
+
+    def test_standalone_stream_opens_with_empty_live_state(self):
+        from jarvis.webui.server import WebUIConfig, create_app
+
+        app = create_app(WebUIConfig(
+            host="127.0.0.1", port=5055, token="", standalone=True,
+        ))
+        response = app.test_client().get(
+            "/api/events", headers={"Host": "127.0.0.1:5055"},
+        )
+        first = next(response.response).decode("utf-8")
+
+        assert json.loads(first.split("data: ", 1)[1])["daemon_running"] is False
         response.close()
 
     def test_the_stream_is_declared_as_events(self, client):
@@ -453,6 +487,35 @@ class TestSystem:
         assert {"config", "database"} <= labels
         assert all("exists" in entry for entry in body["paths"])
 
+    def test_cloud_speech_reading_names_chain_and_local_fallback(
+        self, client, tmp_path, monkeypatch,
+    ):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "_config_version": 5,
+            "tts_engine": "cloud",
+            "tts_local_fallback_engine": "kokoro",
+            "tts_kokoro_voice": "bm_lewis",
+            "tts_cloud_providers": [{
+                "name": "ElevenLabs", "provider": "elevenlabs",
+                "api_key_env": "ELEVENLABS_API_KEY", "voice_id": "voice-1",
+                "model": "eleven_multilingual_v2", "enabled": True,
+                "timeout_sec": 8.5,
+            }],
+        }), encoding="utf-8")
+        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
+
+        output = client.get("/api/system", headers=HEADERS).get_json()["speech_output"]
+
+        assert output["engine"] == "cloud"
+        assert output["cloud_providers"] == [{
+            "name": "ElevenLabs", "provider": "elevenlabs",
+            "model": "eleven_multilingual_v2", "enabled": True,
+        }]
+        assert output["local_fallback_engine"] == "kokoro"
+        assert output["model"] == "bm_lewis"
+        assert output["language"] == "British English"
+
     def test_the_config_named_is_the_one_this_run_reads(self, client, tmp_path, monkeypatch):
         """A side-by-side run must not be told it is editing the real file."""
         elsewhere = tmp_path / "elsewhere" / "config.json"
@@ -481,6 +544,20 @@ class TestSystem:
         assert response.status_code == 200
         assert response.get_json() == {"restarting": True}
         mock_request_restart.assert_called_once()
+
+    def test_standalone_control_centre_refuses_a_fake_restart(self):
+        from jarvis.webui.server import WebUIConfig, create_app
+
+        app = create_app(WebUIConfig(
+            host="127.0.0.1", port=5055, token="", standalone=True,
+        ))
+        response = app.test_client().post(
+            "/api/system/restart",
+            headers={"Host": "127.0.0.1:5055", "X-Jarvis-UI": "1"},
+        )
+
+        assert response.status_code == 409
+        assert response.get_json() == {"error": "no daemon is running"}
 
 
 class TestTheStreamCarriesEveryEvent:

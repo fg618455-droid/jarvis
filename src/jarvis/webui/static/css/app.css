@@ -251,6 +251,25 @@ a:hover {
   color: var(--fg-dim);
 }
 
+.sidebar-reading {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sidebar-reading .label {
+  color: var(--fg-mute);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.sidebar-reading .num {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Main ────────────────────────────────────────────────────────────── */
 
 /* The header's height is padding rather than a top margin. As body's first

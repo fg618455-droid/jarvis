@@ -10,11 +10,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, current_app, jsonify, request
 
 from jarvis.config import _load_json, _save_json, get_default_config, resolve_config_path
 from jarvis.config_metadata import (
     CATEGORIES,
+    CATEGORY_DETAILS,
     FIELD_METADATA,
     _is_default_value,
     choices_for,
@@ -72,6 +73,27 @@ def _field_payload(meta, defaults: dict, config: dict) -> dict:
         "is_set": bool(value) if is_secret else None,
         "is_default": _is_default_value(value, defaults.get(meta.key)),
         "restart_required": _needs_restart(meta.key),
+        "item_fields": [_item_field_payload(field) for field in (meta.item_fields or ())] or None,
+    }
+
+
+def _item_field_payload(meta) -> dict:
+    """Describe one column in a structured list without inventing a value."""
+    return {
+        "key": meta.key,
+        "label": meta.label,
+        "description": meta.description,
+        "type": meta.field_type,
+        "choices": [
+            {"value": value, "label": label}
+            for value, label in (meta.choices or [])
+        ] or None,
+        "min": meta.min_val,
+        "max": meta.max_val,
+        "step": meta.step,
+        "suffix": meta.suffix,
+        "nullable": meta.nullable,
+        "is_secret": meta.field_type == SECRET_FIELD_TYPE,
     }
 
 
@@ -83,7 +105,11 @@ def settings() -> Response:
 
     return jsonify({
         "path": str(resolve_config_path()),
-        "categories": [{"key": key, "label": label} for key, label in CATEGORIES],
+        "daemon_running": not current_app.config["JARVIS_WEBUI"].standalone,
+        "categories": [
+            {"key": key, "label": label, **CATEGORY_DETAILS.get(key, {})}
+            for key, label in CATEGORIES
+        ],
         "fields": [_field_payload(meta, defaults, config) for meta in FIELD_METADATA],
     })
 
@@ -111,7 +137,10 @@ def save() -> Response:
         if meta.field_type == SECRET_FIELD_TYPE and isinstance(value, str) and value.startswith(MASK):
             # The page sent the mask back untouched, so the stored value stands.
             continue
-        coerced = _coerce(meta, value)
+        try:
+            coerced = _coerce(meta, value)
+        except (TypeError, ValueError) as error:
+            return jsonify(error=f"invalid value for {key}: {error}"), 400
         if _is_default_value(coerced, defaults.get(key)):
             config.pop(key, None)
         else:
@@ -152,8 +181,35 @@ def _coerce(meta, value: Any) -> Any:
         if isinstance(value, list):
             return [str(item) for item in value]
         return [line.strip() for line in str(value).splitlines() if line.strip()]
+    if meta.field_type == "object_list":
+        return _coerce_object_list(meta, value)
     text = str(value).strip()
     return None if (meta.nullable and text == "") else text
+
+
+def _coerce_object_list(meta, value: Any) -> list[dict[str, Any]]:
+    """Validate and coerce a metadata-described list of objects."""
+    if not isinstance(value, list):
+        raise TypeError("must be a list")
+    fields = {field.key: field for field in (meta.item_fields or ())}
+    if not fields:
+        raise ValueError("has no item field metadata")
+
+    clean: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise TypeError(f"item {index + 1} must be an object")
+        unknown = sorted(set(item) - set(fields))
+        missing = sorted(set(fields) - set(item))
+        if unknown:
+            raise ValueError(f"item {index + 1} has unknown fields: {', '.join(unknown)}")
+        if missing:
+            raise ValueError(f"item {index + 1} is missing fields: {', '.join(missing)}")
+        clean.append({
+            key: _coerce(field, item[key])
+            for key, field in fields.items()
+        })
+    return clean
 
 
 def _bounded(meta, number: float) -> float:

@@ -99,7 +99,7 @@ function paintModels(container, system) {
   clear(container);
   container.append(
     el("header", {}, [
-      el("h2", { text: t("system.loaded") }),
+      el("h2", { text: t("system.models") }),
       el("span", { class: "aside", text: system.models?.provider || "" }),
     ]),
   );
@@ -113,6 +113,8 @@ function paintModels(container, system) {
       ["url", system.models?.base_url],
     ]),
   );
+
+  container.append(el("h3", { text: t("system.loaded") }));
 
   if (!loaded.length) {
     container.append(el("span", { class: "muted", text: t("system.noModels") }));
@@ -157,6 +159,11 @@ function paintSpeech(container, system) {
       rows([
         ["engine", output.engine],
         ["enabled", output.enabled ? t("common.yes") : t("common.no")],
+        ["cloud chain", (output.cloud_providers || [])
+          .filter((provider) => provider.enabled)
+          .map((provider) => `${provider.name}: ${provider.model}`)
+          .join(", ") || "—"],
+        ["local fallback", output.local_fallback_engine],
         ["voice", fmt.truncate(output.model, 60)],
         ["language", output.language || t("common.unknown")],
       ]),

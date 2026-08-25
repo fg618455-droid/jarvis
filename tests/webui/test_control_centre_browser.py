@@ -76,6 +76,20 @@ def served() -> str:
     server.stop()
 
 
+@pytest.fixture(scope="module")
+def standalone_served() -> str:
+    """A control centre that deliberately has no daemon behind it."""
+    cfg = WebUIConfig(
+        host="127.0.0.1", port=_free_port(), token="", standalone=True,
+    )
+    server = WebUIServer(cfg)
+    server.start()
+    ready = threading.Event()
+    ready.wait(0.5)
+    yield cfg.url
+    server.stop()
+
+
 @pytest.fixture
 def page(browser, served):
     context = browser.new_context()
@@ -190,7 +204,9 @@ class TestLlmRouteLayout:
                         active: true, blocked_until: null, failures: 1,
                         hits: 4, invalid: false, last_error: '',
                         masked_key: '••••••••LmVX', model: 'meta-llama/llama-prompt-guard-2-22m',
-                        name: 'groq', tier: 'fast',
+                        name: 'groq', tier: 'fast', provider: 'openai_compatible',
+                        base_url: 'https://example.invalid/v1', api_key_env: 'GROQ_API_KEY',
+                        timeout_sec: 2, enabled: false, capabilities: ['chat'],
                     }],
                     chat: [{
                         active: false, blocked_until: null, failures: 2,
@@ -221,6 +237,103 @@ class TestLlmRouteLayout:
             "cards => cards.map(card => ({ client: card.clientWidth, scroll: card.scrollWidth }))"
         )
         assert all(item["scroll"] <= item["client"] for item in widths)
+
+    def test_editor_keeps_every_operational_route_field(self, page, served):
+        self._open_with_routes(page, served)
+
+        route = page.locator(".route-editor").input_value()
+        parsed = __import__("json").loads(route)[0]
+
+        assert parsed["api_key_env"] == "GROQ_API_KEY"
+        assert parsed["enabled"] is False
+        assert parsed["capabilities"] == ["chat"]
+
+
+class TestSettingsCoherence:
+    def test_cloud_provider_chain_is_editable_without_raw_json(self, page, served):
+        payload = {
+            "path": "C:/config.json", "daemon_running": True,
+            "categories": [
+                {
+                    "key": "llm", "label": "LLM & AI Models",
+                    "description": "The ordered route chain decides CHAT first.",
+                    "action_label": "Open LLM routes", "action_href": "#/llm",
+                },
+                {"key": "tts", "label": "Text-to-Speech"},
+            ],
+            "fields": [
+                {
+                    "key": "llm_provider", "label": "Provider", "description": "Fallback",
+                    "category": "llm", "type": "choice", "choices": [
+                        {"value": "ollama", "label": "Ollama"},
+                    ], "value": "ollama", "restart_required": True,
+                    "is_secret": False,
+                },
+                {
+                    "key": "tts_cloud_providers", "label": "Cloud Provider Chain",
+                    "description": "Ordered cloud voices", "category": "tts",
+                    "type": "object_list", "restart_required": True,
+                    "is_secret": False,
+                    "value": [{
+                        "name": "ElevenLabs", "provider": "elevenlabs",
+                        "api_key_env": "ELEVENLABS_API_KEY", "voice_id": "voice-1",
+                        "model": "eleven_multilingual_v2", "enabled": True,
+                        "timeout_sec": 8.5,
+                    }],
+                    "item_fields": [
+                        {"key": "name", "label": "Name", "type": "str"},
+                        {"key": "provider", "label": "Provider", "type": "str"},
+                        {"key": "api_key_env", "label": "API Key Environment", "type": "str"},
+                        {"key": "voice_id", "label": "Voice ID", "type": "str"},
+                        {"key": "model", "label": "Model", "type": "str"},
+                        {"key": "enabled", "label": "Enabled", "type": "bool"},
+                        {"key": "timeout_sec", "label": "Timeout", "type": "float", "min": 0.1, "max": 600, "step": 0.5},
+                    ],
+                },
+            ],
+        }
+        page.route("**/api/settings", lambda route: route.fulfill(json=payload))
+        page.goto(f"{served}/#/settings", wait_until="networkidle")
+
+        assert page.get_by_role("link", name="Open LLM routes").is_visible()
+        page.get_by_role("button", name="Text-to-Speech").click()
+
+        assert page.locator(".object-item").count() == 1
+        assert page.get_by_label("Name").input_value() == "ElevenLabs"
+        assert page.locator(".route-editor").count() == 0
+
+
+class TestStandaloneShell:
+    def test_header_does_not_claim_a_live_session(self, browser, standalone_served):
+        context = browser.new_context()
+        page = context.new_page()
+        page.goto(standalone_served, wait_until="networkidle")
+        page.wait_for_function("document.querySelector('#phase-text').textContent.length > 0")
+
+        assert page.locator("#phase-text").inner_text() == "not running"
+        assert page.locator("#uptime-value").inner_text() == "—"
+        assert page.locator("#passive-indicator").is_hidden()
+        assert page.locator("#conversation-indicator").is_hidden()
+        context.close()
+
+    def test_footer_names_the_local_resident_model(self, browser, standalone_served):
+        context = browser.new_context()
+        page = context.new_page()
+        page.route("**/api/system", lambda route: route.fulfill(json={
+            "gpu": {"used_mb": 6080, "total_mb": 7960},
+            "models": {
+                "chat": "gpt-oss-120b", "provider": "openai_compatible",
+                "loaded": [{"name": "qwen2.5:7b-ctx8k"}],
+            },
+        }))
+        page.goto(standalone_served, wait_until="networkidle")
+        page.wait_for_function("document.querySelector('#foot-local-model')?.textContent.includes('qwen')")
+
+        footer = page.locator("#sidebar-foot").inner_text()
+        assert "qwen2.5:7b-ctx8k" in footer
+        assert "gpt-oss-120b" not in footer
+        assert "5.94 GB / 7.77 GB" in footer
+        context.close()
 
 
 class TestMemoryMaintenance:

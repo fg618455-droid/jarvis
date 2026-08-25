@@ -162,6 +162,11 @@ lazily when the provider client is first built and is never copied into
 configuration, logged or represented by the engine. The whole chain remains
 off until `tts_engine` is explicitly set to `"cloud"`.
 
+Both settings interfaces expose this list through the shared metadata
+registry. The control centre renders ordered provider cards and the Qt window
+renders typed table columns, including move controls. They store only the
+environment-variable name, never the credential value.
+
 ```json
 {
   "tts_engine": "cloud",

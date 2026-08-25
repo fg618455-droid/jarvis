@@ -189,6 +189,30 @@ def test_route_editor_accepts_crew_chat_provider(api_client, tmp_path, monkeypat
     assert stored["provider"] == "crew_chat"
 
 
+def test_route_editor_accepts_codex_subscription_provider(api_client, tmp_path, monkeypatch):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"_config_version": 5, "ollama_chat_model": "local-model"}))
+    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(path))
+    monkeypatch.setenv("JARVIS_LLM_ROUTE_STATE_PATH", str(tmp_path / "route-state.json"))
+    route = {
+        "name": "codex-chat",
+        "provider": "codex_subscription",
+        "base_url": "codex-cli",
+        "api_key": "",
+        "api_key_env": "",
+        "model": "gpt-5.6-sol",
+        "tier": "chat",
+        "timeout_sec": 30.0,
+        "enabled": True,
+        "capabilities": ["chat", "stream"],
+    }
+
+    response = api_client.put("/api/llm/routes", json={"routes": [route]})
+
+    assert response.status_code == 200
+    assert json.loads(path.read_text())["llm_routes"] == [route]
+
+
 def test_get_routes_reports_the_default_crew_chat_agent(
     api_client, tmp_path, monkeypatch
 ):

@@ -60,7 +60,10 @@ class TestFieldMetadata:
 
     def test_field_types_are_valid(self):
         """All field_type values must be from the allowed set."""
-        valid_types = {"bool", "int", "float", "str", "choice", "device", "list", "password"}
+        valid_types = {
+            "bool", "int", "float", "str", "choice", "device", "list",
+            "object_list", "password",
+        }
         for fm in FIELD_METADATA:
             assert fm.field_type in valid_types, (
                 f"Field '{fm.key}' has invalid type '{fm.field_type}'"
@@ -123,10 +126,11 @@ class TestLLMProviderFields:
                 return fm
         return None
 
-    def test_provider_category_present(self):
-        """A dedicated 'LLM Provider' category must exist in the sidebar."""
+    def test_provider_settings_share_the_llm_category(self):
+        """Connection settings and model settings describe one decision."""
         cat_keys = [k for k, _ in CATEGORIES]
-        assert "llm_provider" in cat_keys
+        assert "llm" in cat_keys
+        assert "llm_provider" not in cat_keys
 
     def test_provider_fields_present(self):
         """All eight provider-aware config keys are surfaced."""
@@ -139,17 +143,16 @@ class TestLLMProviderFields:
         missing = expected - present
         assert not missing, f"Provider fields missing from settings UI: {missing}"
 
-    def test_provider_fields_live_in_provider_category(self):
-        """The provider connection/credential fields group under the
-        'LLM Provider' category, not scattered across 'llm'."""
+    def test_provider_fields_live_in_the_llm_category(self):
+        """The provider connection and model fields form one LLM page."""
         for key in (
             "llm_provider", "llm_base_url", "llm_api_key", "llm_chat_model",
             "embedding_provider", "embedding_base_url", "embedding_api_key",
             "embedding_model",
         ):
             fm = self._field(key)
-            assert fm is not None and fm.category == "llm_provider", (
-                f"'{key}' should be in the 'llm_provider' category"
+            assert fm is not None and fm.category == "llm", (
+                f"'{key}' should be in the 'llm' category"
             )
 
     def test_llm_provider_choices_match_config(self):
@@ -196,6 +199,45 @@ class TestLLMProviderFields:
         ):
             fm = self._field(key)
             assert fm is not None and fm.nullable, f"'{key}' should be nullable"
+
+
+class TestSpeechSettings:
+    """Input capture, wake detection and transcription are one pipeline."""
+
+    def test_input_pipeline_has_one_category(self):
+        categories = {key for key, _label in CATEGORIES}
+        assert "speech_input" in categories
+        assert not {"voice_input", "wake", "whisper", "vad"} & categories
+
+    def test_input_pipeline_fields_share_that_category(self):
+        by_key = {field.key: field for field in FIELD_METADATA}
+        keys = {
+            "voice_device", "sample_rate", "voice_min_energy", "wake_word",
+            "wake_fuzzy_ratio", "whisper_model", "whisper_backend",
+            "whisper_device", "whisper_compute_type", "whisper_vad",
+            "whisper_min_confidence", "whisper_no_speech_threshold",
+            "whisper_min_language_probability", "whisper_language",
+            "vad_enabled", "vad_aggressiveness", "endpoint_silence_ms",
+            "max_utterance_ms",
+        }
+        assert {by_key[key].category for key in keys} == {"speech_input"}
+
+    def test_speaker_device_belongs_to_speech_output(self):
+        field = next(item for item in FIELD_METADATA if item.key == "tts_output_device")
+        assert field.category == "tts"
+
+
+class TestCloudTTSField:
+    def test_provider_chain_is_an_editable_structured_field(self):
+        field = next(
+            (item for item in FIELD_METADATA if item.key == "tts_cloud_providers"),
+            None,
+        )
+
+        assert field is not None
+        assert field.category == "tts"
+        assert field.field_type == "object_list"
+        assert field.item_fields == CLOUD_TTS_PROVIDER_FIELD_METADATA
 
 
 class TestMinimalConfigInvariant:

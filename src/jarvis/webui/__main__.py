@@ -32,6 +32,7 @@ def main() -> int:
         host=cfg.webui_bind_host,
         port=cfg.webui_port,
         token=resolve_token(cfg.webui_bind_host, cfg.webui_token),
+        standalone=True,
     )
     server = WebUIServer(webui_cfg)
     server.start()

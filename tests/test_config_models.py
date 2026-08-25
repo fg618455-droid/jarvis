@@ -115,6 +115,33 @@ class TestLowPowerModeConfig:
         assert settings.low_power_mode is True
 
 
+class TestSubscriptionRouteConfig:
+    def test_codex_subscription_route_survives_config_loading(self, tmp_path, monkeypatch):
+        import json as _json
+        from jarvis.config import load_settings
+
+        route = {
+            "name": "codex-chat",
+            "provider": "codex_subscription",
+            "base_url": "codex-cli",
+            "api_key": "",
+            "api_key_env": "",
+            "model": "gpt-5.6-sol",
+            "tier": "chat",
+            "timeout_sec": 30.0,
+            "enabled": True,
+            "capabilities": ["chat", "stream"],
+        }
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(
+            _json.dumps({"_config_version": 5, "llm_routes": [route]}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
+
+        assert load_settings().llm_routes == [route]
+
+
 class TestWhisperHallucinationFilterDefaults:
     """Pin defaults for the Whisper hallucination-filter thresholds.
 

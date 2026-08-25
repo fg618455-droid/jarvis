@@ -192,6 +192,42 @@ class TestWriting:
 
         assert _stored(client)["security_confirm_channels"] == ["web", "voice"]
 
+    def test_cloud_tts_chain_is_described_as_structured_fields(self, client):
+        body = client.get("/api/settings", headers=HEADERS).get_json()
+        field = _field(body, "tts_cloud_providers")
+
+        assert field["type"] == "object_list"
+        assert [item["key"] for item in field["item_fields"]] == [
+            "name", "provider", "api_key_env", "voice_id", "model",
+            "enabled", "timeout_sec",
+        ]
+
+    def test_cloud_tts_chain_accepts_provider_objects(self, client):
+        providers = [{
+            "name": "ElevenLabs",
+            "provider": "elevenlabs",
+            "api_key_env": "ELEVENLABS_API_KEY",
+            "voice_id": "voice-1",
+            "model": "eleven_multilingual_v2",
+            "enabled": True,
+            "timeout_sec": 8.5,
+        }]
+
+        response = client.put(
+            "/api/settings", headers=WRITE_HEADERS,
+            json={"changes": {"tts_cloud_providers": providers}},
+        )
+
+        assert response.status_code == 200
+        assert _stored(client)["tts_cloud_providers"] == providers
+
+    def test_llm_category_points_to_the_route_chain_that_takes_precedence(self, client):
+        body = client.get("/api/settings", headers=HEADERS).get_json()
+        category = next(item for item in body["categories"] if item["key"] == "llm")
+
+        assert category["action_href"] == "#/llm"
+        assert "route chain" in category["description"].lower()
+
     def test_the_answer_names_what_needs_a_restart(self, client):
         body = client.put("/api/settings", headers=WRITE_HEADERS,
                           json={"changes": {"whisper_language": "nl"}}).get_json()

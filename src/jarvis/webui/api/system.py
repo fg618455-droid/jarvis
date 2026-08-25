@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from flask import Blueprint, Response, jsonify
+from flask import Blueprint, Response, current_app, jsonify
 
 from jarvis.config import load_settings, resolve_config_path
 from jarvis.debug import debug_log
@@ -207,6 +207,48 @@ def read_process() -> dict:
     return reading
 
 
+def _speech_output_reading(cfg) -> dict[str, Any]:
+    """Describe the configured voice without labelling a fallback as active."""
+    from jarvis.output.tts import resolve_kokoro_voice_language, resolve_voice_language
+
+    engine = str(cfg.tts_engine or "piper")
+    voice_engine = (
+        str(cfg.tts_local_fallback_engine or "piper")
+        if engine == "cloud" else engine
+    )
+    if voice_engine == "piper":
+        model = getattr(cfg, "tts_piper_model_path", "") or ""
+        language = resolve_voice_language(model)
+    elif voice_engine == "kokoro":
+        model = getattr(cfg, "tts_kokoro_voice", "") or ""
+        language = resolve_kokoro_voice_language(model)
+    elif voice_engine == "chatterbox":
+        model = getattr(cfg, "tts_chatterbox_audio_prompt", "") or ""
+        language = "English"
+    else:
+        model = ""
+        language = None
+
+    providers = [
+        {
+            "name": str(provider.get("name", "")),
+            "provider": str(provider.get("provider", "")),
+            "model": str(provider.get("model", "")),
+            "enabled": bool(provider.get("enabled", True)),
+        }
+        for provider in getattr(cfg, "tts_cloud_providers", [])
+        if isinstance(provider, dict)
+    ]
+    return {
+        "engine": engine,
+        "enabled": bool(cfg.tts_enabled),
+        "model": model,
+        "language": language,
+        "cloud_providers": providers,
+        "local_fallback_engine": str(cfg.tts_local_fallback_engine or "piper"),
+    }
+
+
 @bp.route("/system/restart", methods=["POST"])
 def restart() -> Response:
     """Tear down every component and start a fresh generation in the same process.
@@ -217,6 +259,9 @@ def restart() -> Response:
     against this server will see the connection drop and can poll
     ``/api/health`` to know when the new generation is ready.
     """
+    if current_app.config["JARVIS_WEBUI"].standalone:
+        return jsonify(error="no daemon is running"), 409
+
     from jarvis.daemon import request_restart
 
     request_restart()
@@ -228,8 +273,6 @@ def system() -> Response:
     """Everything the technical view shows, in one reading."""
     cfg = load_settings()
     piper_model = getattr(cfg, "tts_piper_model_path", "") or ""
-
-    from jarvis.output.tts import resolve_voice_language
 
     return jsonify({
         "gpu": _cached("gpu", read_gpu),
@@ -251,12 +294,7 @@ def system() -> Response:
             "language": getattr(cfg, "whisper_language", "") or "auto",
             "min_language_probability": getattr(cfg, "whisper_min_language_probability", 0.0),
         },
-        "speech_output": {
-            "engine": cfg.tts_engine,
-            "enabled": bool(cfg.tts_enabled),
-            "model": piper_model,
-            "language": resolve_voice_language(piper_model),
-        },
+        "speech_output": _speech_output_reading(cfg),
         "paths": [
             _path_reading("config", str(resolve_config_path())),
             _path_reading("database", cfg.db_path),

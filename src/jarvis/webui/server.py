@@ -61,6 +61,7 @@ class WebUIConfig:
     host: str
     port: int
     token: str
+    standalone: bool = False
 
     @property
     def is_loopback(self) -> bool:
@@ -155,7 +156,10 @@ def create_app(cfg: WebUIConfig) -> Flask:
 
     @app.route("/api/health")
     def _health():  # noqa: ANN202 - Flask hook
-        return jsonify(ok=True, port=cfg.port, host=cfg.host)
+        return jsonify(
+            ok=True, port=cfg.port, host=cfg.host,
+            daemon_running=not cfg.standalone,
+        )
 
     @app.route("/visualizer/")
     @app.route("/visualizer/<path:subpath>")

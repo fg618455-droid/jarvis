@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QScrollArea, QGroupBox, QFormLayout, QPushButton,
     QMessageBox, QSizePolicy, QListWidget, QListWidgetItem,
     QStackedWidget, QSplitter, QInputDialog, QFrame,
+    QTableWidget, QTableWidgetItem, QHeaderView,
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont
@@ -26,7 +27,8 @@ from jarvis.config import (
     default_config_path, _save_json, _load_json,
 )
 from jarvis.config_metadata import (
-    CATEGORIES, FIELD_METADATA, FieldMeta, _is_default_value, choices_for,
+    CATEGORIES, CATEGORY_DETAILS, FIELD_METADATA, FieldMeta,
+    _is_default_value, choices_for,
 )
 from jarvis.debug import debug_log
 from desktop_app.themes import apply_theme
@@ -121,7 +123,7 @@ class SettingsWindow(QDialog):
                 cat_fields = fields_by_cat.get(cat_key, [])
                 if not cat_fields:
                     continue
-                page = self._build_category_tab(cat_fields)
+                page = self._build_category_tab(cat_key, cat_fields)
             self._pages.addWidget(page)
 
             item = QListWidgetItem(cat_label)
@@ -155,7 +157,7 @@ class SettingsWindow(QDialog):
 
         layout.addLayout(btn_layout)
 
-    def _build_category_tab(self, fields: List[FieldMeta]) -> QWidget:
+    def _build_category_tab(self, category: str, fields: List[FieldMeta]) -> QWidget:
         """Build a scrollable form for a category's fields."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -166,6 +168,13 @@ class SettingsWindow(QDialog):
         form.setContentsMargins(16, 16, 16, 16)
         form.setSpacing(14)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        details = CATEGORY_DETAILS.get(category, {})
+        if details.get("description"):
+            note = QLabel(str(details["description"]))
+            note.setWordWrap(True)
+            note.setObjectName("subtitle")
+            form.addRow(note)
 
         for fm in fields:
             widget = self._create_widget(fm)
@@ -251,6 +260,9 @@ class SettingsWindow(QDialog):
 
         if fm.field_type == "list":
             return self._create_list_widget(fm, current)
+
+        if fm.field_type == "object_list":
+            return self._create_object_list_widget(fm, current)
 
         if fm.field_type == "password":
             w = QLineEdit()
@@ -369,6 +381,127 @@ class SettingsWindow(QDialog):
         # Store the list widget for value extraction
         container._list_widget = list_w  # type: ignore[attr-defined]
         return container
+
+    def _create_object_list_widget(self, fm: FieldMeta, current: Any) -> QWidget:
+        """Create a row-based editor for a list of structured objects."""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        table = QTableWidget()
+        fields = tuple(fm.item_fields or ())
+        table.setColumnCount(len(fields))
+        table.setHorizontalHeaderLabels([field.label for field in fields])
+        table.setMinimumHeight(210)
+        table.setToolTip(fm.description)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setStretchLastSection(True)
+        self._populate_object_table(table, fields, current)
+        layout.addWidget(table)
+
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 0, 0, 0)
+        add_btn = QPushButton("+ Add")
+        remove_btn = QPushButton("− Remove")
+        up_btn = QPushButton("↑ Up")
+        down_btn = QPushButton("↓ Down")
+        for button in (add_btn, remove_btn, up_btn, down_btn):
+            buttons.addWidget(button)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+
+        def _replace(rows: list[dict[str, Any]], selected: int) -> None:
+            self._populate_object_table(table, fields, rows)
+            if 0 <= selected < table.rowCount():
+                table.selectRow(selected)
+
+        def _add() -> None:
+            rows = self._object_table_values(table, fields)
+            rows.append({
+                field.key: (
+                    True if field.field_type == "bool"
+                    else 10.0 if field.field_type == "float"
+                    else [] if field.field_type == "list"
+                    else ""
+                )
+                for field in fields
+            })
+            _replace(rows, len(rows) - 1)
+
+        def _remove() -> None:
+            row = table.currentRow()
+            if row < 0:
+                return
+            rows = self._object_table_values(table, fields)
+            rows.pop(row)
+            _replace(rows, min(row, len(rows) - 1))
+
+        def _move(offset: int) -> None:
+            row = table.currentRow()
+            target = row + offset
+            if row < 0 or target < 0 or target >= table.rowCount():
+                return
+            rows = self._object_table_values(table, fields)
+            rows[row], rows[target] = rows[target], rows[row]
+            _replace(rows, target)
+
+        add_btn.clicked.connect(_add)
+        remove_btn.clicked.connect(_remove)
+        up_btn.clicked.connect(lambda: _move(-1))
+        down_btn.clicked.connect(lambda: _move(1))
+        container._table_widget = table  # type: ignore[attr-defined]
+        container._item_fields = fields  # type: ignore[attr-defined]
+        return container
+
+    def _populate_object_table(
+        self, table: QTableWidget, fields: tuple[FieldMeta, ...], value: Any,
+    ) -> None:
+        rows = [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+        table.setRowCount(len(rows))
+        for row, item in enumerate(rows):
+            for column, field in enumerate(fields):
+                cell_value = item.get(field.key)
+                if field.field_type == "bool":
+                    widget = QCheckBox()
+                    widget.setChecked(bool(cell_value))
+                    table.setCellWidget(row, column, widget)
+                elif field.field_type == "float":
+                    widget = QDoubleSpinBox()
+                    widget.setMinimum(field.min_val if field.min_val is not None else -999999.0)
+                    widget.setMaximum(field.max_val if field.max_val is not None else 999999.0)
+                    widget.setSingleStep(field.step or 0.1)
+                    widget.setValue(float(cell_value or 0.0))
+                    table.setCellWidget(row, column, widget)
+                elif field.field_type == "choice":
+                    widget = QComboBox()
+                    for option, label in choices_for(field, cell_value):
+                        widget.addItem(label, option)
+                    widget.setCurrentIndex(max(0, widget.findData(str(cell_value or ""))))
+                    table.setCellWidget(row, column, widget)
+                else:
+                    table.setItem(row, column, QTableWidgetItem(str(cell_value or "")))
+
+    @staticmethod
+    def _object_table_values(
+        table: QTableWidget, fields: tuple[FieldMeta, ...],
+    ) -> list[dict[str, Any]]:
+        result = []
+        for row in range(table.rowCount()):
+            item: dict[str, Any] = {}
+            for column, field in enumerate(fields):
+                widget = table.cellWidget(row, column)
+                if field.field_type == "bool":
+                    item[field.key] = widget.isChecked()
+                elif field.field_type == "float":
+                    item[field.key] = round(widget.value(), 3)
+                elif field.field_type == "choice":
+                    item[field.key] = widget.currentData()
+                else:
+                    cell = table.item(row, column)
+                    item[field.key] = cell.text().strip() if cell else ""
+            result.append(item)
+        return result
 
     # -- MCP management page ------------------------------------------------
 
@@ -559,6 +692,9 @@ class SettingsWindow(QDialog):
             list_w = w._list_widget
             return [list_w.item(i).text() for i in range(list_w.count())]
 
+        if fm.field_type == "object_list":
+            return self._object_table_values(w._table_widget, w._item_fields)
+
         # str
         text = w.text().strip()
         if fm.nullable and text == "":
@@ -669,6 +805,9 @@ class SettingsWindow(QDialog):
                 for item in value:
                     if isinstance(item, str) and item.strip():
                         list_w.addItem(item.strip())
+
+        elif fm.field_type == "object_list":
+            self._populate_object_table(w._table_widget, w._item_fields, value)
 
         else:  # str
             w.setText(str(value) if value not in (None, "") else "")

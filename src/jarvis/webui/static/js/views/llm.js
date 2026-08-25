@@ -65,9 +65,12 @@ export async function mount(root) {
           provider: route.provider,
           base_url: route.base_url,
           api_key: route.masked_key,
+          api_key_env: route.api_key_env,
           model: route.model,
           tier: route.tier,
           timeout_sec: route.timeout_sec,
+          enabled: route.enabled,
+          capabilities: route.capabilities,
         })),
     );
     editor = el("textarea", {

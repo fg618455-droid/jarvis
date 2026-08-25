@@ -791,6 +791,83 @@ a.card-link:hover .stat-value {
   max-width: 420px;
 }
 
+.field-control.wide {
+  max-width: none;
+}
+
+.settings-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  margin: var(--s2) 0;
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+}
+
+.settings-note p {
+  margin: 0;
+  color: var(--fg-dim);
+}
+
+.object-list,
+.object-list-items {
+  display: grid;
+  gap: var(--s3);
+}
+
+.object-item {
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-raised);
+}
+
+.object-item > header,
+.object-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s1);
+}
+
+.object-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s2) var(--s3);
+  margin-top: var(--s3);
+}
+
+.object-field {
+  display: grid;
+  gap: var(--s1);
+  color: var(--fg-dim);
+  font-size: var(--fs-xs);
+}
+
+.object-field input,
+.object-field select {
+  width: 100%;
+}
+
+.object-actions .icon-btn {
+  min-width: 2rem;
+  padding: var(--s1) var(--s2);
+}
+
+@media (max-width: 700px) {
+  .settings-note {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .object-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .field-control.inline {
   display: flex;
   align-items: center;

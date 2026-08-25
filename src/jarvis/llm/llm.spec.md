@@ -174,7 +174,13 @@ Each `llm_routes` entry has this shape:
 }
 ```
 
-The loader accepts this tiered shape and ignores malformed entries. List order is route order. A credential may be stored directly in `api_key` or referenced by `api_key_env`; environment values are resolved only when the backend is built and are never copied into configuration.
+The loader accepts this tiered shape, including every provider described
+below, and ignores malformed entries. List order is route order. A credential
+may be stored directly in `api_key` or referenced by `api_key_env`; environment
+values are resolved only when the backend is built and are never copied into
+configuration. The control-centre editor accepts the same provider set and
+round-trips `api_key_env`, `enabled`, and `capabilities` together with the
+masked direct credential.
 
 The data-only FCC endpoint catalogue contains ordinary OpenAI-compatible templates for Gemini (`https://generativelanguage.googleapis.com/v1beta/openai`, `GEMINI_API_KEY`, `FCC_SMOKE_MODEL_GEMINI`) and OpenRouter (`https://openrouter.ai/api/v1`, `OPENROUTER_API_KEY`, `FCC_SMOKE_MODEL_OPEN_ROUTER`). Both templates participate in the CHAT import order only. Neither participates in FAST because the catalogue fixes no low-latency model configuration, and OpenRouter adds broker and upstream variability. A catalogue template is not an active route: the importer requires a configured credential and a model returned by that endpoint's live `GET /models` response before writing a route.
 

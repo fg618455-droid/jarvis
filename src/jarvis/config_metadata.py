@@ -22,19 +22,23 @@ class FieldMeta:
     label: str
     description: str
     category: str
-    field_type: str  # "bool", "int", "float", "str", "choice", "device", "list"
+    field_type: str  # "bool", "int", "float", "str", "choice", "device", "list", "object_list"
     choices: Optional[List[tuple[str, str]]] = None  # [(value, display), ...]
     min_val: Optional[float] = None
     max_val: Optional[float] = None
     step: Optional[float] = None
     suffix: Optional[str] = None
     nullable: bool = False  # Whether None/"" is a valid value (shows "Default" option)
+    item_fields: Optional[tuple["FieldMeta", ...]] = None
 
 
 LLM_ROUTE_FIELD_METADATA = (
     FieldMeta("name", "Name", "Display name for this route", "llm_routes", "str"),
     FieldMeta("provider", "Protocol", "Wire protocol used by the endpoint", "llm_routes", "choice",
-              choices=[("openai_compatible", "OpenAI-compatible"), ("ollama", "Ollama")]),
+              choices=[("openai_compatible", "OpenAI-compatible"), ("ollama", "Ollama"),
+                       ("claude_subscription", "Claude subscription"),
+                       ("codex_subscription", "Codex subscription"),
+                       ("crew_chat", "Crew chat")]),
     FieldMeta("base_url", "Base URL", "Endpoint base URL", "llm_routes", "str"),
     FieldMeta("api_key", "API Key", "Bearer credential for this endpoint", "llm_routes", "password",
               nullable=True),
@@ -65,15 +69,11 @@ CLOUD_TTS_PROVIDER_FIELD_METADATA = (
 # Categories and their display order
 CATEGORIES = [
     ("llm", "🤖 LLM & AI Models"),
-    ("llm_provider", "🔌 LLM Provider"),
     ("tts", "🔊 Text-to-Speech"),
     ("piper", "🎵 Piper TTS"),
     ("chatterbox", "🎭 Chatterbox TTS"),
     ("kokoro", "🎤 Kokoro TTS"),
-    ("voice_input", "🎤 Voice Input"),
-    ("wake", "👂 Wake Word"),
-    ("whisper", "🗣️ Speech Recognition"),
-    ("vad", "📊 Voice Activity Detection"),
+    ("speech_input", "🎤 Speech Input"),
     ("timing", "⏱️ Timing & Windows"),
     ("memory", "🧠 Memory & Dialogue"),
     ("school", "🎓 School"),
@@ -86,6 +86,19 @@ CATEGORIES = [
     ("mcps", "🔌 MCP Servers"),
     ("advanced", "🔧 Advanced"),
 ]
+
+
+CATEGORY_DETAILS = {
+    "llm": {
+        "description": (
+            "The ordered route chain decides FAST and CHAT requests first. "
+            "The single-endpoint and Ollama fields below remain the local and "
+            "legacy fallback configuration."
+        ),
+        "action_label": "Open LLM routes",
+        "action_href": "#/llm",
+    },
+}
 
 
 def _is_default_value(val: Any, default_val: Any) -> bool:
@@ -198,23 +211,23 @@ def _build_field_metadata() -> List[FieldMeta]:
     # settings on the "LLM & AI Models" page, so a default (Ollama) install
     # never needs to touch this page.
     f("llm_provider", "Provider", "Which local runtime serves the LLM",
-      "llm_provider", "choice",
+      "llm", "choice",
       choices=[("ollama", "Ollama (local)"),
                ("openai_compatible", "OpenAI-compatible server")])
     f("llm_base_url", "Base URL",
       "Provider API base URL (e.g. http://localhost:1234/v1 for LM Studio). "
       "Leave empty to use the Ollama URL.",
-      "llm_provider", "str", nullable=True)
+      "llm", "str", nullable=True)
     f("llm_api_key", "API Key",
       "Bearer token for the provider, if it requires one. Leave empty for none.",
-      "llm_provider", "password", nullable=True)
+      "llm", "password", nullable=True)
     f("llm_chat_model", "Chat Model",
       "Model name the provider exposes. Leave empty to use the Ollama chat model.",
-      "llm_provider", "str", nullable=True)
+      "llm", "str", nullable=True)
     f("chat_backend_override", "Chat Backend Override",
       "Backend to try first for main CHAT replies. An unavailable choice falls "
       "through to the configured route chain.",
-      "llm_provider", "choice",
+      "llm", "choice",
       choices=[("auto", "Automatic"),
                ("ollama", "Ollama"),
                ("claude_subscription", "Claude subscription"),
@@ -223,20 +236,20 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("embedding_provider", "Embedding Provider",
       "Runtime for embeddings. Leave on 'Same as chat provider' unless your "
       "chat runtime has no embeddings endpoint (then route them to Ollama).",
-      "llm_provider", "choice",
+      "llm", "choice",
       choices=[("", "Same as chat provider"),
                ("ollama", "Ollama (local)"),
                ("openai_compatible", "OpenAI-compatible server")])
     f("embedding_base_url", "Embedding Base URL",
       "Override base URL for embeddings. Leave empty to inherit from the "
       "chat provider (or the Ollama URL).",
-      "llm_provider", "str", nullable=True)
+      "llm", "str", nullable=True)
     f("embedding_api_key", "Embedding API Key",
       "Override bearer token for embeddings. Leave empty to inherit the chat key.",
-      "llm_provider", "password", nullable=True)
+      "llm", "password", nullable=True)
     f("embedding_model", "Embedding Model",
       "Embedding model name. Leave empty to use the Ollama embedding model.",
-      "llm_provider", "str", nullable=True)
+      "llm", "str", nullable=True)
 
     # --- Text-to-Speech ---
     f("tts_enabled", "Enable TTS", "Enable text-to-speech output",
@@ -250,6 +263,9 @@ def _build_field_metadata() -> List[FieldMeta]:
       "tts", "choice", choices=[("piper", "Piper (Neural)"),
                                   ("chatterbox", "Chatterbox (Voice Cloning)"),
                                   ("kokoro", "Kokoro (Neural)")])
+    f("tts_cloud_providers", "Cloud Provider Chain",
+      "Ordered providers used by the cloud engine. Credentials stay in the named environment variables.",
+      "tts", "object_list", item_fields=CLOUD_TTS_PROVIDER_FIELD_METADATA)
     f("tts_rate", "Speech Rate", "Words per minute (200 = normal)",
       "tts", "int", min_val=80, max_val=400, step=10, suffix="WPM", nullable=True)
 
@@ -299,73 +315,73 @@ def _build_field_metadata() -> List[FieldMeta]:
     # --- Voice Input ---
     f("tts_output_device", "Output Device",
       "Speaker device for Jarvis's voice (name or index). Leave empty for system default.",
-      "voice_input", "device")
+      "tts", "device")
     f("voice_device", "Input Device",
       "Microphone device (name or index). Leave empty for system default.",
-      "voice_input", "device")
+      "speech_input", "device")
     f("sample_rate", "Sample Rate",
       "Audio sample rate in Hz",
-      "voice_input", "choice",
+      "speech_input", "choice",
       choices=[("16000", "16000 Hz"), ("44100", "44100 Hz"), ("48000", "48000 Hz")])
     f("voice_min_energy", "Min Energy",
       "Minimum audio energy to register voice",
-      "voice_input", "float", min_val=0.0, max_val=1.0, step=0.005)
+      "speech_input", "float", min_val=0.0, max_val=1.0, step=0.005)
 
     # --- Wake Word ---
     f("wake_word", "Wake Word",
       "Primary wake word to activate Jarvis",
-      "wake", "str")
+      "speech_input", "str")
     f("wake_fuzzy_ratio", "Fuzzy Match Ratio",
       "How loosely to match the wake word (0.0–1.0)",
-      "wake", "float", min_val=0.5, max_val=1.0, step=0.01)
+      "speech_input", "float", min_val=0.5, max_val=1.0, step=0.01)
     # --- Whisper ---
     f("whisper_model", "Model Size",
       "Whisper model size (tiny/base/small/medium/large)",
-      "whisper", "choice",
+      "speech_input", "choice",
       choices=[("tiny", "Tiny"), ("base", "Base"), ("small", "Small"),
                ("medium", "Medium"), ("large-v3", "Large v3")])
     f("whisper_backend", "Backend",
       "Speech recognition backend",
-      "whisper", "choice",
+      "speech_input", "choice",
       choices=[("auto", "Auto"), ("mlx", "MLX (Apple Silicon)"),
                ("faster-whisper", "Faster Whisper")])
     f("whisper_device", "Compute Device",
       "Device for Whisper inference",
-      "whisper", "choice",
+      "speech_input", "choice",
       choices=[("auto", "Auto"), ("cuda", "CUDA (GPU)"), ("cpu", "CPU")])
     f("whisper_compute_type", "Compute Type",
       "Quantisation level for inference",
-      "whisper", "choice",
+      "speech_input", "choice",
       choices=[("int8", "INT8 (Fast)"), ("float16", "Float16"), ("float32", "Float32")])
     f("whisper_vad", "Use VAD Filter",
       "Filter audio with VAD before transcription",
-      "whisper", "bool")
+      "speech_input", "bool")
     f("whisper_min_confidence", "Min Confidence",
       "Filter low-confidence segments (hallucination guard)",
-      "whisper", "float", min_val=0.0, max_val=1.0, step=0.05)
+      "speech_input", "float", min_val=0.0, max_val=1.0, step=0.05)
     f("whisper_no_speech_threshold", "No-Speech Threshold",
       "Reject segments where no_speech_prob is at or above this value (filters hallucinations during silence)",
-      "whisper", "float", min_val=0.0, max_val=1.0, step=0.05)
+      "speech_input", "float", min_val=0.0, max_val=1.0, step=0.05)
     f("whisper_min_language_probability", "Min Language Confidence",
       "Reject an utterance when Whisper is unsure which language it heard (0 disables; ignored when a language is set below)",
-      "whisper", "float", min_val=0.0, max_val=1.0, step=0.05)
+      "speech_input", "float", min_val=0.0, max_val=1.0, step=0.05)
     f("whisper_language", "Spoken Language",
       "ISO-639-1 code of the language you speak, e.g. de or ja. Empty identifies the language per utterance",
-      "whisper", "str")
+      "speech_input", "str")
 
     # --- VAD ---
     f("vad_enabled", "Enable VAD",
       "Use Voice Activity Detection",
-      "vad", "bool")
+      "speech_input", "bool")
     f("vad_aggressiveness", "Aggressiveness",
       "VAD aggressiveness (0=least, 3=most aggressive)",
-      "vad", "int", min_val=0, max_val=3)
+      "speech_input", "int", min_val=0, max_val=3)
     f("endpoint_silence_ms", "Endpoint Silence",
       "Silence duration to end an utterance",
-      "vad", "int", min_val=100, max_val=5000, step=50, suffix="ms")
+      "speech_input", "int", min_val=100, max_val=5000, step=50, suffix="ms")
     f("max_utterance_ms", "Max Utterance",
       "Maximum single utterance duration",
-      "vad", "int", min_val=1000, max_val=60000, step=1000, suffix="ms")
+      "speech_input", "int", min_val=1000, max_val=60000, step=1000, suffix="ms")
     # --- Timing & Windows ---
     f("hot_window_enabled", "Hot Window",
       "Enable wake-word-free follow-up after responses",

@@ -7,7 +7,7 @@ import io
 import json
 from typing import Iterator
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, current_app, jsonify, request
 
 from jarvis.debug import recent_logs
 from jarvis.runtime import get_event_bus, get_recorder, get_runtime_state
@@ -23,7 +23,38 @@ KEEP_ALIVE_SECONDS = 15.0
 @bp.route("/status")
 def status() -> Response:
     """What the assistant is doing, and this session's tallies."""
-    return jsonify(get_runtime_state().snapshot())
+    return jsonify(_status_snapshot())
+
+
+def _status_snapshot() -> dict:
+    """Return live daemon state, or an honest empty standalone reading."""
+    webui = current_app.config["JARVIS_WEBUI"]
+    if not webui.standalone:
+        return {"daemon_running": True, **get_runtime_state().snapshot()}
+    return {
+        "daemon_running": False,
+        "phase": None,
+        "phase_since": None,
+        "phase_seconds": None,
+        "started_at": None,
+        "uptime_seconds": None,
+        "turns": {"voice": 0, "text": 0, "total": 0},
+        "tool_calls": 0,
+        "errors": 0,
+        "discarded": {},
+        "last_error": None,
+        "last_error_at": None,
+        "last_turn": None,
+        "models": {},
+        "audio": {},
+        "passive": {
+            "enabled": False,
+            "lines_written": 0,
+            "digests_produced": 0,
+            "last_line_at": None,
+        },
+        "conversation": {"active": False},
+    }
 
 
 @bp.route("/logs")
@@ -99,9 +130,11 @@ def events() -> Response:
     The first message is the current state, so a page that connects mid
     session is correct immediately rather than after the next change.
     """
+    initial = _status_snapshot()
+
     def stream() -> Iterator[str]:
         with get_event_bus().subscribe() as subscription:
-            yield _sse("status", get_runtime_state().snapshot())
+            yield _sse("status", initial)
             for event in subscription.listen(timeout=KEEP_ALIVE_SECONDS):
                 if event is None:
                     yield ": keep-alive\n\n"

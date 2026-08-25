@@ -152,6 +152,14 @@ function paintHeader() {
   const status = state.status;
   if (!status) return;
 
+  if (status.daemon_running === false) {
+    dom.dot.dataset.phase = "offline";
+    dom.phase.textContent = t("phase.offline");
+    dom.uptime.textContent = "—";
+    dom.lastTurn.textContent = "—";
+    return;
+  }
+
   dom.dot.dataset.phase = status.phase;
   dom.phase.textContent = state.connected
     ? t(`phase.${status.phase}`)
@@ -163,10 +171,15 @@ function paintHeader() {
 function paintFoot() {
   const foot = document.getElementById("sidebar-foot");
   if (!foot) return;
-  const models = state.status?.models || {};
   foot.replaceChildren(
-    el("span", { text: models.chat || "—" }),
-    el("span", { class: "num", id: "foot-vram", text: "—" }),
+    el("span", { class: "sidebar-reading" }, [
+      el("span", { class: "label", text: t("sidebar.localModel") }),
+      el("span", { class: "num", id: "foot-local-model", text: "—" }),
+    ]),
+    el("span", { class: "sidebar-reading" }, [
+      el("span", { class: "label", text: t("sidebar.localGpu") }),
+      el("span", { class: "num", id: "foot-vram", text: "—" }),
+    ]),
   );
 }
 
@@ -177,8 +190,13 @@ async function pollVram() {
   try {
     const system = await api.system();
     const gpu = system.gpu;
+    const modelNode = document.getElementById("foot-local-model");
     const node = document.getElementById("foot-vram");
-    if (!node) return;
+    if (!node || !modelNode) return;
+    const loaded = system.models?.loaded || [];
+    modelNode.textContent = loaded.length
+      ? loaded.map((model) => model.name).filter(Boolean).join(", ")
+      : t("sidebar.noLocalModel");
     if (gpu?.used_mb && gpu?.total_mb) {
       node.textContent = `${fmt.megabytes(gpu.used_mb)} / ${fmt.megabytes(gpu.total_mb)}`;
     } else if (gpu?.total_mb) {
@@ -300,7 +318,7 @@ function main() {
 
   setInterval(pollVram, 5000);
   setInterval(() => {
-    if (state.status) {
+    if (state.status?.daemon_running !== false && Number.isFinite(state.status?.uptime_seconds)) {
       state.status.uptime_seconds += 1;
       dom.uptime.textContent = fmt.seconds(state.status.uptime_seconds);
     }

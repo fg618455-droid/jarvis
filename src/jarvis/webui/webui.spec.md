@@ -41,12 +41,17 @@ happening now, what the assistant knows, and how the machine is set up. Each
 group is an ARIA group carrying that name, so the structure is available to a
 screen reader and not only to the eye.
 
+The sidebar footer is explicitly local: its model names come from `ollama ps`
+and therefore describe models actually resident on this machine, while the
+memory reading comes from the local NVIDIA adapter. Configured remote reply
+models appear in the System and LLM Routes views, never beside local VRAM.
+
 ## Runtime
 
 | Aspect | Behaviour |
 |---|---|
 | Entry point | `jarvis.webui.start_from_settings(cfg)`, called by `daemon.main()` right after the models are named and before Whisper loads, so the interface is reachable while startup is still running |
-| Standalone | `python -m jarvis.webui` serves memory, settings, and stored telemetry with no daemon. Live state is empty because nothing is listening |
+| Standalone | `python -m jarvis.webui` serves memory, settings, and stored telemetry with no daemon. Status carries `daemon_running: false`; phase, uptime, models, audio, and last turn are empty, so the shell says Jarvis is not running and hides recording indicators |
 | Server | `werkzeug.serving.make_server(..., threaded=True)` on a daemon thread. Threaded because a server-sent event stream holds its connection for as long as the page is open |
 | Shutdown | `WebUIServer.stop()` from the daemon's cleanup path, both on the normal exit and after a smoke test |
 
@@ -112,8 +117,8 @@ allowed; reading one back is not.
 
 | Route | Serves |
 |---|---|
-| `GET /api/health` | Liveness, port, bind address |
-| `GET /api/status` | Phase, uptime, tallies, last turn, models, audio |
+| `GET /api/health` | Control-centre liveness, port, bind address, and whether a daemon is attached |
+| `GET /api/status` | Daemon presence, phase, uptime, tallies, last turn, models, audio |
 | `GET /api/logs` | Recent local diagnostic entries, with credentials redacted |
 | `GET /api/events` | Server-sent events. Opens with the current state so a page that connects mid session is correct at once |
 | `GET /api/turns` | Recent turns with their stages and tool calls |
@@ -133,7 +138,7 @@ allowed; reading one back is not.
 | `GET /api/tools`, `POST /api/tools/refresh` | The tool catalogue, MCP server state, rediscovery |
 | `GET /api/security`, `/api/security/pending`, `POST /api/security/decide` | The confirmation policy, what is waiting, and the answer |
 | `GET /api/system` | GPU, resident models, speech configuration, paths, process |
-| `POST /api/system/restart` | Ask the daemon to tear down and start a fresh generation in place |
+| `POST /api/system/restart` | Ask the daemon to tear down and start a fresh generation in place; 409 in standalone mode |
 | `GET/PUT /api/settings` | Every editable config field, and writes to it |
 | `GET /api/llm/routes` | FAST, CHAT, and PRIVATE chains with masked credentials and persisted health state; performs no outbound request |
 | `POST /api/llm/routes/probe` | User-triggered model catalogue and credential probe |
@@ -160,15 +165,27 @@ keys the registry does not describe survive untouched. A credential is sent
 back masked, and a masked value returned unchanged leaves the stored one
 alone, so saving a form never overwrites a secret with its own mask.
 
-The Settings view carries a restart control alongside Save, always available
-rather than conditional on a changed field, because config the daemon read
+The shared field registry also describes structured object lists. The cloud
+TTS chain uses that shape, so each ordered provider is editable as named
+controls for provider, credential environment variable, voice, model, enabled
+state, and timeout. The API accepts only the nested keys in that schema.
+LLM provider, connection, model, and timeout fields share one LLM category;
+microphone, wake word, Whisper, and VAD fields share one Speech Input category;
+and the speaker device remains with Text-to-Speech. The LLM category links to
+the route view and states that its ordered FAST and CHAT chains take precedence
+over the single-endpoint and Ollama fallback fields.
+
+The Settings view carries a restart control alongside Save whenever a daemon
+is attached, rather than making it conditional on a changed field, because config the daemon read
 at start-up (models named, the webui's own bind settings, anything else the
 running objects captured once) only takes effect on a fresh generation.
 `POST /api/system/restart` calls `jarvis.daemon.request_restart()`, which
 shares `request_stop()`'s exact shutdown path and then starts another
 generation in the same process rather than letting it end — see "Restarting
 in place" below. The endpoint returns before that happens; the page polls
-`/api/health` until it answers again, then reloads.
+`/api/health` until it answers again, then reloads. Standalone mode disables
+the control and the restart endpoint refuses the request instead of reporting
+a restart that cannot occur.
 
 ### Restarting in place
 
@@ -207,7 +224,9 @@ counts, block time, and the last safe error label within its chain card. The
 entry layout wraps long model names and error labels instead of overflowing
 into neighbouring chains. The PRIVATE chain is read-only and contains one
 loopback Ollama route. Configured FAST and CHAT entries are editable using
-only the route schema described by the LLM spec.
+only the route schema described by the LLM spec. Repainting the JSON editor
+preserves every operational field, including `api_key_env`, `enabled`, and
+`capabilities`, as well as the masked direct credential.
 
 Loading and refreshing the view reads local config and cooldown state only.
 The only control that contacts a configured endpoint is **Probe models**.

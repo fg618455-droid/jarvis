@@ -32,6 +32,8 @@ export async function mount(root) {
     class: "btn",
     type: "button",
     text: t("settings.restartNow"),
+    disabled: payload.daemon_running === false,
+    title: payload.daemon_running === false ? t("settings.noDaemon") : "",
     onclick: () => restart(),
   });
   const changeCount = el("span", { class: "muted" });
@@ -129,6 +131,10 @@ export async function mount(root) {
       return area;
     }
 
+    if (field.type === "object_list") {
+      return objectListControl(field);
+    }
+
     if (field.type === "int" || field.type === "float") {
       const input = el("input", {
         type: "number",
@@ -158,14 +164,142 @@ export async function mount(root) {
     return input;
   }
 
+  function objectListControl(field) {
+    const container = el("div", { class: "object-list" });
+    const items = JSON.parse(JSON.stringify(field.value || []));
+
+    function nestedControl(meta, value, changed) {
+      if (meta.type === "bool") {
+        const input = el("input", { type: "checkbox", checked: Boolean(value) });
+        input.addEventListener("change", () => changed(input.checked));
+        return el("label", { class: "check compact" }, [input, meta.label]);
+      }
+      if (meta.type === "choice") {
+        const select = el("select");
+        for (const choice of meta.choices || []) {
+          select.append(el("option", {
+            value: choice.value,
+            text: choice.label,
+            selected: String(choice.value) === String(value ?? ""),
+          }));
+        }
+        select.addEventListener("change", () => changed(select.value));
+        return select;
+      }
+      if (meta.type === "list") {
+        const input = el("input", { type: "text", value: (value || []).join(", ") });
+        input.addEventListener("input", () => changed(
+          input.value.split(",").map((part) => part.trim()).filter(Boolean),
+        ));
+        return input;
+      }
+      const numeric = meta.type === "int" || meta.type === "float";
+      const input = el("input", {
+        type: numeric ? "number" : (meta.is_secret ? "password" : "text"),
+        value: value ?? "",
+        min: numeric ? meta.min : null,
+        max: numeric ? meta.max : null,
+        step: numeric ? (meta.step ?? (meta.type === "int" ? 1 : "any")) : null,
+      });
+      input.addEventListener("input", () => changed(
+        numeric ? (input.value === "" ? null : Number(input.value)) : input.value,
+      ));
+      return input;
+    }
+
+    function commit() {
+      record(field, JSON.parse(JSON.stringify(items)), container);
+    }
+
+    function paint() {
+      clear(container);
+      const list = el("div", { class: "object-list-items" });
+      items.forEach((item, index) => {
+        const title = String(item.name || t("settings.item", { n: index + 1 }));
+        const card = el("section", { class: "object-item" }, [
+          el("header", {}, [
+            el("strong", { text: title }),
+            el("div", { class: "object-actions" }, [
+              el("button", {
+                class: "btn icon-btn", type: "button", text: "↑",
+                title: t("settings.moveUp"), "aria-label": `${t("settings.moveUp")}: ${title}`,
+                disabled: index === 0,
+                onclick: () => {
+                  [items[index - 1], items[index]] = [items[index], items[index - 1]];
+                  commit(); paint();
+                },
+              }),
+              el("button", {
+                class: "btn icon-btn", type: "button", text: "↓",
+                title: t("settings.moveDown"), "aria-label": `${t("settings.moveDown")}: ${title}`,
+                disabled: index === items.length - 1,
+                onclick: () => {
+                  [items[index + 1], items[index]] = [items[index], items[index + 1]];
+                  commit(); paint();
+                },
+              }),
+              el("button", {
+                class: "btn icon-btn", type: "button", text: "×",
+                title: t("common.remove"), "aria-label": `${t("common.remove")}: ${title}`,
+                onclick: () => { items.splice(index, 1); commit(); paint(); },
+              }),
+            ]),
+          ]),
+        ]);
+        const grid = el("div", { class: "object-grid" });
+        for (const meta of field.item_fields || []) {
+          const editor = nestedControl(meta, item[meta.key], (value) => {
+            item[meta.key] = value;
+            commit();
+            if (meta.key === "name") card.querySelector("strong").textContent = value || title;
+          });
+          grid.append(el("label", { class: "object-field" }, [
+            meta.type === "bool" ? null : el("span", { text: meta.label }),
+            editor,
+          ]));
+        }
+        card.append(grid);
+        list.append(card);
+      });
+      container.append(
+        list,
+        el("button", {
+          class: "btn", type: "button", text: t("settings.addItem"),
+          onclick: () => {
+            const item = {};
+            for (const meta of field.item_fields || []) {
+              item[meta.key] = meta.type === "bool" ? true
+                : meta.type === "float" ? 10
+                  : meta.type === "list" ? [] : "";
+            }
+            items.push(item);
+            commit(); paint();
+          },
+        }),
+      );
+    }
+
+    paint();
+    return container;
+  }
+
   function paintPanel() {
     clear(panel);
     const fields = payload.fields.filter((field) => field.category === current);
+    const category = used.find((item) => item.key === current);
     panel.append(
       el("header", {}, [
-        el("h2", { text: used.find((category) => category.key === current)?.label || "" }),
+        el("h2", { text: category?.label || "" }),
       ]),
     );
+    if (category?.description) {
+      panel.append(el("div", { class: "settings-note" }, [
+        el("p", { text: category.description }),
+        category.action_href
+          ? el("a", { class: "btn", href: category.action_href, text: category.action_label })
+          : null,
+      ]));
+    }
 
     for (const field of fields) {
       const node = control(field);
@@ -177,7 +311,9 @@ export async function mount(root) {
             field.is_secret ? chip(field.is_set ? t("settings.secretSet") : t("settings.secretUnset")) : null,
           ]),
           el("div", { class: "field-help", text: field.description }),
-          el("div", { class: "field-control" }, [node]),
+          el("div", {
+            class: `field-control${field.type === "object_list" ? " wide" : ""}`,
+          }, [node]),
         ]),
       );
     }
@@ -206,6 +342,7 @@ export async function mount(root) {
   }
 
   async function restart() {
+    if (payload.daemon_running === false) return;
     if (!window.confirm(t("settings.restartConfirm"))) return;
     restartButton.disabled = true;
     saveButton.disabled = true;

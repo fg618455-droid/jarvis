@@ -21,12 +21,13 @@ FieldMeta (dataclass, src/jarvis/config_metadata.py)
   ├── label: str         # Human-readable label
   ├── description: str   # Tooltip text
   ├── category: str      # Tab grouping key
-  ├── field_type: str    # "bool" | "int" | "float" | "str" | "choice" | "device" | "list"
+  ├── field_type: str    # "bool" | "int" | "float" | "str" | "choice" | "device" | "list" | "object_list"
   ├── choices            # For "choice"/"device": [(value, display), ...]
   ├── min_val / max_val  # Numeric bounds
   ├── step               # Increment step
   ├── suffix             # Unit label (e.g. "s", "ms", "WPM")
-  └── nullable           # Whether None is valid (shows placeholder)
+  ├── nullable           # Whether None is valid (shows placeholder)
+  └── item_fields        # Nested FieldMeta tuple for "object_list"
 ```
 
 ## Widget Mapping
@@ -42,6 +43,7 @@ FieldMeta (dataclass, src/jarvis/config_metadata.py)
 | `choice` | QComboBox | Pre-defined options, plus the configured value |
 | `device` | QComboBox | Dynamically populated from sounddevice |
 | `list` | QListWidget + Add/Edit/Remove buttons | Stores as JSON array in config |
+| `object_list` | QTableWidget + Add/Remove/Move buttons | One typed column per nested metadata field; stores a JSON object array |
 
 `choices_for(meta, value)` in `jarvis.config_metadata` decides what a
 `choice` field offers, and both this window and the control centre build
@@ -61,35 +63,41 @@ The settings window uses a sidebar navigation pattern: a fixed-width `QListWidge
 ## Categories (Sidebar Order)
 
 1. LLM & AI Models
-2. LLM Provider
-3. Text-to-Speech
-4. Piper TTS
-5. Chatterbox TTS
-6. Kokoro TTS
-7. Voice Input (includes microphone device selection)
-8. Wake Word
-9. Speech Recognition (Whisper)
-10. Voice Activity Detection
-11. Timing & Windows
-12. Memory & Dialogue
-13. Security
-14. Location
-15. Features (includes web search, Wikipedia fallback, low-power mode, startup tune, and dictation toggles)
-16. Control Centre
-17. MCP Servers
-18. Advanced
+2. Text-to-Speech
+3. Piper TTS
+4. Chatterbox TTS
+5. Kokoro TTS
+6. Speech Input (microphone, wake word, Whisper, and VAD)
+7. Timing & Windows
+8. Memory & Dialogue
+9. School
+10. Passive Capture
+11. Security
+12. Location
+13. Features (includes web search, Wikipedia fallback, low-power mode, startup tune, and dictation toggles)
+14. Control Centre
+15. Mission Control
+16. MCP Servers
+17. Advanced
 
-### LLM Provider
+### LLM & AI Models
 
-Selects the local runtime that serves the LLM and holds the provider-aware
+This one category holds local model choices, timeouts, thinking controls, the
+single-endpoint runtime, and the provider-aware
 connection fields: `llm_provider` (Ollama / OpenAI-compatible), `llm_base_url`,
 `llm_api_key` (password), `llm_chat_model`, and the four `embedding_*` fields
 (`embedding_provider`, `embedding_base_url`, `embedding_api_key`,
 `embedding_model`). The model fields are free-text `str` — an OpenAI-compatible
 server's model name is not in the Ollama `SUPPORTED_CHAT_MODELS` catalogue.
 
+The category explains that the ordered FAST and CHAT route chain takes
+precedence and directs the user to the control centre's LLM Routes view. The
+single-endpoint and Ollama fields are the fallback configuration when no route
+answers; editing the route chain remains the responsibility of that dedicated
+view.
+
 Every connection/credential/model field is nullable: leaving it empty falls
-back to the Ollama settings on the "LLM & AI Models" page. A default Ollama
+back to the Ollama settings in the same category. A default Ollama
 install therefore never needs to open this page, and the minimal-config save
 behaviour keeps these keys out of `config.json` until the user sets them.
 
@@ -101,6 +109,15 @@ clear would wipe the supported "Ollama chat + remote embeddings" split
 values are harmless because the backend resolves per-provider: the Ollama path
 uses `ollama_base_url` / `ollama_chat_model` and `OllamaBackend` ignores any
 API key. To drop a leftover value, clear that field and save.
+
+### Speech and TTS
+
+The Speech Input category follows the actual input pipeline: microphone and
+sample rate, wake-word matching, Whisper transcription, and VAD endpointing.
+The output device belongs to Text-to-Speech. The TTS category also exposes
+`tts_cloud_providers` as a structured ordered table. Each row edits the provider
+name, vendor id, credential environment-variable name, voice id, model,
+enabled state, and timeout. Credential values never enter config.json.
 
 ### Features
 
@@ -124,7 +141,7 @@ default, like every other metadata-managed field.
 
 ## Hardware Device Selection
 
-The Voice Input tab includes a device dropdown populated at window open time via `sounddevice.query_devices()`. It lists all input-capable devices with their index and name. The stored value is the device index as a string, or empty string for system default.
+The Speech Input category includes a microphone dropdown populated at window open time via `sounddevice.query_devices()`. Text-to-Speech contains the matching output-device dropdown. Each lists the relevant devices with their index and name. The stored value is the device index as a string, or empty string for system default.
 
 ## Save Behaviour
 
