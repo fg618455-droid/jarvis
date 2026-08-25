@@ -217,6 +217,30 @@ class TestTheCannedFallbackSpeaksTheVoicesLanguage:
         ) == "Ich habe die Anfrage nicht verstanden."
         assert asked == ["German"]
 
+    def test_a_cloud_chain_uses_its_local_fallback_voice_language(
+        self, tmp_path, mock_config,
+    ):
+        from jarvis.reply.fallbacks import in_the_voices_language, forget_renderings
+
+        forget_renderings()
+        mock_config.tts_engine = "cloud"
+        mock_config.tts_local_fallback_engine = "piper"
+        mock_config.tts_piper_model_path = _write_voice(
+            tmp_path, "de_DE-thorsten-medium",
+            {"code": "de_DE", "family": "de", "name_english": "German"},
+        )
+        asked = []
+
+        def fake_render(cfg, language, message):
+            asked.append(language)
+            return "Ich habe die Anfrage nicht verstanden."
+
+        assert in_the_voices_language(
+            mock_config, "I had trouble understanding that request.",
+            render=fake_render,
+        ) == "Ich habe die Anfrage nicht verstanden."
+        assert asked == ["German"]
+
     def test_a_rendering_is_reused_rather_than_asked_for_again(self, tmp_path, mock_config):
         from jarvis.reply.fallbacks import in_the_voices_language, forget_renderings
 

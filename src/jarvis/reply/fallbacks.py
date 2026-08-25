@@ -7,10 +7,11 @@ usable, so its message is ours, and ours is written in English. A German
 voice then reads an English apology aloud.
 
 The language is never guessed. It comes from the configured voice's own
-metadata, the same source the reply prompt uses, so a Dutch or Turkish
-voice needs no code change and no language appears anywhere in this file.
-With no voice to name a language, text chat included, the English original
-stands: a wrong language is worse than a familiar one.
+metadata, so a Dutch or Turkish voice needs no code change and no language
+appears anywhere in this file. A cloud chain uses the voice configured on
+its mandatory local fallback engine. With no voice to name a language, text
+chat included, the English original stands: a wrong language is worse than
+a familiar one.
 """
 
 from __future__ import annotations
@@ -82,7 +83,11 @@ def forget_renderings() -> None:
 
 
 def _voice_language(cfg) -> Optional[str]:
-    engine = getattr(cfg, "tts_engine", "piper")
+    engine = str(getattr(cfg, "tts_engine", "piper") or "piper").lower()
+    if engine == "cloud":
+        engine = str(
+            getattr(cfg, "tts_local_fallback_engine", "piper") or "piper"
+        ).lower()
     if engine == "piper":
         return resolve_voice_language(getattr(cfg, "tts_piper_model_path", None))
     if engine == "kokoro":
