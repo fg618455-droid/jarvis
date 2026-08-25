@@ -39,6 +39,9 @@ resident for the daemon's lifetime.
 
 ## Invariants
 
+- The main Jarvis environment uses `mcp==1.13.1`. Packages requiring a newer
+  MCP release run behind a separate process and interpreter boundary; they
+  are never installed into the persistent runtime's environment.
 - One in-flight `call_tool` per server at any time. Tool calls to the
   same server are serialised by the queue. Different servers run in
   parallel because each has its own worker.

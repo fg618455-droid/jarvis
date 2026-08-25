@@ -303,7 +303,15 @@ The control centre's **LLM routes** view shows active routes, cooldowns, failure
 - HTTP rate limits and quota resets are persisted in `~/.jarvis/llm_routes_state.json`, so restarting does not immediately retry a blocked key.
 - HTTP 401 and 403 responses remove the key for the process lifetime.
 
-A CHAT-tier route may instead set `"provider": "claude_subscription"`. It authenticates through an already logged-in `claude` CLI session via `claude_agent_sdk` rather than any API key, so it has no key to fill in — `base_url` is only kept for shape consistency and can be any non-empty placeholder such as `"claude-agent-sdk"`. The session is text-generation only: it never runs a tool of its own, native tool schemas fall back to Jarvis's own text-based tool calling, and every reply still passes through Jarvis's one tool-calling loop and confirmation gate. `claude-agent-sdk` is not installed by default (`pip install claude-agent-sdk` first) because its `mcp` requirement is newer than the version this project pins.
+A CHAT-tier route may instead set `"provider": "claude_subscription"`. It authenticates through an already logged-in `claude` CLI subscription session rather than an API key, so it has no key to fill in. `base_url` is only kept for shape consistency and can be any non-empty placeholder such as `"claude-agent-sdk"`. The session is text-generation only: it never runs a tool of its own, native tool schemas fall back to Jarvis's own text-based tool calling, and every reply still passes through Jarvis's one tool-calling loop and confirmation gate.
+
+The Claude Agent SDK runs in a separate optional environment because its MCP dependency is incompatible with Jarvis's persistent MCP runtime. Create that environment on Windows with:
+
+```powershell
+.venv\Scripts\python.exe scripts\setup_claude_subscription.py
+```
+
+It lives at `~/.jarvis/claude-subscription-venv`. Set `JARVIS_CLAUDE_SIDECAR_PYTHON` to another interpreter path when a different location is required. Without a valid sidecar environment, the route fails softly and Jarvis continues to the next configured CHAT route.
 
 A CHAT-tier route may instead set `"provider": "crew_chat"`, a synchronous relay to a self-hosted Hermes agent crew's own chat engine on your own NAS. It reuses the existing `crew_api_url` / `crew_api_key` fields (Mission Control's own connection) rather than the route's own `base_url` / `api_key` / `model`, which stay shape-only placeholders such as `"crew-chat"`; the new `crew_chat_agent` setting names which crew specialist answers. It is text-generation only, exactly like `claude_subscription`, and is a wholly separate path from the fire-and-forget `askCrew` tool: `askCrew` posts a task into the crew's Telegram channel and never waits for a reply, while `crew_chat` waits and answers the current turn.
 
