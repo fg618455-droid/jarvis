@@ -316,6 +316,8 @@ python scripts/import_fcc_keys.py
 
 Neither command prints a credential. The importer writes only routes whose endpoint advertises a model during that run. Config and route-state files are restricted to the current user where POSIX permissions are available.
 
+The FCC catalogue recognises Gemini and OpenRouter as CHAT routes through their OpenAI-compatible endpoints. Each requires its matching key in `~/.fcc/.env`, and the importer skips it unless the live `GET /models` response advertises a model. Neither service is placed in the latency-sensitive FAST chain.
+
 </details>
 
 <details>

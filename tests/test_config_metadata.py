@@ -10,6 +10,7 @@ from jarvis.config_metadata import (
     CATEGORIES,
     FIELD_METADATA,
     FieldMeta,
+    LLM_ROUTE_FIELD_METADATA,
     _build_field_metadata,
     _is_default_value,
 )
@@ -33,6 +34,13 @@ class TestFieldMetadata:
             assert fm.key in defaults, (
                 f"Field '{fm.key}' not found in default config"
             )
+
+    def test_route_api_key_is_password_type(self):
+        """Route credentials must render masked in every settings surface."""
+        api_key = next(
+            field for field in LLM_ROUTE_FIELD_METADATA if field.key == "api_key"
+        )
+        assert api_key.field_type == "password"
 
     def test_no_duplicate_keys(self):
         """Each config key should appear at most once in the metadata."""
