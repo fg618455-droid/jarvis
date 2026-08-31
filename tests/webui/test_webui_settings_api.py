@@ -251,7 +251,7 @@ class TestWriting:
         body = client.get("/api/settings", headers=HEADERS).get_json()
         category = next(item for item in body["categories"] if item["key"] == "llm")
 
-        assert category["action_href"] == "#/llm"
+        assert category["action_href"] == "#/llm-routes"
         assert "route chain" in category["description"].lower()
 
     def test_the_answer_names_what_needs_a_restart(self, client):

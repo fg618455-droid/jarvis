@@ -36,25 +36,61 @@ class FieldMeta:
 
 
 LLM_ROUTE_FIELD_METADATA = (
-    FieldMeta("name", "Name", "Display name for this route", "llm_routes", "str"),
+    FieldMeta("name", "Name", "Display name for this route", "llm_routes", "str",
+              default_value="New route"),
     FieldMeta("provider", "Protocol", "Wire protocol used by the endpoint", "llm_routes", "choice",
               choices=[("openai_compatible", "OpenAI-compatible"), ("ollama", "Ollama"),
                        ("claude_subscription", "Claude subscription"),
                        ("codex_subscription", "Codex subscription"),
-                       ("crew_chat", "Crew chat")]),
+                       ("crew_chat", "Crew chat")],
+              default_value="openai_compatible"),
     FieldMeta("base_url", "Base URL", "Endpoint base URL", "llm_routes", "str"),
     FieldMeta("api_key", "API Key", "Bearer credential for this endpoint", "llm_routes", "password",
-              nullable=True),
+              nullable=True, default_value=""),
     FieldMeta("api_key_env", "API Key Environment", "Environment variable containing the bearer credential", "llm_routes", "str",
-              nullable=True),
+              nullable=True, default_value=""),
     FieldMeta("model", "Model", "Model name exposed by the endpoint", "llm_routes", "str"),
     FieldMeta("tier", "Tier", "Route chain that uses this endpoint", "llm_routes", "choice",
-              choices=[("fast", "Fast"), ("chat", "Chat")]),
+              choices=[("fast", "Fast"), ("chat", "Chat")], default_value="chat"),
     FieldMeta("timeout_sec", "Timeout", "Seconds before trying the next route", "llm_routes", "float",
-              min_val=0.1, max_val=600, step=0.5, suffix="s"),
-    FieldMeta("enabled", "Enabled", "Whether this route participates in its tier chain", "llm_routes", "bool"),
-    FieldMeta("capabilities", "Capabilities", "Supported request shapes: chat, stream, tools", "llm_routes", "list"),
+              min_val=0.1, max_val=600, step=0.5, suffix="s", default_value=4.0),
+    FieldMeta("enabled", "Enabled", "Whether this route participates in its tier chain", "llm_routes", "bool",
+              default_value=True),
+    FieldMeta("capabilities", "Capabilities", "Supported request shapes: chat, stream, tools", "llm_routes", "list",
+              default_value=["chat", "stream", "tools"]),
 )
+
+
+# Hints are display-only. Subscription and crew backends ignore their inert
+# endpoint/model placeholders, but storing explicit values keeps every route
+# in one stable schema and lets the factory reject malformed network routes.
+LLM_ROUTE_PROVIDER_PLACEHOLDERS = {
+    "ollama": {
+        "base_url": "http://127.0.0.1:11434",
+        "model": "qwen2.5:7b",
+        "api_key_env": "",
+    },
+    "openai_compatible": {
+        "base_url": "https://provider.example/v1",
+        "model": "provider-model-id",
+        "api_key_env": "PROVIDER_API_KEY",
+    },
+    "claude_subscription": {
+        "base_url": "claude-cli",
+        "model": "claude-subscription",
+        "api_key_env": "",
+    },
+    "codex_subscription": {
+        "base_url": "codex-cli",
+        "model": "gpt-5.6-sol",
+        "api_key_env": "",
+    },
+    "crew_chat": {
+        "base_url": "crew-chat",
+        "model": "crew-chat",
+        "api_key_env": "",
+    },
+}
 
 
 CLOUD_TTS_PROVIDER_FIELD_METADATA = (
@@ -106,7 +142,7 @@ CATEGORY_DETAILS = {
             "legacy fallback configuration."
         ),
         "action_label": "Open LLM routes",
-        "action_href": "#/llm",
+        "action_href": "#/llm-routes",
     },
 }
 

@@ -895,11 +895,71 @@ a.card-link:hover .stat-value {
 .settings-bar .spacer {
   margin-left: auto;
 }
-.route-editor {
+.route-config-card,
+.route-config-list {
+  display: grid;
+  gap: var(--s3);
+}
+
+.route-config {
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-raised);
+}
+
+.route-config > header,
+.route-config-title,
+.route-capabilities {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.route-config > header {
+  justify-content: space-between;
+}
+
+.route-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s3);
+  margin-top: var(--s3);
+}
+
+.route-field {
+  display: grid;
+  align-content: start;
+  gap: var(--s1);
+  min-width: 0;
+  color: var(--fg-dim);
+  font-size: var(--fs-xs);
+}
+
+.route-field input,
+.route-field select {
   width: 100%;
-  min-height: 18rem;
-  font-family: var(--mono);
-  resize: vertical;
+}
+
+.route-field-base_url,
+.route-field-capabilities {
+  grid-column: 1 / -1;
+}
+
+.route-capabilities {
+  flex-wrap: wrap;
+  min-height: 2.25rem;
+}
+
+@media (max-width: 700px) {
+  .route-config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .route-field-base_url,
+  .route-field-capabilities {
+    grid-column: auto;
+  }
 }
 
 .llm-chain {

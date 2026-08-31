@@ -32,7 +32,7 @@ const NAV_GROUPS = [
     name: "operations",
     views: [
       { name: "security", icon: ICONS.security },
-      { name: "llm", icon: ICONS.llm },
+      { name: "llm-routes", label: "llm", icon: ICONS.llm },
       { name: "system", icon: ICONS.system },
       { name: "logs", icon: ICONS.logs },
       { name: "settings", icon: ICONS.settings },
@@ -50,7 +50,7 @@ const ROUTES = {
   security: () => import("./views/security.js"),
   system: () => import("./views/system.js"),
   logs: () => import("./views/logs.js"),
-  llm: () => import("./views/llm.js"),
+  "llm-routes": () => import("./views/llm.js"),
   crew: () => import("./views/crew.js"),
   settings: () => import("./views/settings.js"),
 };
@@ -100,7 +100,7 @@ function buildSidebar(router) {
           type: "button",
           onclick: () => router.go(view.name),
         },
-        [icon(view.icon), el("span", { class: "text", text: t(`nav.${view.name}`) }), badge],
+        [icon(view.icon), el("span", { class: "text", text: t(`nav.${view.label || view.name}`) }), badge],
       );
       button._badge = badge;
       navButtons.set(view.name, button);
@@ -290,10 +290,11 @@ function buildLanguagePicker(rerender) {
 }
 
 function main() {
-  const router = new Router(dom.root, ROUTES, "overview");
+  const router = new Router(dom.root, ROUTES, "overview", { llm: "llm-routes" });
   router.onChange((name) => {
     markCurrent(name);
-    document.title = `${t(`nav.${name}`)} · ${t("app.title")}`;
+    const label = name === "llm-routes" ? "llm" : name;
+    document.title = `${t(`nav.${label}`)} · ${t("app.title")}`;
   });
 
   document.documentElement.lang = language();

@@ -140,7 +140,7 @@ allowed; reading one back is not.
 | `GET /api/system` | GPU, resident models, speech configuration, paths, process |
 | `POST /api/system/restart` | Ask the daemon to tear down and start a fresh generation in place; 409 in standalone mode |
 | `GET/PUT /api/settings` | Every editable config field, and writes to it |
-| `GET /api/llm/routes` | FAST, CHAT, and PRIVATE chains with masked credentials and persisted health state; performs no outbound request |
+| `GET /api/llm/routes` | Configured routes, their editor schema, and separate effective FAST, CHAT, and PRIVATE chains with masked credentials and persisted health state; performs no outbound request |
 | `POST /api/llm/routes/probe` | User-triggered model catalogue and credential probe |
 | `POST /api/llm/routes/reset` | Clear persisted cooldowns and process-local invalid-key marks |
 | `PUT /api/llm/routes` | Validate and replace generic route configuration while preserving unchanged masked credentials |
@@ -218,15 +218,32 @@ reading cannot say whether it was normal.
 
 ## LLM routes view
 
+`#/llm-routes` is the canonical address. The former `#/llm` address is a
+compatibility alias that is replaced in place with the canonical hash, so old
+bookmarks still open the view without leaving two URLs for the same state.
+
 The LLM routes view displays the ordered FAST, CHAT, and PRIVATE chains. Each
 entry keeps active state, protocol, model, masked credential, hit and failure
 counts, block time, and the last safe error label within its chain card. The
 entry layout wraps long model names and error labels instead of overflowing
 into neighbouring chains. The PRIVATE chain is read-only and contains one
 loopback Ollama route. Configured FAST and CHAT entries are editable using
-only the route schema described by the LLM spec. Repainting the JSON editor
-preserves every operational field, including `api_key_env`, `enabled`, and
-`capabilities`, as well as the masked direct credential.
+only the route schema described by the LLM spec. Named controls replace raw
+JSON and preserve order and every operational field, including `api_key_env`,
+`enabled`, and `capabilities`, as well as the masked direct credential. Stable
+source indices let an unchanged masked key survive a rename or reorder without
+exposing it. Provider-specific endpoint and model placeholders cover Ollama,
+OpenAI-compatible, Claude subscription, Codex subscription, and crew routes.
+The backend override and crew route selection live here rather than in general
+Settings.
+
+The API never reconstructs configured routes from runtime status. Its
+`configured_routes` list is the editable disk shape; `effective_chains` is the
+expanded runtime shape that also contains automatic local fallbacks. Endpoint
+user-info, query values, and fragments are redacted in the response and
+restored from the indexed original when the safe displayed URL is returned
+unchanged. Environment-backed key values are resolved only when a backend is
+built and never enter this payload.
 
 Loading and refreshing the view reads local config and cooldown state only.
 The only control that contacts a configured endpoint is **Probe models**.

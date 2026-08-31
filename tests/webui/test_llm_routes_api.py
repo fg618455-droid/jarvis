@@ -44,6 +44,88 @@ def test_get_routes_masks_keys_and_makes_no_outbound_request(
     assert requested == []
 
 
+def test_get_routes_separates_configured_routes_from_effective_chains(
+    api_client, tmp_path, monkeypatch,
+):
+    _write_config(tmp_path, monkeypatch)
+
+    body = api_client.get("/api/llm/routes").get_json()
+
+    assert [route["name"] for route in body["configured_routes"]] == ["cloud-chat"]
+    assert [route["name"] for route in body["effective_chains"]["chat"]] == [
+        "cloud-chat", "local-chat",
+    ]
+    configured = body["configured_routes"][0]
+    assert configured["api_key"].endswith("tial")
+    assert configured["_index"] == 0
+
+
+def test_get_routes_exposes_the_schema_for_every_supported_provider(
+    api_client, tmp_path, monkeypatch,
+):
+    _write_config(tmp_path, monkeypatch)
+
+    body = api_client.get("/api/llm/routes").get_json()
+
+    assert [field["key"] for field in body["route_fields"]] == [
+        "name", "provider", "base_url", "api_key", "api_key_env", "model",
+        "tier", "timeout_sec", "enabled", "capabilities",
+    ]
+    provider = next(field for field in body["route_fields"] if field["key"] == "provider")
+    assert {choice["value"] for choice in provider["choices"]} == {
+        "ollama", "openai_compatible", "claude_subscription",
+        "codex_subscription", "crew_chat",
+    }
+    assert set(body["provider_placeholders"]) == {
+        "ollama", "openai_compatible", "claude_subscription",
+        "codex_subscription", "crew_chat",
+    }
+
+
+def test_configured_route_preserves_a_redacted_endpoint_without_exposing_it(
+    api_client, tmp_path, monkeypatch,
+):
+    path = _write_config(tmp_path, monkeypatch)
+    stored = json.loads(path.read_text())
+    stored["llm_routes"][0]["base_url"] = (
+        "https://user:password@example.invalid/v1?tenant=private#fragment"
+    )
+    path.write_text(json.dumps(stored))
+
+    body = api_client.get("/api/llm/routes").get_json()
+
+    configured = body["configured_routes"][0]
+    assert configured["base_url"] == "https://example.invalid/v1"
+    assert configured["base_url_redacted"] is True
+    effective = body["effective_chains"]["chat"][0]["base_url"]
+    assert effective == "https://example.invalid/v1"
+    assert "user:password" not in json.dumps(body)
+    assert "tenant=private" not in json.dumps(body)
+
+    response = api_client.put("/api/llm/routes", json={"routes": [configured]})
+
+    assert response.status_code == 200
+    assert json.loads(path.read_text())["llm_routes"][0]["base_url"] == (
+        stored["llm_routes"][0]["base_url"]
+    )
+
+
+def test_environment_credential_value_never_enters_the_route_payload(
+    api_client, tmp_path, monkeypatch,
+):
+    path = _write_config(tmp_path, monkeypatch)
+    stored = json.loads(path.read_text())
+    stored["llm_routes"][0]["api_key"] = ""
+    stored["llm_routes"][0]["api_key_env"] = "ROUTE_API_KEY"
+    path.write_text(json.dumps(stored))
+    monkeypatch.setenv("ROUTE_API_KEY", "runtime-only-secret")
+
+    raw = api_client.get("/api/llm/routes").get_data(as_text=True)
+
+    assert "ROUTE_API_KEY" in raw
+    assert "runtime-only-secret" not in raw
+
+
 def test_put_routes_preserves_a_masked_key(api_client, tmp_path, monkeypatch):
     path = _write_config(tmp_path, monkeypatch)
     current = api_client.get("/api/llm/routes").get_json()["chains"]["chat"][0]
@@ -69,6 +151,50 @@ def test_put_routes_preserves_a_masked_key(api_client, tmp_path, monkeypatch):
     assert stored["model"] == "replacement-model"
     assert stored["enabled"] is False
     assert stored["capabilities"] == ["chat", "stream"]
+
+
+def test_put_routes_preserves_a_masked_key_when_the_route_is_renamed(
+    api_client, tmp_path, monkeypatch,
+):
+    path = _write_config(tmp_path, monkeypatch)
+    current = api_client.get("/api/llm/routes").get_json()["configured_routes"][0]
+    current["name"] = "renamed-chat"
+
+    response = api_client.put("/api/llm/routes", json={"routes": [current]})
+
+    assert response.status_code == 200
+    stored = json.loads(path.read_text())["llm_routes"][0]
+    assert stored["name"] == "renamed-chat"
+    assert stored["api_key"] == "synthetic-credential"
+    assert "_index" not in stored
+
+
+def test_put_routes_preserves_order_and_every_schema_field(
+    api_client, tmp_path, monkeypatch,
+):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"_config_version": 5, "llm_routes": []}))
+    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(path))
+    routes = [
+        {
+            "name": "ollama-fast", "provider": "ollama",
+            "base_url": "http://127.0.0.1:11434", "api_key": "",
+            "api_key_env": "", "model": "qwen3:1.7b", "tier": "fast",
+            "timeout_sec": 12.5, "enabled": False,
+            "capabilities": ["chat"],
+        },
+        {
+            "name": "codex-chat", "provider": "codex_subscription",
+            "base_url": "codex-cli", "api_key": "", "api_key_env": "",
+            "model": "gpt-5.6-sol", "tier": "chat", "timeout_sec": 30.0,
+            "enabled": True, "capabilities": ["chat", "stream"],
+        },
+    ]
+
+    response = api_client.put("/api/llm/routes", json={"routes": routes})
+
+    assert response.status_code == 200
+    assert json.loads(path.read_text())["llm_routes"] == routes
 
 
 def test_route_api_and_debug_log_never_emit_clear_key(

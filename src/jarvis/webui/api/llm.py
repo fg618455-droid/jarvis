@@ -9,6 +9,10 @@ import requests
 from flask import Blueprint, Response, jsonify, request
 
 from jarvis.config import _load_json, _save_json, load_settings, resolve_config_path
+from jarvis.config_metadata import (
+    LLM_ROUTE_FIELD_METADATA,
+    LLM_ROUTE_PROVIDER_PLACEHOLDERS,
+)
 from jarvis.debug import debug_log
 from jarvis.llm import ProviderError, RoutedBackend, Tier, get_llm_backend
 from jarvis.llm.route_state import RouteStateStore
@@ -36,21 +40,68 @@ def _payload() -> dict[str, Any]:
     backend = get_llm_backend(settings)
     override = str(getattr(settings, "chat_backend_override", "auto") or "auto")
     crew_chat_agent = str(getattr(settings, "crew_chat_agent", "") or "")
-    if not isinstance(backend, RoutedBackend):
-        return {
-            "chains": {tier.value: [] for tier in Tier},
-            "chat_backend_override": override,
-            "crew_chat_agent": crew_chat_agent,
-        }
-    chains = backend.route_status()
-    for tier in Tier:
-        for item, route in zip(chains[tier.value], backend.routes_for(tier)):
-            item["base_url"] = _display_url(route.base_url)
-            item["masked_key"] = _mask(route.api_key)
+    chains = (
+        backend.route_status()
+        if isinstance(backend, RoutedBackend)
+        else {tier.value: [] for tier in Tier}
+    )
+    if isinstance(backend, RoutedBackend):
+        for tier in Tier:
+            for item, route in zip(chains[tier.value], backend.routes_for(tier)):
+                item["base_url"] = _display_url(route.base_url)
+                item["masked_key"] = _mask(route.api_key)
+                item["local"] = RoutedBackend._is_local(route)
+    configured_routes = []
+    for index, route in enumerate(getattr(settings, "llm_routes", []) or []):
+        if not isinstance(route, dict):
+            continue
+        exact_url = str(route.get("base_url", "") or "")
+        display_url = _display_url(exact_url)
+        key = str(route.get("api_key", "") or "")
+        configured_routes.append({
+            "_index": index,
+            "name": str(route.get("name", "") or ""),
+            "provider": str(route.get("provider", "") or ""),
+            "base_url": display_url,
+            "base_url_redacted": display_url != exact_url,
+            "api_key": _mask(key),
+            "api_key_env": str(route.get("api_key_env", "") or ""),
+            "model": str(route.get("model", "") or ""),
+            "tier": str(route.get("tier", "") or ""),
+            "timeout_sec": float(route.get("timeout_sec", 4.0) or 4.0),
+            "enabled": bool(route.get("enabled", True)),
+            "capabilities": list(route.get("capabilities", [])),
+        })
     return {
+        "configured_routes": configured_routes,
+        "effective_chains": chains,
+        # Compatibility for older clients; the editor never reconstructs
+        # configuration from this runtime-expanded shape.
         "chains": chains,
+        "route_fields": [_route_field_payload(field) for field in LLM_ROUTE_FIELD_METADATA],
+        "provider_placeholders": LLM_ROUTE_PROVIDER_PLACEHOLDERS,
         "chat_backend_override": override,
         "crew_chat_agent": crew_chat_agent,
+    }
+
+
+def _route_field_payload(meta) -> dict[str, Any]:
+    return {
+        "key": meta.key,
+        "label": meta.label,
+        "description": meta.description,
+        "type": meta.field_type,
+        "choices": [
+            {"value": value, "label": label}
+            for value, label in (meta.choices or [])
+        ] or None,
+        "min": meta.min_val,
+        "max": meta.max_val,
+        "step": meta.step,
+        "suffix": meta.suffix,
+        "nullable": meta.nullable,
+        "is_secret": meta.field_type == "password",
+        "default": meta.default_value,
     }
 
 
@@ -76,24 +127,43 @@ def _normalise_routes(raw_routes: Any, existing: list[dict[str, Any]]) -> list[d
         base_url = str(raw.get("base_url", "") or "").strip().rstrip("/")
         model = str(raw.get("model", "") or "").strip()
         tier = str(raw.get("tier", "") or "").strip().lower()
-        if not name or not base_url or not model:
-            raise ValueError(f"route {index + 1} needs name, base_url, and model")
         if provider not in (
             "ollama", "openai_compatible", "claude_subscription",
             "codex_subscription", "crew_chat",
         ):
             raise ValueError(f"route {index + 1} has an unsupported protocol")
+        existing_route = None
+        try:
+            source_index = int(raw.get("_index"))
+        except (TypeError, ValueError):
+            source_index = -1
+        if 0 <= source_index < len(existing) and isinstance(existing[source_index], dict):
+            existing_route = existing[source_index]
+        if existing_route is None:
+            existing_route = existing_by_identity.get((name, tier), {})
+        if raw.get("base_url_redacted") and existing_route:
+            prior_url = str(existing_route.get("base_url", "") or "")
+            if base_url == _display_url(prior_url):
+                base_url = prior_url
+        inert = LLM_ROUTE_PROVIDER_PLACEHOLDERS.get(provider, {})
+        if provider in {"claude_subscription", "codex_subscription", "crew_chat"}:
+            base_url = base_url or str(inert.get("base_url", ""))
+            model = model or str(inert.get("model", ""))
+        if not name or not base_url or not model:
+            raise ValueError(f"route {index + 1} needs name, base_url, and model")
         if tier not in ("fast", "chat"):
             raise ValueError(f"route {index + 1} has an unsupported tier")
+        if provider in {"claude_subscription", "codex_subscription", "crew_chat"} and tier != "chat":
+            raise ValueError(f"route {index + 1} provider is only supported for chat")
         try:
             timeout_sec = float(raw.get("timeout_sec", 4.0))
         except (TypeError, ValueError) as error:
             raise ValueError(f"route {index + 1} has an invalid timeout") from error
         if timeout_sec <= 0:
             raise ValueError(f"route {index + 1} has an invalid timeout")
-        api_key = str(raw.get("api_key", "") or "")
+        api_key = str(raw.get("api_key", raw.get("masked_key", "")) or "")
         if api_key.startswith(MASK):
-            api_key = str(existing_by_identity.get((name, tier), {}).get("api_key", "") or "")
+            api_key = str((existing_route or {}).get("api_key", "") or "")
         api_key_env = str(raw.get("api_key_env", "") or "").strip()
         raw_capabilities = raw.get("capabilities", ["chat", "stream", "tools"])
         if not isinstance(raw_capabilities, list):

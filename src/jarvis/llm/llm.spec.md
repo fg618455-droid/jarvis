@@ -2,6 +2,14 @@
 
 The `jarvis.llm` package owns every LLM completion call. Jarvis mainly speaks generic, self-hostable protocols: native Ollama and OpenAI-compatible HTTP. Route configuration contains protocol names, URLs, credentials, model names, tiers, and timeouts. Three named exceptions carry different shapes: the `claude_subscription` provider reaches `claude_agent_sdk` in an isolated subprocess authenticated against Felix's own Claude Code CLI login rather than a metered API key (see "Claude subscription session" below), the `codex_subscription` provider runs the authenticated Codex CLI against Felix's ChatGPT subscription (see "Codex subscription session" below), and the `crew_chat` provider is plain vendor-neutral HTTP but reads its endpoint and credential from the existing Mission Control fields (`cfg.crew_api_url` / `cfg.crew_api_key`) rather than its own route entry (see "Crew chat relay" below). Every other provider stays vendor-neutral HTTP with no SDK and no config indirection.
 
+The control centre treats the stored list and the running chains as different
+objects. `configured_routes` is the ordered, schema-complete disk shape and is
+the only input to its editor. `effective_chains` is read-only runtime status
+and additionally contains appended local candidates. This boundary prevents a
+save from turning an automatic fallback into explicit configuration or losing
+fields that status does not need. Direct keys are masked; environment key
+values are never loaded by the configuration endpoint.
+
 ## Goals
 
 1. **Offline by default.** An empty `llm_routes` list uses Ollama exactly as a local installation expects.

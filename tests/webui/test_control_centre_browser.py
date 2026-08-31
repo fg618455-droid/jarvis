@@ -31,7 +31,7 @@ VIEWS = [
     "security",
     "system",
     "settings",
-    "llm",
+    "llm-routes",
     "logs",
     "crew",
 ]
@@ -150,6 +150,13 @@ class TestEveryViewRenders:
         assert page.evaluate("location.hash") == "#/tools"
         assert not page.console_errors
 
+    def test_legacy_llm_hash_is_canonicalised(self, page, served):
+        page.goto(f"{served}/#/llm", wait_until="domcontentloaded")
+        page.wait_for_selector("main h1", state="visible")
+
+        assert page.evaluate("location.hash") == "#/llm-routes"
+        assert page.locator("main h1").inner_text().strip()
+
 
 class TestALongTableSaysThereIsMoreBelow:
     """A table taller than its container used to end in a sliced row.
@@ -199,7 +206,7 @@ class TestLlmRouteLayout:
         page.evaluate(
             """async () => {
                 const { api } = await import('/static/js/api.js');
-                api.llmRoutes = async () => ({ chains: {
+                const effective = {
                     fast: [{
                         active: true, blocked_until: null, failures: 1,
                         hits: 4, invalid: false, last_error: '',
@@ -220,10 +227,60 @@ class TestLlmRouteLayout:
                         masked_key: '', model: 'qwen2.5:7b-ctx8k',
                         name: 'local-private', tier: 'private',
                     }],
-                }});
+                };
+                const configured = [{
+                    _index: 0, base_url_redacted: false,
+                    name: 'groq', provider: 'openai_compatible',
+                    base_url: 'https://example.invalid/v1', api_key: '••••••••LmVX',
+                    api_key_env: 'GROQ_API_KEY',
+                    model: 'meta-llama/llama-prompt-guard-2-22m', tier: 'fast',
+                    timeout_sec: 2, enabled: false, capabilities: ['chat'],
+                }];
+                const routeFields = [
+                    { key: 'name', label: 'Name', type: 'str', default: 'New route' },
+                    { key: 'provider', label: 'Protocol', type: 'choice',
+                      default: 'openai_compatible', choices: [
+                        { value: 'openai_compatible', label: 'OpenAI-compatible' },
+                        { value: 'ollama', label: 'Ollama' },
+                        { value: 'claude_subscription', label: 'Claude subscription' },
+                        { value: 'codex_subscription', label: 'Codex subscription' },
+                        { value: 'crew_chat', label: 'Crew chat' },
+                      ] },
+                    { key: 'base_url', label: 'Base URL', type: 'str' },
+                    { key: 'api_key', label: 'API Key', type: 'password', is_secret: true,
+                      default: '' },
+                    { key: 'api_key_env', label: 'API Key Environment', type: 'str',
+                      default: '' },
+                    { key: 'model', label: 'Model', type: 'str' },
+                    { key: 'tier', label: 'Tier', type: 'choice', default: 'chat',
+                      choices: [{ value: 'fast', label: 'Fast' }, { value: 'chat', label: 'Chat' }] },
+                    { key: 'timeout_sec', label: 'Timeout', type: 'float', default: 4,
+                      min: 0.1, max: 600, step: 0.5 },
+                    { key: 'enabled', label: 'Enabled', type: 'bool', default: true },
+                    { key: 'capabilities', label: 'Capabilities', type: 'list',
+                      default: ['chat', 'stream', 'tools'] },
+                ];
+                api.llmRoutes = async () => ({
+                    effective_chains: effective,
+                    configured_routes: configured,
+                    route_fields: routeFields,
+                    provider_placeholders: {
+                      openai_compatible: { base_url: 'https://provider.example/v1' },
+                      ollama: { base_url: 'http://127.0.0.1:11434', model: 'qwen2.5:7b' },
+                      claude_subscription: { base_url: 'claude-cli', model: 'claude-subscription' },
+                      codex_subscription: { base_url: 'codex-cli', model: 'gpt-5.6-sol' },
+                      crew_chat: { base_url: 'crew-chat', model: 'crew-chat' },
+                    },
+                    chat_backend_override: 'auto', crew_chat_agent: '',
+                });
+                api.saveLlmRoutes = async (routes) => {
+                    window.__savedRoutes = routes;
+                    return { configured_routes: routes, effective_chains: effective,
+                             route_fields: routeFields, provider_placeholders: {} };
+                };
             }"""
         )
-        page.goto(f"{served}/#/llm")
+        page.goto(f"{served}/#/llm-routes")
         page.wait_for_selector(".llm-chain", state="visible")
 
     def test_route_details_wrap_within_each_chain_card(self, page, served):
@@ -241,12 +298,43 @@ class TestLlmRouteLayout:
     def test_editor_keeps_every_operational_route_field(self, page, served):
         self._open_with_routes(page, served)
 
-        route = page.locator(".route-editor").input_value()
-        parsed = __import__("json").loads(route)[0]
+        route = page.locator(".route-config").first
+        assert route.get_by_label("API Key Environment").input_value() == "GROQ_API_KEY"
+        assert route.get_by_label("Enabled").is_checked() is False
+        assert route.get_by_label("chat", exact=True).is_checked() is True
+        assert route.get_by_label("stream", exact=True).is_checked() is False
+        assert page.locator(".route-editor").count() == 0
 
-        assert parsed["api_key_env"] == "GROQ_API_KEY"
-        assert parsed["enabled"] is False
-        assert parsed["capabilities"] == ["chat"]
+    def test_schema_editor_round_trips_changes_without_rebuilding_runtime_routes(
+        self, page, served,
+    ):
+        self._open_with_routes(page, served)
+        route = page.locator(".route-config").first
+        route.get_by_label("Name", exact=True).fill("renamed-groq")
+        route.get_by_label("Enabled").check()
+        route.get_by_label("stream", exact=True).check()
+        page.get_by_role("button", name="Save routes").click()
+        page.wait_for_function("window.__savedRoutes?.length === 1")
+
+        saved = page.evaluate("window.__savedRoutes[0]")
+        assert saved["_index"] == 0
+        assert saved["name"] == "renamed-groq"
+        assert saved["api_key"] == "••••••••LmVX"
+        assert saved["enabled"] is True
+        assert saved["capabilities"] == ["chat", "stream"]
+
+    def test_provider_choice_updates_placeholders_and_chat_only_constraint(
+        self, page, served,
+    ):
+        self._open_with_routes(page, served)
+        page.get_by_role("button", name="+ Add route").click()
+        added = page.locator(".route-config").last
+        added.get_by_label("Protocol").select_option("codex_subscription")
+
+        assert added.get_by_label("Base URL").get_attribute("placeholder") == "codex-cli"
+        assert added.get_by_label("Model", exact=True).get_attribute("placeholder") == "gpt-5.6-sol"
+        assert added.get_by_label("Tier").input_value() == "chat"
+        assert added.get_by_label("Tier").is_disabled()
 
 
 class TestSettingsCoherence:
@@ -257,7 +345,7 @@ class TestSettingsCoherence:
                 {
                     "key": "llm", "label": "LLM & AI Models",
                     "description": "The ordered route chain decides CHAT first.",
-                    "action_label": "Open LLM routes", "action_href": "#/llm",
+                    "action_label": "Open LLM routes", "action_href": "#/llm-routes",
                 },
                 {"key": "tts", "label": "Text-to-Speech"},
             ],

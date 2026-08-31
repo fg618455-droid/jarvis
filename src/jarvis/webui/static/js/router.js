@@ -5,10 +5,11 @@
    subscribe without leaking into the next one. */
 
 export class Router {
-  constructor(container, routes, fallback) {
+  constructor(container, routes, fallback, aliases = {}) {
     this.container = container;
     this.routes = routes;
     this.fallback = fallback;
+    this.aliases = aliases;
     this._cleanup = null;
     this._current = null;
     this._listeners = new Set();
@@ -33,7 +34,12 @@ export class Router {
   }
 
   async _render() {
-    const name = (location.hash.replace(/^#\//, "") || this.fallback).split("?")[0];
+    const requested = (location.hash.replace(/^#\//, "") || this.fallback).split("?")[0];
+    const name = this.aliases[requested] || requested;
+    if (name !== requested) {
+      const query = location.hash.includes("?") ? `?${location.hash.split("?", 2)[1]}` : "";
+      history.replaceState(null, "", `${location.pathname}${location.search}#/${name}${query}`);
+    }
     const view = this.routes[name] ? name : this.fallback;
 
     if (this._cleanup) {
