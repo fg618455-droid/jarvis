@@ -1432,7 +1432,7 @@ class ControlCentreWindow(QMainWindow):
             return True
 
         from jarvis.config import load_settings
-        from jarvis.webui import WebUIConfig, WebUIServer, resolve_token
+        from jarvis.webui import WebUIConfig, WebUIMode, WebUIServer, resolve_token
 
         cfg = load_settings()
         port = cfg.webui_port
@@ -1452,6 +1452,7 @@ class ControlCentreWindow(QMainWindow):
             host="127.0.0.1",
             port=port,
             token=resolve_token("127.0.0.1", cfg.webui_token),
+            mode=WebUIMode.STANDALONE,
         )
         self._server = WebUIServer(webui_cfg)
         try:

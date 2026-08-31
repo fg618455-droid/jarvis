@@ -1347,7 +1347,7 @@ class TestControlCentreWindow:
     def test_the_window_serves_the_configured_port(self, tmp_path, monkeypatch):
         import json
 
-        from jarvis.webui import WebUIServer
+        from jarvis.webui import WebUIMode, WebUIServer
 
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps({"webui_port": 5199}), encoding="utf-8")
@@ -1362,6 +1362,7 @@ class TestControlCentreWindow:
             assert window.start_server() is True
             assert window._url.endswith(":5199")
             assert isinstance(window._server, WebUIServer)
+            assert window._server.cfg.mode is WebUIMode.STANDALONE
         finally:
             window.stop_server()
 

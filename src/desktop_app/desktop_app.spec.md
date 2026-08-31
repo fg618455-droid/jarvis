@@ -295,7 +295,9 @@ and speaking state.
 - **Never serves over a running daemon**: the window probes `webui_port`
   first. Something answering there is the daemon's own instance, which holds
   the live state, so that is what gets shown. Only when nothing answers does
-  the desktop process start a read-only copy of its own
+  the desktop process start an explicitly standalone copy of its own. That
+  copy reports the daemon offline, carries no daemon uptime or recording/
+  conversation indicators, and reads persisted turn history from disk
 - **Its own copy is stopped when the app exits**, so quitting the tray does
   not leave a port listening
 - Opens in embedded QWebEngineView, or the system browser when WebEngine is

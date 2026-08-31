@@ -260,7 +260,7 @@ def restart() -> Response:
     against this server will see the connection drop and can poll
     ``/api/health`` to know when the new generation is ready.
     """
-    if current_app.config["JARVIS_WEBUI"].standalone:
+    if not current_app.config["JARVIS_WEBUI"].daemon_attached:
         return jsonify(error="no daemon is running"), 409
 
     from jarvis.daemon import request_restart

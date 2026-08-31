@@ -107,7 +107,7 @@ def settings() -> Response:
 
     return jsonify({
         "path": str(resolve_config_path()),
-        "daemon_running": not current_app.config["JARVIS_WEBUI"].standalone,
+        "daemon_running": current_app.config["JARVIS_WEBUI"].daemon_attached,
         "categories": [
             {"key": key, "label": label, **CATEGORY_DETAILS.get(key, {})}
             for key, label in CATEGORIES

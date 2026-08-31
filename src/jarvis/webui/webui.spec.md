@@ -59,8 +59,8 @@ label to every effective-chain entry.
 
 | Aspect | Behaviour |
 |---|---|
-| Entry point | `jarvis.webui.start_from_settings(cfg)`, called by `daemon.main()` right after the models are named and before Whisper loads, so the interface is reachable while startup is still running |
-| Standalone | `python -m jarvis.webui` serves memory, settings, and stored telemetry with no daemon. Status carries `daemon_running: false`; phase, uptime, models, audio, and last turn are empty, so the shell says Jarvis is not running and hides recording indicators |
+| Entry point | `jarvis.webui.start_from_settings(cfg)`, called by `daemon.main()` right after the models are named and before Whisper loads, creates `WebUIMode.DAEMON_ATTACHED`, so the interface is reachable while startup is still running |
+| Standalone | `python -m jarvis.webui` and the desktop window's fallback server explicitly create `WebUIMode.STANDALONE`. They serve memory, settings, and stored telemetry with no daemon. Status carries `daemon_running: false`; phase, uptime, models, audio, and last turn are empty, so the shell says Jarvis is not running and hides recording and conversation indicators. `/api/turns` and CSV export read the persisted `turns.jsonl` (rotated generation first) without promoting those old turns into live status |
 | Server | `werkzeug.serving.make_server(..., threaded=True)` on a daemon thread. Threaded because a server-sent event stream holds its connection for as long as the page is open |
 | Shutdown | `WebUIServer.stop()` from the daemon's cleanup path, both on the normal exit and after a smoke test |
 
@@ -126,12 +126,12 @@ allowed; reading one back is not.
 
 | Route | Serves |
 |---|---|
-| `GET /api/health` | Control-centre liveness, port, bind address, and whether a daemon is attached |
+| `GET /api/health` | Control-centre liveness, port, bind address, explicit `daemon-attached`/`standalone` mode, and whether a daemon is attached |
 | `GET /api/status` | Daemon presence, phase, uptime, tallies, last turn, models, audio |
 | `GET /api/logs` | Recent local diagnostic entries, with credentials redacted |
 | `GET /api/events` | Server-sent events. Opens with the current state so a page that connects mid session is correct at once |
-| `GET /api/turns` | Recent turns with their stages and tool calls |
-| `GET /api/turns/export.csv` | The same history flattened, one column per stage |
+| `GET /api/turns` | Recent live turns when attached; persisted journal plus this process's new turns in standalone |
+| `GET /api/turns/export.csv` | The same mode-aware history flattened, one column per stage |
 | `GET /api/conversation` | Recent turns, the discarded-utterance counts, and whether conversation mode is on |
 | `POST /api/conversation/mode` | Hold the follow-up window open, or let it close. 409 when nothing is listening |
 | `GET /api/passive` | The passive record, filtered by day, plus the switch state |
@@ -158,6 +158,10 @@ allowed; reading one back is not.
 | `GET /api/visualizer/state` | The face's `idle\|listening\|thinking\|speaking` reading, a waveform, and the two ai-visualizer signals Jarvis never sets (`alert`, `loading`) |
 | `GET /api/visualizer/config` | The assistant's display name and the installed face gallery |
 | `GET /visualizer/`, `/visualizer/<path>` | The vendored, AGPL-3.0-licensed face gallery and its static assets, served from disk |
+
+There is deliberately no `/api/telemetry` alias: `/api/status` is live
+session state and `/api/turns` is turn history, and conflating them would make
+standalone persisted records look like daemon activity.
 
 `POST /api/chat` runs one turn at a time, and the turn it waits for may not
 be its own. Voice, the desktop chat window and this endpoint all reach the

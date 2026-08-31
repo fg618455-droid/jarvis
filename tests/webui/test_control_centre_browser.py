@@ -18,7 +18,7 @@ import threading
 
 import pytest
 
-from jarvis.webui.server import WebUIConfig, WebUIServer
+from jarvis.webui.server import WebUIConfig, WebUIMode, WebUIServer
 
 
 VIEWS = [
@@ -80,7 +80,7 @@ def served() -> str:
 def standalone_served() -> str:
     """A control centre that deliberately has no daemon behind it."""
     cfg = WebUIConfig(
-        host="127.0.0.1", port=_free_port(), token="", standalone=True,
+        host="127.0.0.1", port=_free_port(), token="", mode=WebUIMode.STANDALONE,
     )
     server = WebUIServer(cfg)
     server.start()

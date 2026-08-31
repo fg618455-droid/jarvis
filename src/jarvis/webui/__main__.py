@@ -23,7 +23,7 @@ import time
 
 from jarvis.config import load_settings
 
-from .server import WebUIConfig, WebUIServer, resolve_token
+from .server import WebUIConfig, WebUIMode, WebUIServer, resolve_token
 
 
 def main() -> int:
@@ -32,7 +32,7 @@ def main() -> int:
         host=cfg.webui_bind_host,
         port=cfg.webui_port,
         token=resolve_token(cfg.webui_bind_host, cfg.webui_token),
-        standalone=True,
+        mode=WebUIMode.STANDALONE,
     )
     server = WebUIServer(webui_cfg)
     server.start()

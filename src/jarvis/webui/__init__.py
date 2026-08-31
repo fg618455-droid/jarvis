@@ -12,11 +12,12 @@ from typing import Optional
 
 from jarvis.debug import debug_log
 
-from .server import WebUIConfig, WebUIServer, create_app, resolve_token
+from .server import WebUIConfig, WebUIMode, WebUIServer, create_app, resolve_token
 
 
 __all__ = [
     "WebUIConfig",
+    "WebUIMode",
     "WebUIServer",
     "create_app",
     "resolve_token",
@@ -40,6 +41,7 @@ def start_from_settings(cfg) -> Optional[WebUIServer]:
         host=cfg.webui_bind_host,
         port=cfg.webui_port,
         token=resolve_token(cfg.webui_bind_host, cfg.webui_token),
+        mode=WebUIMode.DAEMON_ATTACHED,
     )
     server = WebUIServer(webui_cfg)
     try:

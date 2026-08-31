@@ -13,6 +13,7 @@ from .telemetry import (
     get_recorder,
     mark,
     publish_progress,
+    read_turn_journal,
     record_tool,
     stage,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "get_runtime_state",
     "mark",
     "publish_progress",
+    "read_turn_journal",
     "record_tool",
     "set_phase",
     "set_phase_if",

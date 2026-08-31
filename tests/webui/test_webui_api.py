@@ -60,10 +60,10 @@ class TestStatus:
         assert body["daemon_running"] is True
 
     def test_standalone_status_does_not_claim_live_daemon_state(self):
-        from jarvis.webui.server import WebUIConfig, create_app
+        from jarvis.webui.server import WebUIConfig, WebUIMode, create_app
 
         app = create_app(WebUIConfig(
-            host="127.0.0.1", port=5055, token="", standalone=True,
+            host="127.0.0.1", port=5055, token="", mode=WebUIMode.STANDALONE,
         ))
         app.config.update(TESTING=True)
         response = app.test_client().get(
@@ -98,6 +98,39 @@ class TestStatus:
 
         assert client.get("/api/turns?limit=abc", headers=HEADERS).status_code == 200
 
+    def test_standalone_turns_load_the_persisted_journal(
+        self, tmp_path, monkeypatch,
+    ):
+        from jarvis.webui.server import WebUIConfig, WebUIMode, create_app
+
+        db_path = tmp_path / "data" / "jarvis.db"
+        db_path.parent.mkdir()
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "_config_version": 6, "db_path": str(db_path),
+        }), encoding="utf-8")
+        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
+        journal = db_path.parent / "turns.jsonl"
+        journal.write_text("\n".join([
+            json.dumps({"turn_id": "one", "transcript": "persisted one", "stages": []}),
+            json.dumps({"turn_id": "two", "transcript": "persisted two", "stages": []}),
+        ]) + "\n", encoding="utf-8")
+        app = create_app(WebUIConfig(
+            host="127.0.0.1", port=5055, token="",
+            mode=WebUIMode.STANDALONE,
+        ))
+        standalone = app.test_client()
+
+        response = standalone.get("/api/turns?limit=1", headers=HEADERS)
+
+        assert [turn["turn_id"] for turn in response.get_json()["turns"]] == ["two"]
+        csv_text = standalone.get("/api/turns/export.csv", headers=HEADERS).get_data(as_text=True)
+        assert "persisted one" in csv_text
+        assert "persisted two" in csv_text
+
+    def test_no_misleading_telemetry_alias_exists(self, client):
+        assert client.get("/api/telemetry", headers=HEADERS).status_code == 404
+
 
 class TestTurnExport:
     def test_the_export_carries_a_column_per_stage(self, client):
@@ -127,10 +160,10 @@ class TestEvents:
         response.close()
 
     def test_standalone_stream_opens_with_empty_live_state(self):
-        from jarvis.webui.server import WebUIConfig, create_app
+        from jarvis.webui.server import WebUIConfig, WebUIMode, create_app
 
         app = create_app(WebUIConfig(
-            host="127.0.0.1", port=5055, token="", standalone=True,
+            host="127.0.0.1", port=5055, token="", mode=WebUIMode.STANDALONE,
         ))
         response = app.test_client().get(
             "/api/events", headers={"Host": "127.0.0.1:5055"},
@@ -598,10 +631,10 @@ class TestSystem:
         mock_request_restart.assert_called_once()
 
     def test_standalone_control_centre_refuses_a_fake_restart(self):
-        from jarvis.webui.server import WebUIConfig, create_app
+        from jarvis.webui.server import WebUIConfig, WebUIMode, create_app
 
         app = create_app(WebUIConfig(
-            host="127.0.0.1", port=5055, token="", standalone=True,
+            host="127.0.0.1", port=5055, token="", mode=WebUIMode.STANDALONE,
         ))
         response = app.test_client().post(
             "/api/system/restart",

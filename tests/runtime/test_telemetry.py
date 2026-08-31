@@ -226,6 +226,28 @@ class TestJournal:
 
         assert list(tmp_path.iterdir()) == []
 
+    def test_reader_combines_rotated_and_current_journals_in_order(self, tmp_path):
+        from jarvis.runtime.telemetry import read_turn_journal
+
+        journal = tmp_path / "turns.jsonl"
+        rotated = journal.with_suffix(".jsonl.1")
+        rotated.write_text(
+            '\n'.join(json.dumps({"turn_id": str(index), "transcript": str(index)})
+                      for index in range(3)) + "\n",
+            encoding="utf-8",
+        )
+        journal.write_text(
+            '{not-json}\n' + json.dumps({"turn_id": "3", "transcript": "3"}) + "\n",
+            encoding="utf-8",
+        )
+
+        assert [turn["turn_id"] for turn in read_turn_journal(journal)] == [
+            "0", "1", "2", "3",
+        ]
+        assert [turn["turn_id"] for turn in read_turn_journal(journal, limit=2)] == [
+            "2", "3",
+        ]
+
 
 class TestCost:
     def test_measuring_a_turn_costs_well_under_a_millisecond(self, recorder):

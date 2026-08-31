@@ -5,12 +5,19 @@ from __future__ import annotations
 import csv
 import io
 import json
+from pathlib import Path
 from typing import Iterator
 
 from flask import Blueprint, Response, current_app, jsonify, request
 
 from jarvis.debug import recent_logs
-from jarvis.runtime import get_event_bus, get_recorder, get_runtime_state
+from jarvis.config import load_settings
+from jarvis.runtime import (
+    get_event_bus,
+    get_recorder,
+    get_runtime_state,
+    read_turn_journal,
+)
 
 
 bp = Blueprint("status", __name__, url_prefix="/api")
@@ -29,7 +36,7 @@ def status() -> Response:
 def _status_snapshot() -> dict:
     """Return live daemon state, or an honest empty standalone reading."""
     webui = current_app.config["JARVIS_WEBUI"]
-    if not webui.standalone:
+    if webui.daemon_attached:
         return {"daemon_running": True, **get_runtime_state().snapshot()}
     return {
         "daemon_running": False,
@@ -74,7 +81,7 @@ def turns() -> Response:
         limit = int(request.args.get("limit", 50))
     except (TypeError, ValueError):
         limit = 50
-    return jsonify({"turns": get_recorder().history(limit=max(1, min(limit, 500)))})
+    return jsonify({"turns": _turn_history(limit=max(1, min(limit, 500)))})
 
 
 @bp.route("/turns/export.csv")
@@ -84,7 +91,7 @@ def turns_csv() -> Response:
     One row per turn with one column per stage, so the shape of the wait can
     be compared across a session without reading JSON.
     """
-    history = get_recorder().history()
+    history = _turn_history()
     stage_names: list[str] = []
     for turn in history:
         for stage in turn.get("stages", []):
@@ -121,6 +128,31 @@ def turns_csv() -> Response:
         mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=jarvis-turns.csv"},
     )
+
+
+def _turn_history(limit: int | None = None) -> list[dict]:
+    """Live daemon turns, or persisted history plus this standalone session."""
+    live = get_recorder().history()
+    if current_app.config["JARVIS_WEBUI"].daemon_attached:
+        return live[-limit:] if limit else live
+
+    cfg = load_settings()
+    journal = Path(cfg.db_path).parent / "turns.jsonl"
+    combined = read_turn_journal(journal)
+    positions = {
+        str(turn.get("turn_id")): index
+        for index, turn in enumerate(combined)
+        if turn.get("turn_id")
+    }
+    for turn in live:
+        turn_id = str(turn.get("turn_id", "") or "")
+        if turn_id and turn_id in positions:
+            combined[positions[turn_id]] = turn
+        else:
+            if turn_id:
+                positions[turn_id] = len(combined)
+            combined.append(turn)
+    return combined[-limit:] if limit else combined
 
 
 @bp.route("/events")

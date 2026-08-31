@@ -28,6 +28,7 @@ import ipaddress
 import secrets
 import threading
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -55,13 +56,32 @@ STATIC_DIR = Path(__file__).parent / "static"
 VISUALIZER_DIR = Path(__file__).parent / "visualizer" / "vendor"
 
 
+class WebUIMode(str, Enum):
+    """Whether live daemon objects exist behind this HTTP server."""
+
+    DAEMON_ATTACHED = "daemon-attached"
+    STANDALONE = "standalone"
+
+
 @dataclass(frozen=True)
 class WebUIConfig:
     """Everything the server needs to bind and guard itself."""
     host: str
     port: int
     token: str
-    standalone: bool = False
+    mode: WebUIMode = WebUIMode.DAEMON_ATTACHED
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "mode", WebUIMode(self.mode))
+
+    @property
+    def daemon_attached(self) -> bool:
+        return self.mode is WebUIMode.DAEMON_ATTACHED
+
+    @property
+    def standalone(self) -> bool:
+        """Compatibility reading; callers should branch on ``mode``."""
+        return self.mode is WebUIMode.STANDALONE
 
     @property
     def is_loopback(self) -> bool:
@@ -158,7 +178,8 @@ def create_app(cfg: WebUIConfig) -> Flask:
     def _health():  # noqa: ANN202 - Flask hook
         return jsonify(
             ok=True, port=cfg.port, host=cfg.host,
-            daemon_running=not cfg.standalone,
+            mode=cfg.mode.value,
+            daemon_running=cfg.daemon_attached,
         )
 
     @app.route("/visualizer/")

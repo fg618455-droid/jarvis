@@ -69,6 +69,12 @@ read at once. Finished turns are also appended to
 span restarts. The journal is opt-in per process: the daemon points the
 recorder at a path, and nothing is written until it does.
 
+`read_turn_journal()` reads the rotated `.1` file before the current file,
+skips an independently malformed or torn JSON line, and applies its limit
+after the two generations are combined. A standalone control centre uses
+that reader for `/api/turns` and CSV export; it does not copy persisted turns
+into live daemon state or claim that an old turn happened in this session.
+
 ## Discarded utterances
 
 An utterance thrown away is counted under the reason it was thrown away

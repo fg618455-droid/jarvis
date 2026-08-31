@@ -140,3 +140,20 @@ class TestHealth:
         response = _client().get("/api/health", headers={"Host": "127.0.0.1:5055"})
 
         assert response.get_json()["ok"] is True
+
+    def test_health_names_the_explicit_attachment_mode(self):
+        from jarvis.webui.server import WebUIMode
+
+        attached = create_app(WebUIConfig(
+            host="127.0.0.1", port=5055, token="",
+            mode=WebUIMode.DAEMON_ATTACHED,
+        )).test_client().get("/api/health", headers={"Host": "127.0.0.1:5055"})
+        standalone = create_app(WebUIConfig(
+            host="127.0.0.1", port=5055, token="",
+            mode=WebUIMode.STANDALONE,
+        )).test_client().get("/api/health", headers={"Host": "127.0.0.1:5055"})
+
+        assert attached.get_json()["mode"] == "daemon-attached"
+        assert attached.get_json()["daemon_running"] is True
+        assert standalone.get_json()["mode"] == "standalone"
+        assert standalone.get_json()["daemon_running"] is False

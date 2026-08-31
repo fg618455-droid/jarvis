@@ -35,6 +35,31 @@ HISTORY_SIZE = 50
 JOURNAL_MAX_BYTES = 5 * 1024 * 1024
 
 
+def read_turn_journal(path: Path, limit: Optional[int] = None) -> list[dict]:
+    """Read persisted turns oldest-first, tolerating a torn final line.
+
+    Rotation renames the older file to ``turns.jsonl.1`` before a new current
+    journal is opened, so that file is read first. A corrupt line is skipped
+    independently: a power loss while appending one record must not hide the
+    valid history surrounding it.
+    """
+    target = Path(path)
+    records: list[dict] = []
+    for candidate in (target.with_suffix(target.suffix + ".1"), target):
+        try:
+            with candidate.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        record = json.loads(line)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if isinstance(record, dict):
+                        records.append(record)
+        except OSError:
+            continue
+    return records[-limit:] if limit else records
+
+
 @dataclass
 class Stage:
     """One measured step of a turn."""
