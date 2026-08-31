@@ -184,7 +184,17 @@ def get_llm_backend(settings: Any) -> LLMBackend:
     ollama_chat = _str_attr(settings, "ollama_chat_model") or _str_attr(
         settings, "llm_chat_model"
     )
-    fast_model = _str_attr(settings, "fast_model") or ollama_chat
+    # ``fast_model`` names the first effective route for tier selection;
+    # ``local_fast_model`` is the model the appended Ollama candidate runs.
+    # Falling back to the old attribute keeps hand-built Settings doubles and
+    # pre-v6 callers compatible without reintroducing ambiguity for loaded
+    # configuration, which always supplies local_fast_model.
+    local_fast_model = (
+        _str_attr(settings, "local_fast_model")
+        or _str_attr(settings, "fast_model")
+        or ollama_chat
+    )
+    fast_model = _str_attr(settings, "fast_model") or local_fast_model
     # Every Ollama request renews the model's residency, so an idle stretch
     # between conversations never costs the next reply a cold page-in.
     keep_alive = ollama_keep_alive(settings)
@@ -197,7 +207,7 @@ def get_llm_backend(settings: Any) -> LLMBackend:
     if active_routes:
         local_defaults = {
             Tier.FAST: Route(
-                "local-fast", _OLLAMA, private_ollama_url, "", fast_model,
+                "local-fast", _OLLAMA, private_ollama_url, "", local_fast_model,
                 Tier.FAST, _LOCAL_FAST_TIMEOUT_SEC, keep_alive=keep_alive,
             ),
             Tier.CHAT: Route(
@@ -227,7 +237,7 @@ def get_llm_backend(settings: Any) -> LLMBackend:
             ))
         else:
             routes.extend((
-                Route("local-fast", _OLLAMA, configured_ollama_url, "", fast_model,
+                Route("local-fast", _OLLAMA, configured_ollama_url, "", local_fast_model,
                       Tier.FAST, _LOCAL_FAST_TIMEOUT_SEC, keep_alive=keep_alive),
                 Route("local-chat", _OLLAMA, configured_ollama_url, "", ollama_chat,
                       Tier.CHAT, _LOCAL_CHAT_TIMEOUT_SEC, keep_alive=keep_alive),

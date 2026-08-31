@@ -206,11 +206,11 @@ def get_required_models() -> List[str]:
             if cfg.ollama_embed_model and cfg.ollama_embed_model not in models:
                 models.append(cfg.ollama_embed_model)
 
-        # The fast model powers voice intent classification and the other
-        # real-time passes, but is only an Ollama pull when the chat
-        # provider is Ollama (config load resolves it per provider).
+        # The local fast model powers the Ollama fallback and local real-time
+        # passes.  The effective ``fast_model`` may name a remote route and
+        # must never be handed to ``ollama pull``.
         if llm_provider != "openai_compatible":
-            fast_model = getattr(cfg, "fast_model", "gemma4:e2b")
+            fast_model = getattr(cfg, "local_fast_model", "gemma4:e2b")
             if fast_model and fast_model not in models:
                 models.append(fast_model)
 
@@ -2218,7 +2218,7 @@ class ModelsPage(QWizardPage):
             cp.parent.mkdir(parents=True, exist_ok=True)
             cfg = _load_json(cp) or {}
             cfg["ollama_chat_model"] = self._chat_model
-            cfg["fast_model"] = self._fast_model
+            cfg["local_fast_model"] = self._fast_model
             return _save_json(cp, cfg)
         except Exception:
             return False
@@ -2229,7 +2229,7 @@ class ModelsPage(QWizardPage):
         try:
             c = load_settings()
             cc = c.ollama_chat_model
-            fc = getattr(c, "fast_model", "gemma4:e2b")
+            fc = getattr(c, "local_fast_model", "gemma4:e2b")
         except Exception:
             pass
         self._chat_model = cc if cc in self._ALL_MODELS else DEFAULT_CHAT_MODEL

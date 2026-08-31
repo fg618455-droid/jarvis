@@ -439,8 +439,9 @@ def _settings_with_route(**overrides):
         llm_routes=[route],
         ollama_base_url="http://127.0.0.1:11434",
         ollama_chat_model="big-chat-model",
-        llm_chat_model="big-chat-model",
-        fast_model="tiny-fast-model",
+        llm_chat_model="cloud-chat-effective",
+        fast_model="cloud-fast-effective",
+        local_fast_model="tiny-fast-model",
         llm_provider="ollama",
     )
 
@@ -480,13 +481,24 @@ def test_a_disabled_route_leaves_the_local_chain_as_if_it_were_absent():
         assert disabled_local.timeout_sec == plain_local.timeout_sec
 
 
-def test_the_local_fast_route_runs_the_configured_fast_model():
-    """`fast_model` is what pins classification passes to a small model."""
+def test_the_local_fast_route_runs_the_explicit_local_fallback_model():
+    """A remote effective FAST name must never be sent to local Ollama."""
     from jarvis.llm.factory import get_llm_backend
 
     routes = get_llm_backend(_settings_with_route()).routes
 
     assert _local(routes, Tier.FAST).model == "tiny-fast-model"
+
+
+def test_route_models_remain_authoritative_for_the_effective_fast_chain():
+    from jarvis.llm import get_llm_backend, resolve_model
+
+    settings = _settings_with_route(tier="fast", model="remote-fast-model")
+    routes = get_llm_backend(settings).routes_for(Tier.FAST)
+
+    assert routes[0].model == "remote-fast-model"
+    assert _local(routes, Tier.FAST).model == "tiny-fast-model"
+    assert resolve_model(settings, Tier.FAST) == "cloud-fast-effective"
 
 
 def test_a_local_fallback_gets_room_to_load_a_cold_model():

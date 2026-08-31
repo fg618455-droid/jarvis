@@ -40,7 +40,7 @@ The **Provider Choice page is the wizard's first step** (`setStartId`). After th
 | 4 | **Welcome / Status** | Ollama path | — |
 | 5 | **Ollama Install** | Ollama path + CLI not found | — |
 | 6 | **Ollama Server** | Ollama path + server not running | — |
-| 7 | **Models** | Ollama path | `ollama_chat_model`, `fast_model` |
+| 7 | **Models** | Ollama path | `ollama_chat_model`, `local_fast_model` |
 | 8 | **Dictation** | Always | `dictation_enabled`, `dictation_hotkey`, `dictation_filler_removal` |
 | 9 | **MCP Servers** | Always | `mcps` |
 | 10 | **Search Providers** | Always | `brave_search_api_key`, `wikipedia_fallback_enabled` |

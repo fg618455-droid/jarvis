@@ -237,9 +237,9 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("llm_profile_select_timeout_sec", "Profile Select Timeout",
       "Max seconds for profile selection",
       "llm", "float", min_val=5, max_val=120, step=5, suffix="s")
-    f("fast_model", "Fast Model",
-      "Small, quick model for real-time work: voice intent, tool routing, "
-      "quick classifications. Automatic picks the right default for your provider",
+    f("local_fast_model", "Local Fast Fallback",
+      "Small Ollama model used after configured FAST routes fail. Route models "
+      "remain authoritative for effective FAST requests",
       "llm", "choice", choices=[("", "Automatic (recommended)")] + model_choices)
     f("intent_judge_timeout_sec", "Intent Judge Timeout",
       "Max seconds for intent judgement",

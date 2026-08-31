@@ -95,7 +95,7 @@ Configured `codex_subscription` routes are accepted only for CHAT. They are trie
 
 Configured FAST and CHAT chains always end with loopback Ollama. The appended local FAST route has a 60-second route limit and the local CHAT route has a 180-second route limit, matching the local-only candidates; each caller can still impose a smaller timeout. Disabled configured entries remain visible in route status but cannot reduce those active local limits. A configuration with no routes has one effective local candidate per lane. `resolve_model()` returns a string-compatible value carrying its `Tier`, so existing backend method signatures remain ordinary model-string APIs while the router can select a chain.
 
-A route the user switched off is inert. It stays in the chain so the control centre can still show it, but it takes no part in deciding how the local candidates are built: a configuration whose only route is disabled yields the same local chain as a configuration with no routes at all. The local candidates always run the configured `fast_model` and `ollama_chat_model`, and their timeouts leave room for a cold model load, because the local candidate is last in its chain and has nothing to fall forward to. A ceiling shorter than a page-in would not buy speed; it would guarantee the candidate can never answer.
+A route the user switched off is inert. It stays in the chain so the control centre can still show it, but it takes no part in deciding how the local candidates are built: a configuration whose only route is disabled yields the same local chain as a configuration with no routes at all. The local candidates always run the configured `local_fast_model` and `ollama_chat_model`, never a remote route model, and their timeouts leave room for a cold model load, because the local candidate is last in its chain and has nothing to fall forward to. A ceiling shorter than a page-in would not buy speed; it would guarantee the candidate can never answer.
 
 ### Model residency
 
@@ -160,7 +160,8 @@ With `llm_routes` configured, `get_embedding_backend(cfg)` returns an `OllamaBac
 | `llm_base_url` | `""` | Single-endpoint URL used when `llm_routes` is empty |
 | `llm_api_key` | `""` | Single-endpoint bearer credential used when `llm_routes` is empty |
 | `llm_chat_model` | local model | Effective first CHAT model |
-| `fast_model` | automatic | Effective first FAST model |
+| `fast_model` | automatic | Effective first FAST route model (derived at load time) |
+| `local_fast_model` | `gemma4:e2b` | Ollama FAST fallback model |
 | `ollama_base_url` | `http://127.0.0.1:11434` | Ollama URL for a local-only setup; private work requires loopback |
 | `ollama_chat_model` | setup selection | Local chat and private model |
 | `ollama_embed_model` | `nomic-embed-text` | Local embedding model |

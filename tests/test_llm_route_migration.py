@@ -30,7 +30,7 @@ def test_v5_keeps_tiered_routes_and_adds_safe_defaults(tmp_path):
         "llm_routes": [route],
     })
 
-    assert migrated["_config_version"] == 5
+    assert migrated["_config_version"] == 6
     assert migrated["llm_routes"] == [{
         **route,
         "api_key_env": "",

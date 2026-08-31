@@ -241,14 +241,15 @@ class Settings:
     # Echo Detection
     echo_tolerance: float
 
-    # Fast tier — the small, warm, low-latency model behind the real-time
-    # classification passes (the Model tiers table in llm.spec.md is the
-    # authoritative context list).
-    # Always resolved at config load: an explicit user value wins; unset
-    # resolves to the small Ollama default on the Ollama chat path and to
-    # the active chat model on an OpenAI-compatible provider. Read via
-    # ``jarvis.llm.resolve_model(cfg, Tier.FAST)``.
+    # Effective FAST route model, used for tier selection and prompt sizing.
+    # With configured routes this is the first enabled FAST route's model.
+    # ``local_fast_model`` below is deliberately separate: it is the model
+    # an appended loopback Ollama fallback actually runs.
     fast_model: str
+    local_fast_model: str
+    # Fast-tier timing control. The authoritative context list lives in
+    # llm.spec.md; callers select the effective tier through
+    # ``jarvis.llm.resolve_model(cfg, Tier.FAST)``.
     intent_judge_timeout_sec: float
 
     # Transcript Buffer - ambient speech context for intent judge
@@ -615,6 +616,29 @@ def _migrate_config(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any]:
         cfg_json["_config_version"] = 5
         modified = True
 
+    # Migration v6 separates the effective FAST route model from the local
+    # Ollama fallback. Before this version ``fast_model`` served both roles.
+    # Preserve it as a local choice unless it is demonstrably the model of an
+    # enabled non-Ollama FAST route; copying that name would make the fallback
+    # ask Ollama to load a remote provider's model identifier.
+    if migration_version < 6:
+        old_fast = str(cfg_json.get("fast_model", "") or "").strip()
+        if old_fast and not str(cfg_json.get("local_fast_model", "") or "").strip():
+            raw_routes = cfg_json.get("llm_routes", [])
+            remote_effective_fast_models = {
+                str(route.get("model", "") or "").strip()
+                for route in raw_routes
+                if isinstance(route, dict)
+                and str(route.get("tier", "") or "").strip().lower() == "fast"
+                and bool(route.get("enabled", True))
+                and str(route.get("provider", "") or "").strip().lower() != "ollama"
+            } if isinstance(raw_routes, list) else set()
+            if old_fast not in remote_effective_fast_models:
+                cfg_json["local_fast_model"] = old_fast
+        cfg_json.pop("fast_model", None)
+        cfg_json["_config_version"] = 6
+        modified = True
+
     # Save migrated config
     if modified:
         if _save_json(cfg_path, cfg_json):
@@ -922,6 +946,9 @@ def get_default_config() -> Dict[str, Any]:
         # DEFAULT_FAST_MODEL on the Ollama chat path, the chat model on an
         # OpenAI-compatible provider.
         "fast_model": "",
+        # Explicit loopback Ollama model appended after configured FAST routes.
+        # Empty on disk follows DEFAULT_FAST_MODEL and future default upgrades.
+        "local_fast_model": "",
         "intent_judge_timeout_sec": 6.0,
         "intent_judge_thinking_enabled": False,  # Enable thinking for intent judge (adds latency to wake detection)
 
@@ -1273,18 +1300,20 @@ def load_settings() -> Settings:
     system_management_enabled = bool(merged.get("system_management_enabled", False))
     echo_tolerance = float(merged.get("echo_tolerance", 0.3))
 
-    # Fast tier — the small, warm model behind the real-time classification
-    # passes (see the Model tiers table in llm.spec.md for the context
-    # list). An explicit value wins; the
-    # automatic default is the small Ollama pull on the Ollama chat path and
-    # the active chat model on an OpenAI-compatible provider, where that
-    # pull-name does not exist and the chat model is the one name the user's
-    # server is known to serve.
-    fast_model = str(merged.get("fast_model", "") or "").strip()
-    if not fast_model:
-        fast_model = (
-            llm_chat_model if llm_provider == "openai_compatible" else DEFAULT_FAST_MODEL
-        )
+    # The local fallback and the effective routed FAST name are different
+    # facts. The route name is passed only as the tier-carrying public model;
+    # RoutedBackend invokes each candidate's own model, including the local
+    # fallback below. Route-less legacy OpenAI-compatible configs retain their
+    # provider model semantics.
+    local_fast_model = str(merged.get("local_fast_model", "") or "").strip()
+    if not local_fast_model:
+        local_fast_model = DEFAULT_FAST_MODEL
+    legacy_fast_model = str(merged.get("fast_model", "") or "").strip()
+    fast_model = (
+        legacy_fast_model or llm_chat_model
+        if llm_provider == "openai_compatible"
+        else local_fast_model
+    )
     first_fast_route = next((
         route for route in llm_routes
         if route["tier"] == "fast" and route["enabled"]
@@ -1641,6 +1670,7 @@ def load_settings() -> Settings:
         echo_tolerance=echo_tolerance,
         # Fast tier (voice intent, tool routing, quick classifications)
         fast_model=fast_model,
+        local_fast_model=local_fast_model,
         intent_judge_timeout_sec=intent_judge_timeout_sec,
 
         # Transcript Buffer
