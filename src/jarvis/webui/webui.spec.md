@@ -144,7 +144,7 @@ allowed; reading one back is not.
 | `POST /api/graph/consolidate-all` | Rewrite every populated graph node with the current merge rules, streaming NDJSON progress |
 | `POST /api/diary/scrub-deflections` | Rewrite diary summaries without deflection narration, streaming NDJSON progress |
 | `POST /api/diary/optimise-topics` | Normalise topic tags across diary rows, streaming NDJSON progress |
-| `GET /api/tools`, `POST /api/tools/refresh` | The tool catalogue, MCP server state, rediscovery |
+| `GET /api/tools`, `POST /api/tools/refresh` | The tool catalogue, MCP server state, rediscovery, and each server's latest retained discovery error |
 | `GET /api/security`, `/api/security/pending`, `POST /api/security/decide` | The confirmation policy, what is waiting, and the answer |
 | `GET /api/system` | GPU, effective routes with locality, configured local model roles, actual Ollama residency, speech configuration, paths, process |
 | `POST /api/system/restart` | Ask the daemon to tear down and start a fresh generation in place; 409 in standalone mode |

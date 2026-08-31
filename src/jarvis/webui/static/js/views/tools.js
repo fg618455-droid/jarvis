@@ -82,6 +82,12 @@ function paintServers(container, servers) {
               text: server.timeout_sec ? `${server.timeout_sec} s` : "—",
             }),
           ]),
+          ...(server.error
+            ? [el("div", { class: "row" }, [
+                el("span", { class: "key", text: t("tools.error") }),
+                el("span", { class: "val", text: server.error }),
+              ])]
+            : []),
         ]),
       ]),
     );

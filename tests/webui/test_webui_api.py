@@ -481,6 +481,35 @@ class TestTools:
         web_search = next(t for t in body["tools"] if t["name"] == "webSearch")
         assert web_search["last_use"]["ok"] is True
 
+    def test_mcp_server_exposes_its_latest_discovery_error(self, client, monkeypatch):
+        import jarvis.webui.api.tools as tools_api
+
+        cfg = type("Cfg", (), {
+            "mcps": {"rube": {"command": "npx", "args": ["mcp-remote"]}},
+        })()
+        monkeypatch.setattr(tools_api, "load_settings", lambda: cfg)
+        monkeypatch.setattr(tools_api, "is_mcp_cache_initialized", lambda: True)
+        monkeypatch.setattr(tools_api, "get_cached_mcp_tools", lambda: {})
+        monkeypatch.setattr(
+            tools_api,
+            "get_cached_mcp_errors",
+            lambda: {"rube": "DNS lookup failed"},
+            raising=False,
+        )
+
+        body = client.get("/api/tools", headers=HEADERS).get_json()
+
+        assert body["servers"] == [{
+            "name": "rube",
+            "command": "npx",
+            "args": ["mcp-remote"],
+            "timeout_sec": None,
+            "idle_timeout_sec": None,
+            "tool_count": 0,
+            "connected": False,
+            "error": "DNS lookup failed",
+        }]
+
 
 class TestSecurity:
     def test_the_overview_names_the_level_and_channels(self, client):

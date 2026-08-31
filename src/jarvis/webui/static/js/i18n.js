@@ -211,6 +211,7 @@ const STRINGS = {
     "tools.servers": "Servers",
     "tools.connected": "connected",
     "tools.disconnected": "no tools discovered",
+    "tools.error": "Latest error",
     "tools.refreshed": "Rediscovered {n} tools",
     "tools.builtin": "builtin",
 
@@ -578,6 +579,7 @@ const STRINGS = {
     "tools.servers": "Server",
     "tools.connected": "verbunden",
     "tools.disconnected": "keine Werkzeuge gefunden",
+    "tools.error": "Letzter Fehler",
     "tools.refreshed": "{n} Werkzeuge neu gefunden",
     "tools.builtin": "eingebaut",
 

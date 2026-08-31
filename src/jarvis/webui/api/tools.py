@@ -14,6 +14,7 @@ from jarvis.runtime import get_recorder
 from jarvis.security.gate import SecurityGate
 from jarvis.tools.registry import (
     BUILTIN_TOOLS,
+    get_cached_mcp_errors,
     get_cached_mcp_tools,
     is_mcp_cache_initialized,
     refresh_mcp_tools,
@@ -69,6 +70,7 @@ def tools() -> Response:
         })
 
     mcp_tools = get_cached_mcp_tools() if is_mcp_cache_initialized() else {}
+    mcp_errors = get_cached_mcp_errors() if is_mcp_cache_initialized() else {}
     for name, spec in mcp_tools.items():
         server = name.split("__", 1)[0] if "__" in name else None
         entries.append({
@@ -92,6 +94,7 @@ def tools() -> Response:
             "idle_timeout_sec": server_cfg.get("idle_timeout_sec"),
             "tool_count": len(served),
             "connected": bool(served),
+            "error": mcp_errors.get(server_name),
         })
 
     return jsonify({
