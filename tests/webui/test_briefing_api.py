@@ -41,7 +41,13 @@ SCHOOL = {
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({"_config_version": 3}), encoding="utf-8")
+    # `db_path` is named explicitly. The summary is cached in the memory
+    # database, so a config that leaves it at the default would have these
+    # tests writing today's briefing into the real assistant's memory.
+    config_path.write_text(json.dumps({
+        "_config_version": 3,
+        "db_path": str(tmp_path / "jarvis.db"),
+    }), encoding="utf-8")
     monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
 
     app = create_app(WebUIConfig(host="127.0.0.1", port=5055, token=""))

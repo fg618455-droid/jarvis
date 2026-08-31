@@ -455,6 +455,19 @@
   display: none;
 }
 
+/* The conversation scrolls its own exchange and keeps its composer in
+   place. Left to the panel's scrollbar it would have two scrollers, so
+   every gesture would have two possible answers and the composer would
+   slide out of reach: the exact fault the view was built to avoid. The
+   panel therefore stops scrolling and hands the whole height over. */
+.panel-body-conversation {
+  overflow: hidden;
+}
+
+.panel-body-conversation > .view-conversation {
+  height: 100%;
+}
+
 /* A view built for a full page assumes it can put two cards side by side.
    In a panel there is one column, and a grid that keeps trying to make two
    produces cards too narrow to read. */

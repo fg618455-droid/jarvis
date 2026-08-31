@@ -173,7 +173,11 @@ export function mountDeck(root, { onOpenPanel } = {}) {
     closePanel();
     panelName = name;
 
-    const body = el("div", { class: "panel-body" });
+    // The panel names itself on its own body, so a view with its own idea of
+    // how tall it is can say so without the panel having to guess. The
+    // conversation is the one that does: it fills its container and scrolls
+    // the exchange inside itself rather than being scrolled by the panel.
+    const body = el("div", { class: `panel-body panel-body-${name}` });
     const view = el("div", { class: "view" });
     body.append(view);
 

@@ -58,11 +58,23 @@ let settingsCleanup = null;
 
 /* ── Where we are ──────────────────────────────────────────────────── */
 
-function requested() {
-  const raw = location.hash.replace(/^#\/?/, "").split("?")[0];
+function resolve(raw) {
   const name = ALIASES[raw] ?? raw;
   if (name === SETTINGS) return SETTINGS;
   return PANELS.includes(name) ? name : DECK;
+}
+
+/* An old address is followed and then replaced in place, so a bookmark to a
+   page that no longer exists still opens the thing that replaced it without
+   leaving two URLs for one state. */
+function requested() {
+  const raw = location.hash.replace(/^#\/?/, "").split("?")[0];
+  const name = resolve(raw);
+  if (name !== raw) {
+    const query = location.hash.includes("?") ? `?${location.hash.split("?", 2)[1]}` : "";
+    history.replaceState(null, "", `${location.pathname}${location.search}#/${name}${query}`);
+  }
+  return name;
 }
 
 function go(name) {
