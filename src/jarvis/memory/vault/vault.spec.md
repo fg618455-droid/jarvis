@@ -161,7 +161,7 @@ where the snippet is the matching region padded to whole lines and capped at
 300 characters. `provenance` carries the vault-relative path known by the
 index at retrieval time.
 
-`VaultIndex.read_notes(relative_roots, max_notes, max_chars_per_note)` is the bounded full-note path for explicit local imports. It applies the same file exclusions, size cap, cache refresh, managed-folder protected-region handling, and vault-relative path validation as the index. It returns at most 100 notes and at most 50,000 characters per note, with lower caller-supplied caps honoured. The school import uses this method for `05 - Schule/` and `Daily/Todo Liste.md`; it does not traverse or write the vault itself.
+`VaultIndex.read_notes(relative_roots, max_notes, max_chars_per_note)` is the bounded full-note path for explicit local imports. It applies the same file exclusions, size cap, cache refresh, managed-folder protected-region handling, and vault-relative path validation as the index. It returns at most 100 notes and at most 50,000 characters per note, with lower caller-supplied caps honoured. The school import uses this method for `05 - Schule/` and `Daily/Todo Liste.md`; it does not traverse or write the vault itself. Its content-hash ledger marks a source current only after the graph extractor returns a valid JSON array and placement finishes. A missing or malformed model response is an import error and leaves that source eligible for the next run; a valid empty array is a successful no-facts result and may be marked current.
 
 ### Reads Are Untrusted Input
 

@@ -65,6 +65,10 @@ _LABEL_TO_BRANCH = {v: k for k, v in _BRANCH_LABELS.items()}
 # ── Memory extraction from dialogue ───────────────────────────────────
 
 
+class GraphExtractionError(RuntimeError):
+    """The graph extractor did not produce a valid classification result."""
+
+
 def extract_graph_memories(
     summary: str,
     cfg,
@@ -74,6 +78,7 @@ def extract_graph_memories(
     date_utc: Optional[str] = None,
     focus: Optional[str] = None,
     untrusted_data: bool = False,
+    raise_on_failure: bool = False,
 ) -> list[tuple[str, str]]:
     """Extract novel knowledge from a conversation summary, tagged by branch.
 
@@ -250,6 +255,8 @@ def extract_graph_memories(
 
     if not response:
         debug_log("graph memory extraction: LLM returned no response", "memory")
+        if raise_on_failure:
+            raise GraphExtractionError("graph extraction returned no response")
         return []
 
     debug_log(f"graph memory extraction: got response ({len(response)} chars)", "memory")
@@ -258,15 +265,21 @@ def extract_graph_memories(
     json_match = re.search(r'\[.*\]', response, re.DOTALL)
     if not json_match:
         debug_log(f"graph memory extraction: no JSON array found in response: {response[:200]}", "memory")
+        if raise_on_failure:
+            raise GraphExtractionError("graph extraction returned no JSON array")
         return []
 
     try:
         parsed = json.loads(json_match.group())
         if not isinstance(parsed, list):
             debug_log(f"graph memory extraction: parsed JSON is not a list: {type(parsed)}", "memory")
+            if raise_on_failure:
+                raise GraphExtractionError("graph extraction result is not a list")
             return []
     except (json.JSONDecodeError, ValueError) as e:
         debug_log(f"graph memory extraction: JSON parse failed — {e}", "memory")
+        if raise_on_failure:
+            raise GraphExtractionError("graph extraction JSON is invalid") from e
         return []
 
     facts: list[tuple[str, str]] = []

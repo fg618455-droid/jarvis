@@ -116,6 +116,69 @@ def test_import_limits_number_of_notes_per_run(tmp_path):
         store.close()
 
 
+def test_failed_extraction_is_retried_instead_of_marked_current(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _write_school_note(
+        vault,
+        "05 - Schule/Chemistry.md",
+        "The chemistry homework is due Friday.",
+    )
+    store = GraphMemoryStore(str(tmp_path / "graph.db"))
+
+    try:
+        with patch(
+            "jarvis.memory.graph_ops.call_llm_direct",
+            return_value=None,
+        ) as model_call:
+            first = import_school_notes(
+                store=store,
+                cfg=_cfg(vault),
+                index=VaultIndex(vault),
+            )
+            second = import_school_notes(
+                store=store,
+                cfg=_cfg(vault),
+                index=VaultIndex(vault),
+            )
+
+        assert first.errors == 1
+        assert second.errors == 1
+        assert second.notes_unchanged == 0
+        assert model_call.call_count == 2
+    finally:
+        store.close()
+
+
+def test_valid_empty_extraction_is_marked_current(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _write_school_note(vault, "05 - Schule/Empty.md", "No durable school facts.")
+    store = GraphMemoryStore(str(tmp_path / "graph.db"))
+
+    try:
+        with patch(
+            "jarvis.memory.graph_ops.call_llm_direct",
+            return_value="[]",
+        ) as model_call:
+            first = import_school_notes(
+                store=store,
+                cfg=_cfg(vault),
+                index=VaultIndex(vault),
+            )
+            second = import_school_notes(
+                store=store,
+                cfg=_cfg(vault),
+                index=VaultIndex(vault),
+            )
+
+        assert first.errors == 0
+        assert second.notes_unchanged == 1
+        assert model_call.call_count == 1
+    finally:
+        store.close()
+
+
 def test_hostile_note_title_cannot_cause_a_vault_write(tmp_path):
     vault = tmp_path / "vault"
     vault.mkdir()

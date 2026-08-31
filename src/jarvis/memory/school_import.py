@@ -20,7 +20,9 @@ SCHOOL_NOTE_ROOTS = ("05 - Schule", "Daily/Todo Liste.md")
 SCHOOL_IMPORT_MAX_NOTES = 100
 SCHOOL_IMPORT_MAX_CHARS_PER_NOTE = 20_000
 _SCHOOL_IMPORTER_ID = "school"
-_SCHOOL_IMPORT_VERSION = "1"
+# The version participates in each source hash, so importer semantics can
+# schedule one bounded re-read without clearing the persisted ledger.
+_SCHOOL_IMPORT_VERSION = "2"
 _SCHOOL_EXTRACTION_FOCUS = (
     "Extract only durable facts about Felix's schooling: subjects, teachers, "
     "homework, exam dates, marks, timetable, and academic progress. Ignore "
@@ -113,6 +115,7 @@ def import_school_notes(
                 thinking=thinking,
                 focus=_SCHOOL_EXTRACTION_FOCUS,
                 untrusted_data=True,
+                raise_on_failure=True,
             )
             school_facts = [(BRANCH_SCHOOL, fact) for _, fact in extracted]
             placed = place_graph_facts(
