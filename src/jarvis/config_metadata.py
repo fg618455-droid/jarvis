@@ -30,6 +30,9 @@ class FieldMeta:
     suffix: Optional[str] = None
     nullable: bool = False  # Whether None/"" is a valid value (shows "Default" option)
     item_fields: Optional[tuple["FieldMeta", ...]] = None
+    # Initial value used only when a structured-list editor adds an item.
+    # It is metadata, never a value resolved from the process environment.
+    default_value: Any = None
 
 
 LLM_ROUTE_FIELD_METADATA = (
@@ -55,14 +58,21 @@ LLM_ROUTE_FIELD_METADATA = (
 
 
 CLOUD_TTS_PROVIDER_FIELD_METADATA = (
-    FieldMeta("name", "Name", "Display name for this provider", "tts_cloud_providers", "str"),
-    FieldMeta("provider", "Provider", "Vendor client identifier", "tts_cloud_providers", "str"),
-    FieldMeta("api_key_env", "API Key Environment", "Environment variable containing the credential", "tts_cloud_providers", "str"),
-    FieldMeta("voice_id", "Voice ID", "Opaque provider voice identifier", "tts_cloud_providers", "str"),
-    FieldMeta("model", "Model", "Provider model name", "tts_cloud_providers", "str"),
-    FieldMeta("enabled", "Enabled", "Whether this provider participates in the chain", "tts_cloud_providers", "bool"),
+    FieldMeta("name", "Name", "Display name for this provider", "tts_cloud_providers", "str",
+              default_value="Cloud provider"),
+    FieldMeta("provider", "Provider", "Vendor client identifier", "tts_cloud_providers", "choice",
+              choices=[("fish_audio", "Fish Audio"), ("elevenlabs", "ElevenLabs")],
+              default_value="fish_audio"),
+    FieldMeta("api_key_env", "API Key Environment", "Environment variable containing the credential", "tts_cloud_providers", "str",
+              default_value=""),
+    FieldMeta("voice_id", "Voice ID", "Opaque provider voice identifier", "tts_cloud_providers", "str",
+              default_value=""),
+    FieldMeta("model", "Model", "Provider model name", "tts_cloud_providers", "str",
+              default_value=""),
+    FieldMeta("enabled", "Enabled", "Whether this provider participates in the chain", "tts_cloud_providers", "bool",
+              default_value=True),
     FieldMeta("timeout_sec", "Timeout", "Seconds before trying the next provider", "tts_cloud_providers", "float",
-              min_val=0.1, max_val=600, step=0.5, suffix="s"),
+              min_val=0.1, max_val=600, step=0.5, suffix="s", default_value=10.0),
 )
 
 

@@ -292,3 +292,78 @@ class TestChoiceFieldsShowWhatIsConfigured:
         offered = [combo.itemData(i) for i in range(combo.count())]
 
         assert offered.count(known) == 1
+
+
+class TestCloudTTSProviderEditor:
+    def _window(self, tmp_path, monkeypatch, qapp, providers):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "_config_version": 5,
+            "tts_cloud_providers": providers,
+        }), encoding="utf-8")
+        monkeypatch.setattr(
+            "desktop_app.settings_window.default_config_path", lambda: config_path
+        )
+        from desktop_app.settings_window import SettingsWindow
+
+        return SettingsWindow()
+
+    @staticmethod
+    def _providers():
+        return [
+            {
+                "name": "Fish", "provider": "fish_audio",
+                "api_key_env": "FISH_AUDIO_API_KEY", "voice_id": "fish-voice",
+                "model": "s2.1-pro-free", "enabled": True, "timeout_sec": 7.0,
+            },
+            {
+                "name": "Eleven", "provider": "elevenlabs",
+                "api_key_env": "ELEVENLABS_API_KEY", "voice_id": "eleven-voice",
+                "model": "eleven_multilingual_v2", "enabled": False,
+                "timeout_sec": 8.5,
+            },
+        ]
+
+    def test_qt_editor_preserves_all_fields_and_order(
+        self, tmp_path, monkeypatch, qapp,
+    ):
+        window = self._window(tmp_path, monkeypatch, qapp, self._providers())
+        meta = next(field for field in FIELD_METADATA if field.key == "tts_cloud_providers")
+
+        assert window._get_value(meta) == self._providers()
+
+    def test_qt_editor_can_disable_and_reorder_providers(
+        self, tmp_path, monkeypatch, qapp,
+    ):
+        window = self._window(tmp_path, monkeypatch, qapp, self._providers())
+        editor = window._widgets["tts_cloud_providers"]
+        table = editor._table_widget
+        meta = next(field for field in FIELD_METADATA if field.key == "tts_cloud_providers")
+        enabled_column = next(
+            index for index, field in enumerate(editor._item_fields)
+            if field.key == "enabled"
+        )
+        table.cellWidget(0, enabled_column).setChecked(False)
+        table.selectRow(0)
+        editor._move_down_button.click()
+
+        saved = window._get_value(meta)
+        assert [provider["name"] for provider in saved] == ["Eleven", "Fish"]
+        assert saved[1]["enabled"] is False
+
+    def test_qt_editor_does_not_read_a_credential_from_the_environment(
+        self, tmp_path, monkeypatch, qapp,
+    ):
+        monkeypatch.setenv("FISH_AUDIO_API_KEY", "must-never-reach-qt")
+        window = self._window(tmp_path, monkeypatch, qapp, self._providers())
+        editor = window._widgets["tts_cloud_providers"]
+
+        visible_text = []
+        for row in range(editor._table_widget.rowCount()):
+            for column in range(editor._table_widget.columnCount()):
+                item = editor._table_widget.item(row, column)
+                if item is not None:
+                    visible_text.append(item.text())
+
+        assert "FISH_AUDIO_API_KEY" in visible_text
+        assert "must-never-reach-qt" not in visible_text

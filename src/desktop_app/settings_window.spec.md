@@ -27,7 +27,8 @@ FieldMeta (dataclass, src/jarvis/config_metadata.py)
   ├── step               # Increment step
   ├── suffix             # Unit label (e.g. "s", "ms", "WPM")
   ├── nullable           # Whether None is valid (shows placeholder)
-  └── item_fields        # Nested FieldMeta tuple for "object_list"
+  ├── item_fields        # Nested FieldMeta tuple for "object_list"
+  └── default_value      # Safe initial value when a structured item is added
 ```
 
 ## Widget Mapping
@@ -117,7 +118,11 @@ sample rate, wake-word matching, Whisper transcription, and VAD endpointing.
 The output device belongs to Text-to-Speech. The TTS category also exposes
 `tts_cloud_providers` as a structured ordered table. Each row edits the provider
 name, vendor id, credential environment-variable name, voice id, model,
-enabled state, and timeout. Credential values never enter config.json.
+enabled state, and timeout. Add, remove, enable/disable, and move controls are
+available without editing JSON. The vendor is selected from the supported
+Fish Audio and ElevenLabs clients while an older unrecognised configured value
+remains visible. Credential values are never resolved from the environment and
+never enter either settings form or `config.json`.
 
 ### Features
 

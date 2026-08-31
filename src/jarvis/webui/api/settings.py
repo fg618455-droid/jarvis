@@ -94,6 +94,7 @@ def _item_field_payload(meta) -> dict:
         "suffix": meta.suffix,
         "nullable": meta.nullable,
         "is_secret": meta.field_type == SECRET_FIELD_TYPE,
+        "default": meta.default_value,
     }
 
 

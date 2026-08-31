@@ -201,6 +201,32 @@ class TestWriting:
             "name", "provider", "api_key_env", "voice_id", "model",
             "enabled", "timeout_sec",
         ]
+        provider = next(item for item in field["item_fields"] if item["key"] == "provider")
+        assert provider["type"] == "choice"
+        assert {choice["value"] for choice in provider["choices"]} == {
+            "fish_audio", "elevenlabs",
+        }
+        defaults = {item["key"]: item["default"] for item in field["item_fields"]}
+        assert defaults["enabled"] is True
+        assert defaults["timeout_sec"] == 10.0
+
+    def test_cloud_tts_metadata_never_resolves_environment_credentials(
+        self, client, monkeypatch,
+    ):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "must-never-reach-settings")
+        stored = _stored(client)
+        stored["tts_cloud_providers"] = [{
+            "name": "ElevenLabs", "provider": "elevenlabs",
+            "api_key_env": "ELEVENLABS_API_KEY", "voice_id": "voice-1",
+            "model": "eleven_multilingual_v2", "enabled": True,
+            "timeout_sec": 8.5,
+        }]
+        client.config_path.write_text(json.dumps(stored), encoding="utf-8")
+
+        raw = client.get("/api/settings", headers=HEADERS).get_data(as_text=True)
+
+        assert "ELEVENLABS_API_KEY" in raw
+        assert "must-never-reach-settings" not in raw
 
     def test_cloud_tts_chain_accepts_provider_objects(self, client):
         providers = [{

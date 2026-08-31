@@ -420,9 +420,10 @@ class SettingsWindow(QDialog):
             rows = self._object_table_values(table, fields)
             rows.append({
                 field.key: (
-                    True if field.field_type == "bool"
-                    else 10.0 if field.field_type == "float"
+                    field.default_value
+                    if field.default_value is not None
                     else [] if field.field_type == "list"
+                    else False if field.field_type == "bool"
                     else ""
                 )
                 for field in fields
@@ -452,6 +453,10 @@ class SettingsWindow(QDialog):
         down_btn.clicked.connect(lambda: _move(1))
         container._table_widget = table  # type: ignore[attr-defined]
         container._item_fields = fields  # type: ignore[attr-defined]
+        container._add_button = add_btn  # type: ignore[attr-defined]
+        container._remove_button = remove_btn  # type: ignore[attr-defined]
+        container._move_up_button = up_btn  # type: ignore[attr-defined]
+        container._move_down_button = down_btn  # type: ignore[attr-defined]
         return container
 
     def _populate_object_table(

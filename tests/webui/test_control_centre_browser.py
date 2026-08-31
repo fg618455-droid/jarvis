@@ -293,7 +293,8 @@ class TestSettingsCoherence:
             ],
         }
         page.route("**/api/settings", lambda route: route.fulfill(json=payload))
-        page.goto(f"{served}/#/settings", wait_until="networkidle")
+        page.goto(f"{served}/#/settings", wait_until="domcontentloaded")
+        page.wait_for_selector("main h1", state="visible")
 
         assert page.get_by_role("link", name="Open LLM routes").is_visible()
         page.get_by_role("button", name="Text-to-Speech").click()
@@ -301,6 +302,68 @@ class TestSettingsCoherence:
         assert page.locator(".object-item").count() == 1
         assert page.get_by_label("Name").input_value() == "ElevenLabs"
         assert page.locator(".route-editor").count() == 0
+
+    def test_cloud_provider_controls_add_disable_reorder_and_save(self, page, served):
+        payload = {
+            "path": "C:/config.json", "daemon_running": True,
+            "categories": [{"key": "tts", "label": "Text-to-Speech"}],
+            "fields": [{
+                "key": "tts_cloud_providers", "label": "Cloud Provider Chain",
+                "description": "Ordered cloud voices", "category": "tts",
+                "type": "object_list", "restart_required": True,
+                "is_secret": False,
+                "value": [{
+                    "name": "ElevenLabs", "provider": "elevenlabs",
+                    "api_key_env": "ELEVENLABS_API_KEY", "voice_id": "voice-1",
+                    "model": "eleven_multilingual_v2", "enabled": True,
+                    "timeout_sec": 8.5,
+                }],
+                "item_fields": [
+                    {"key": "name", "label": "Name", "type": "str", "default": "Cloud provider"},
+                    {"key": "provider", "label": "Provider", "type": "choice",
+                     "default": "fish_audio", "choices": [
+                         {"value": "fish_audio", "label": "Fish Audio"},
+                         {"value": "elevenlabs", "label": "ElevenLabs"},
+                     ]},
+                    {"key": "api_key_env", "label": "API Key Environment", "type": "str", "default": ""},
+                    {"key": "voice_id", "label": "Voice ID", "type": "str", "default": ""},
+                    {"key": "model", "label": "Model", "type": "str", "default": ""},
+                    {"key": "enabled", "label": "Enabled", "type": "bool", "default": True},
+                    {"key": "timeout_sec", "label": "Timeout", "type": "float",
+                     "min": 0.1, "max": 600, "step": 0.5, "default": 10.0},
+                ],
+            }],
+        }
+        written = []
+
+        def settings(route, request):
+            if request.method == "PUT":
+                written.append(request.post_data_json)
+                route.fulfill(json={"written": ["tts_cloud_providers"],
+                                    "restart_required": ["tts_cloud_providers"]})
+            else:
+                route.fulfill(json=payload)
+
+        page.route("**/api/settings", settings)
+        page.goto(f"{served}/#/settings", wait_until="domcontentloaded")
+        page.wait_for_selector(".object-item", state="visible")
+        page.get_by_role("button", name="+ Add provider").click()
+        cards = page.locator(".object-item")
+        assert cards.count() == 2
+        assert cards.nth(1).locator("select").input_value() == "fish_audio"
+        assert cards.nth(1).locator('input[type="checkbox"]').is_checked()
+        assert cards.nth(1).locator('input[type="number"]').input_value() == "10"
+
+        cards.nth(0).locator('input[type="checkbox"]').uncheck()
+        cards.nth(0).get_by_role("button", name="Move down: ElevenLabs").click()
+        page.get_by_role("button", name="Save", exact=True).click()
+        page.wait_for_timeout(100)
+
+        providers = written[-1]["changes"]["tts_cloud_providers"]
+        assert [provider["provider"] for provider in providers] == [
+            "fish_audio", "elevenlabs",
+        ]
+        assert providers[1]["enabled"] is False
 
 
 class TestStandaloneShell:

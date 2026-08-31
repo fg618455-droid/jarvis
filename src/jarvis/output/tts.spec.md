@@ -32,6 +32,13 @@ failure, unavailable audio and an empty response fall through. Selection and
 every fall-through are recorded with `debug_log` without credentials or
 spoken text.
 
+Both settings interfaces render this list from
+`CLOUD_TTS_PROVIDER_FIELD_METADATA`. They preserve row order and every
+non-secret field and provide add, edit, remove, enable, and reorder controls.
+Only the environment-variable name is displayed or stored. The credential
+value is resolved lazily when the vendor client is built; settings metadata,
+API responses, and Qt widgets never read it.
+
 The final candidate is always a local engine constructed by
 `create_tts_engine` from `tts_local_fallback_engine`. The setting accepts
 `"piper"`, `"chatterbox"` or `"kokoro"` and defaults to `"piper"`; an invalid

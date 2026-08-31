@@ -51,6 +51,17 @@ class TestFieldMetadata:
         }
         assert "api_key" not in keys
 
+    def test_cloud_tts_provider_schema_has_safe_editor_defaults(self):
+        fields = {field.key: field for field in CLOUD_TTS_PROVIDER_FIELD_METADATA}
+
+        assert fields["provider"].field_type == "choice"
+        assert {value for value, _label in fields["provider"].choices} == {
+            "fish_audio", "elevenlabs",
+        }
+        assert fields["enabled"].default_value is True
+        assert fields["timeout_sec"].default_value == 10.0
+        assert fields["api_key_env"].default_value == ""
+
     def test_no_duplicate_keys(self):
         """Each config key should appear at most once in the metadata."""
         keys = [fm.key for fm in FIELD_METADATA]

@@ -176,7 +176,12 @@ export async function mount(root) {
       }
       if (meta.type === "choice") {
         const select = el("select");
-        for (const choice of meta.choices || []) {
+        const choices = [...(meta.choices || [])];
+        if (value !== undefined && value !== null && value !== ""
+            && !choices.some((choice) => String(choice.value) === String(value))) {
+          choices.unshift({ value, label: String(value) });
+        }
+        for (const choice of choices) {
           select.append(el("option", {
             value: choice.value,
             text: choice.label,
@@ -268,8 +273,9 @@ export async function mount(root) {
           onclick: () => {
             const item = {};
             for (const meta of field.item_fields || []) {
-              item[meta.key] = meta.type === "bool" ? true
-                : meta.type === "float" ? 10
+              item[meta.key] = meta.default !== undefined && meta.default !== null
+                ? JSON.parse(JSON.stringify(meta.default))
+                : meta.type === "bool" ? false
                   : meta.type === "list" ? [] : "";
             }
             items.push(item);
