@@ -265,6 +265,63 @@ def get_llm_backend(settings: Any) -> LLMBackend:
     return backend
 
 
+def describe_model_topology(settings: Any) -> dict[str, dict[str, Any]]:
+    """Describe routing and local model roles without contacting a backend.
+
+    The public FAST/CHAT model names are effective route selectors, not proof
+    that those weights live on this machine.  This shape keeps that fact
+    separate from the explicit Ollama fallback/private/embedding choices;
+    actual residency is a system reading and is added by the web API.
+    """
+    backend = get_llm_backend(settings)
+    effective: dict[str, Any] = {}
+    if isinstance(backend, RoutedBackend):
+        statuses = backend.route_status()
+        for tier in (Tier.FAST, Tier.CHAT, Tier.PRIVATE):
+            entries = statuses.get(tier.value, [])
+            selected = next((entry for entry in entries if entry.get("active")), None)
+            if selected is None:
+                effective[tier.value] = None
+                continue
+            route = next(
+                (
+                    candidate for candidate in backend.routes_for(tier)
+                    if candidate.name == selected.get("name")
+                    and candidate.model == selected.get("model")
+                ),
+                None,
+            )
+            effective[tier.value] = {
+                "name": str(selected.get("name", "") or ""),
+                "model": str(selected.get("model", "") or ""),
+                "provider": str(selected.get("provider", "") or ""),
+                "location": (
+                    "local"
+                    if route is not None and RoutedBackend._is_local(route)
+                    else "remote"
+                ),
+            }
+
+    local_chat = _str_attr(settings, "ollama_chat_model") or _str_attr(
+        settings, "llm_chat_model"
+    )
+    local_fast = (
+        _str_attr(settings, "local_fast_model")
+        or _str_attr(settings, "fast_model")
+        or local_chat
+    )
+    local_embedding = _str_attr(settings, "ollama_embed_model") or _str_attr(
+        settings, "embedding_model"
+    )
+    local = {
+        "fast_fallback": {"model": local_fast, "provider": _OLLAMA},
+        "chat_fallback": {"model": local_chat, "provider": _OLLAMA},
+        "private": {"model": local_chat, "provider": _OLLAMA},
+        "embedding": {"model": local_embedding, "provider": _OLLAMA},
+    }
+    return {"effective": effective, "local": local}
+
+
 def _loopback_ollama_url(settings: Any) -> str:
     configured = _str_attr(settings, "ollama_base_url", _DEFAULT_OLLAMA_URL)
     try:

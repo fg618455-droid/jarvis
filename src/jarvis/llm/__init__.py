@@ -45,6 +45,7 @@ from .openai_compatible import OpenAICompatibleBackend, ServerCapabilities
 from .factory import (
     LOW_POWER_OLLAMA_KEEP_ALIVE,
     OLLAMA_KEEP_ALIVE,
+    describe_model_topology,
     get_embedding_backend,
     get_llm_backend,
     is_low_power_mode,
@@ -73,6 +74,7 @@ __all__ = [
     "ToolsNotSupportedError",
     "check_version",
     "get_llm_backend",
+    "describe_model_topology",
     "get_embedding_backend",
     "OLLAMA_KEEP_ALIVE",
     "LOW_POWER_OLLAMA_KEEP_ALIVE",

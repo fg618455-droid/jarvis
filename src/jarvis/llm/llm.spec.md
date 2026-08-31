@@ -117,6 +117,13 @@ Ollama unloads a model once its keep-alive lapses and resets that timer from eac
 
 Hits, failures, last safe error label, and future block time feed the control centre. Persisted cooldowns prevent a restart from immediately touching a rate-limited or quota-exhausted key. Authentication invalidation is deliberately process-local, so a restarted process can retry a corrected external credential.
 
+`describe_model_topology(cfg)` is the status boundary for model names. It
+reports the first currently available candidate in each effective tier with
+its provider and loopback-derived `local`/`remote` location, separately from
+the configured Ollama FAST fallback, CHAT fallback, PRIVATE, and embedding
+roles. It never claims residency; only the independent `ollama ps` system
+reading can say which weights are actually loaded.
+
 ## Lanes
 
 | Tier | Chain | Contexts |

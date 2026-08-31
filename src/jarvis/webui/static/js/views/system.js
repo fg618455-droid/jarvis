@@ -100,29 +100,59 @@ function paintModels(container, system) {
   container.append(
     el("header", {}, [
       el("h2", { text: t("system.models") }),
-      el("span", { class: "aside", text: system.models?.provider || "" }),
     ]),
   );
 
-  const loaded = system.models?.loaded || [];
-  container.append(
-    rows([
-      ["chat", system.models?.chat],
-      ["fast", system.models?.fast],
-      ["embedding", system.models?.embedding],
-      ["url", system.models?.base_url],
-    ]),
-  );
-
-  container.append(el("h3", { text: t("system.loaded") }));
-
-  if (!loaded.length) {
-    container.append(el("span", { class: "muted", text: t("system.noModels") }));
-    return;
-  }
-
-  container.append(
+  const effective = system.models?.effective || {};
+  const effectiveRows = ["fast", "chat", "private"]
+    .filter((tier) => effective[tier])
+    .map((tier) => ({ tier, ...effective[tier] }));
+  container.append(el("section", { class: "model-block effective-models" }, [
+    el("h3", { text: t("system.effectiveRoutes") }),
     table(
+      [
+        { label: t("system.tier"), render: (entry) => entry.tier.toUpperCase() },
+        { label: t("system.model"), render: (entry) => entry.model },
+        { label: t("system.provider"), render: (entry) => entry.provider },
+        { label: t("system.location"), render: (entry) => chip(t(`system.${entry.location}`)) },
+      ],
+      effectiveRows,
+    ),
+  ]));
+
+  const local = system.models?.local || {};
+  const localRoles = [
+    ["fast_fallback", t("system.fastFallback")],
+    ["chat_fallback", t("system.chatFallback")],
+    ["private", t("system.privateModel")],
+    ["embedding", t("system.embeddingModel")],
+  ];
+  const localRows = localRoles
+    .filter(([key]) => local[key])
+    .map(([key, role]) => ({ role, ...local[key] }));
+  container.append(el("section", { class: "model-block local-models" }, [
+    el("h3", { text: t("system.localModels") }),
+    table(
+      [
+        { label: t("system.role"), render: (entry) => entry.role },
+        { label: t("system.model"), render: (entry) => entry.model },
+        { label: t("system.provider"), render: (entry) => entry.provider },
+      ],
+      localRows,
+    ),
+  ]));
+
+  const resident = system.models?.resident || system.models?.loaded || [];
+  const gpu = system.gpu || {};
+  const localGpu = gpu.used_mb !== undefined && gpu.total_mb !== undefined
+    ? `${fmt.megabytes(gpu.used_mb)} / ${fmt.megabytes(gpu.total_mb)}`
+    : gpu.total_mb !== undefined ? fmt.megabytes(gpu.total_mb) : "—";
+  container.append(el("section", { class: "model-block resident-models" }, [
+    el("div", { class: "model-block-head" }, [
+      el("h3", { text: t("system.residentModels") }),
+      el("span", { class: "aside", text: `${t("sidebar.localGpu")}: ${localGpu}` }),
+    ]),
+    resident.length ? table(
       [
         { label: t("common.name"), render: (model) => model.name },
         { label: "size", numeric: true, render: (model) => model.size },
@@ -130,9 +160,9 @@ function paintModels(container, system) {
         { label: "context", numeric: true, render: (model) => model.context },
         { label: "until", numeric: true, render: (model) => model.until },
       ],
-      loaded,
-    ),
-  );
+      resident,
+    ) : el("span", { class: "muted", text: t("system.noModels") }),
+  ]));
 }
 
 function paintSpeech(container, system) {

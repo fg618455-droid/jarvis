@@ -1002,7 +1002,7 @@ a.card-link:hover .stat-value {
 
 .route-primary {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto auto minmax(0, 1fr);
   align-items: start;
   gap: var(--s2);
 }
@@ -1062,6 +1062,25 @@ a.card-link:hover .stat-value {
 
 .route-error-metric {
   grid-column: 1 / -1;
+}
+
+.model-block {
+  display: grid;
+  gap: var(--s2);
+  margin-top: var(--s4);
+}
+
+.model-block > h3,
+.model-block-head h3 {
+  margin: 0;
+}
+
+.model-block-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s3);
+  flex-wrap: wrap;
 }
 
 .route-metric .route-error {

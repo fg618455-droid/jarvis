@@ -921,15 +921,9 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
 
     runtime_state = get_runtime_state()
     runtime_state.reset()
-    runtime_state.describe_models(
-        chat=cfg.llm_chat_model,
-        fast=getattr(cfg, "fast_model", "") or cfg.llm_chat_model,
-        embedding=cfg.embedding_model,
-        whisper=cfg.whisper_model,
-        whisper_device=cfg.whisper_device,
-        tts_engine=cfg.tts_engine,
-        tts_voice=getattr(cfg, "tts_piper_model_path", None) or cfg.tts_voice,
-    )
+    from .llm import describe_model_topology
+
+    runtime_state.describe_models(**describe_model_topology(cfg))
     runtime_state.describe_audio(
         device=cfg.voice_device,
         sample_rate=cfg.sample_rate,

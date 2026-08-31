@@ -326,6 +326,7 @@ function routeList(routes) {
     return el("article", { class: "route-entry" }, [
       el("div", { class: "route-primary" }, [
         status,
+        chip(t(route.local ? "llm.local" : "llm.remote")),
         el("div", { class: "route-identity" }, [
           el("strong", { class: "route-name", text: route.name }),
           el("code", { class: "route-model", text: route.model || "—" }),

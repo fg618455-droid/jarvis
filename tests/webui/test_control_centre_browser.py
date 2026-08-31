@@ -219,13 +219,15 @@ class TestLlmRouteLayout:
                         active: false, blocked_until: null, failures: 2,
                         hits: 12, invalid: false, last_error: 'rate limit reached',
                         masked_key: '••••••••kwrd', model: 'zai-glm-4.7',
-                        name: 'cerebras', tier: 'chat',
+                        name: 'cerebras', tier: 'chat', provider: 'openai_compatible',
+                        local: false,
                     }],
                     private: [{
                         active: true, blocked_until: null, failures: 12,
                         hits: 28, invalid: false, last_error: '',
                         masked_key: '', model: 'qwen2.5:7b-ctx8k',
-                        name: 'local-private', tier: 'private',
+                        name: 'local-private', tier: 'private', provider: 'ollama',
+                        local: true,
                     }],
                 };
                 const configured = [{
@@ -294,6 +296,14 @@ class TestLlmRouteLayout:
             "cards => cards.map(card => ({ client: card.clientWidth, scroll: card.scrollWidth }))"
         )
         assert all(item["scroll"] <= item["client"] for item in widths)
+
+    def test_effective_routes_name_locality(self, page, served):
+        self._open_with_routes(page, served)
+
+        chat = page.locator(".llm-chain").nth(1)
+        private = page.locator(".llm-chain").nth(2)
+        assert chat.get_by_text("remote", exact=True).is_visible()
+        assert private.get_by_text("local", exact=True).is_visible()
 
     def test_editor_keeps_every_operational_route_field(self, page, served):
         self._open_with_routes(page, served)
@@ -511,6 +521,46 @@ class TestStandaloneShell:
         assert "gpt-oss-120b" not in footer
         assert "5.94 GB / 7.77 GB" in footer
         context.close()
+
+
+class TestSystemModelTruth:
+    def test_remote_effective_local_fallback_and_residency_are_distinct(self, page, served):
+        page.route("**/api/system", lambda route: route.fulfill(json={
+            "gpu": {"name": "GPU", "used_mb": 4096, "total_mb": 8192},
+            "models": {
+                "effective": {
+                    "fast": {"name": "cloud-fast", "model": "remote-fast",
+                             "provider": "openai_compatible", "location": "remote"},
+                    "chat": {"name": "cloud-chat", "model": "remote-chat",
+                             "provider": "openai_compatible", "location": "remote"},
+                },
+                "local": {
+                    "fast_fallback": {"model": "local-fast", "provider": "ollama"},
+                    "chat_fallback": {"model": "local-chat", "provider": "ollama"},
+                    "private": {"model": "local-chat", "provider": "ollama"},
+                    "embedding": {"model": "local-embed", "provider": "ollama"},
+                },
+                "resident": [{"name": "resident-now", "size": "4 GB",
+                              "processor": "100% GPU", "context": "4096",
+                              "until": "4 minutes"}],
+            },
+            "ollama_environment": {},
+            "speech_recognition": {}, "speech_output": {}, "paths": [],
+            "process": {"pid": 1, "python": "3", "platform": "test", "threads": 1},
+        }))
+        page.route("**/api/turns?*", lambda route: route.fulfill(json={"turns": []}))
+        page.goto(f"{served}/#/system", wait_until="networkidle")
+
+        effective = page.locator(".effective-models")
+        local = page.locator(".local-models")
+        resident = page.locator(".resident-models")
+        assert "remote-chat" in effective.inner_text()
+        assert "remote" in effective.inner_text()
+        assert "local-fast" in local.inner_text()
+        assert "local-embed" in local.inner_text()
+        assert "resident-now" in resident.inner_text()
+        assert "4 GB / 8 GB" in resident.inner_text()
+        assert "remote-chat" not in resident.inner_text()
 
 
 class TestMemoryMaintenance:

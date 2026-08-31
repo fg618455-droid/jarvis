@@ -476,9 +476,61 @@ class TestSystem:
     def test_the_reading_names_the_models_in_use(self, client):
         body = client.get("/api/system", headers=HEADERS).get_json()
 
-        assert body["models"]["chat"]
+        assert body["models"]["effective"]["chat"]["model"]
+        assert body["models"]["local"]["chat_fallback"]["model"]
         assert body["speech_recognition"]["backend"]
         assert body["process"]["pid"] > 0
+
+    def test_remote_routes_local_fallbacks_and_residency_are_separate(
+        self, client, tmp_path, monkeypatch,
+    ):
+        from jarvis.webui.api import system as system_api
+
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "_config_version": 6,
+            "ollama_chat_model": "local-chat",
+            "local_fast_model": "local-fast",
+            "ollama_embed_model": "local-embed",
+            "llm_routes": [
+                {
+                    "name": "cloud-fast", "provider": "openai_compatible",
+                    "base_url": "https://cloud.example/v1", "api_key": "",
+                    "api_key_env": "", "model": "remote-fast", "tier": "fast",
+                    "timeout_sec": 4.0, "enabled": True,
+                    "capabilities": ["chat", "stream", "tools"],
+                },
+                {
+                    "name": "cloud-chat", "provider": "openai_compatible",
+                    "base_url": "https://cloud.example/v1", "api_key": "",
+                    "api_key_env": "", "model": "remote-chat", "tier": "chat",
+                    "timeout_sec": 4.0, "enabled": True,
+                    "capabilities": ["chat", "stream", "tools"],
+                },
+            ],
+        }), encoding="utf-8")
+        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
+        monkeypatch.setenv(
+            "JARVIS_LLM_ROUTE_STATE_PATH", str(tmp_path / "route-state.json")
+        )
+        monkeypatch.setattr(
+            system_api, "read_loaded_models",
+            lambda: [{"name": "resident-model", "size": "4 GB"}],
+        )
+        system_api._cache.clear()
+
+        models = client.get("/api/system", headers=HEADERS).get_json()["models"]
+
+        assert models["effective"]["chat"] == {
+            "location": "remote", "model": "remote-chat",
+            "name": "cloud-chat", "provider": "openai_compatible",
+        }
+        assert models["effective"]["fast"]["location"] == "remote"
+        assert models["local"]["fast_fallback"]["model"] == "local-fast"
+        assert models["local"]["chat_fallback"]["model"] == "local-chat"
+        assert models["local"]["private"]["model"] == "local-chat"
+        assert models["local"]["embedding"]["model"] == "local-embed"
+        assert models["resident"] == [{"name": "resident-model", "size": "4 GB"}]
 
     def test_paths_are_reported_with_whether_they_exist(self, client):
         body = client.get("/api/system", headers=HEADERS).get_json()

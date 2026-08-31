@@ -46,6 +46,15 @@ and therefore describe models actually resident on this machine, while the
 memory reading comes from the local NVIDIA adapter. Configured remote reply
 models appear in the System and LLM Routes views, never beside local VRAM.
 
+The System model card makes three different facts explicit. **Effective
+routes** names the first currently available FAST, CHAT, and PRIVATE candidate
+and labels each one local or remote. **Configured local models** names the
+Ollama FAST fallback, CHAT fallback, PRIVATE, and embedding roles. **Actually
+resident in Ollama** is populated only from `ollama ps` and carries the local
+GPU reading beside it. A remote route model is therefore never presented as
+if it consumed local VRAM. The LLM Routes view applies the same local/remote
+label to every effective-chain entry.
+
 ## Runtime
 
 | Aspect | Behaviour |
@@ -137,7 +146,7 @@ allowed; reading one back is not.
 | `POST /api/diary/optimise-topics` | Normalise topic tags across diary rows, streaming NDJSON progress |
 | `GET /api/tools`, `POST /api/tools/refresh` | The tool catalogue, MCP server state, rediscovery |
 | `GET /api/security`, `/api/security/pending`, `POST /api/security/decide` | The confirmation policy, what is waiting, and the answer |
-| `GET /api/system` | GPU, resident models, speech configuration, paths, process |
+| `GET /api/system` | GPU, effective routes with locality, configured local model roles, actual Ollama residency, speech configuration, paths, process |
 | `POST /api/system/restart` | Ask the daemon to tear down and start a fresh generation in place; 409 in standalone mode |
 | `GET/PUT /api/settings` | Every editable config field, and writes to it |
 | `GET /api/llm/routes` | Configured routes, their editor schema, and separate effective FAST, CHAT, and PRIVATE chains with masked credentials and persisted health state; performs no outbound request |

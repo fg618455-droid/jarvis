@@ -193,7 +193,7 @@ async function pollVram() {
     const modelNode = document.getElementById("foot-local-model");
     const node = document.getElementById("foot-vram");
     if (!node || !modelNode) return;
-    const loaded = system.models?.loaded || [];
+    const loaded = system.models?.resident || system.models?.loaded || [];
     modelNode.textContent = loaded.length
       ? loaded.map((model) => model.name).filter(Boolean).join(", ")
       : t("sidebar.noLocalModel");

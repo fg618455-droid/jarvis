@@ -22,6 +22,7 @@ from flask import Blueprint, Response, current_app, jsonify
 
 from jarvis.config import load_settings, resolve_config_path
 from jarvis.debug import debug_log
+from jarvis.llm import describe_model_topology
 
 
 bp = Blueprint("system", __name__, url_prefix="/api")
@@ -273,16 +274,16 @@ def system() -> Response:
     """Everything the technical view shows, in one reading."""
     cfg = load_settings()
     piper_model = getattr(cfg, "tts_piper_model_path", "") or ""
+    resident_models = _cached("ollama_ps", read_loaded_models)
+    model_topology = describe_model_topology(cfg)
 
     return jsonify({
         "gpu": _cached("gpu", read_gpu),
         "models": {
-            "loaded": _cached("ollama_ps", read_loaded_models),
-            "chat": cfg.llm_chat_model,
-            "fast": getattr(cfg, "fast_model", "") or cfg.llm_chat_model,
-            "embedding": cfg.embedding_model,
-            "provider": cfg.llm_provider,
-            "base_url": cfg.llm_base_url,
+            **model_topology,
+            "resident": resident_models,
+            # Compatibility for the local-only sidebar in older clients.
+            "loaded": resident_models,
         },
         "ollama_environment": read_ollama_environment(),
         "speech_recognition": {
