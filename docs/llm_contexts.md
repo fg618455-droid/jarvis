@@ -146,7 +146,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 - **Inputs**: summary text + optional date. The explicit school import supplies capped note bodies from `05 - Schule/` and `Daily/Todo Liste.md` inside an untrusted-data fence, plus a trusted school-only extraction scope.
 - **System prompt**: inline — asks for JSON array of `{"branch": "USER|DIRECTIVES|SCHOOL|WORLD", "fact": "..."}` objects. USER holds facts about the person in general; SCHOOL wins for facts specifically tied to Felix's subjects, teachers, classes, homework, assessments, marks, timetable, or academic progress; DIRECTIVES holds instructions to the assistant; WORLD holds external facts. Overheard or reported speech about a third party must route to WORLD, never USER. Unknown branches also default to WORLD, never USER or SCHOOL, because unclear content must not become always-on personal truth or school context. The DO-NOT-EXTRACT block rejects assistant-generated recommendations and transient snapshots such as current weather or time.
 - **Output**: list of `(branch_id, fact_text)` tuples → routed into the tagged branch via branch-pinned descent (no cross-branch contamination). The explicit school import pins every retained fact to SCHOOL and then reuses the same placement, dedupe, merge, and split pipeline.
-- **Limits**: `timeout_sec`. Failures → empty list.
+- **Limits**: `timeout_sec`. Ordinary diary callers receive an empty list after a missing or malformed model response. The explicit school importer requests strict failure signalling, so it retries that source on a later run and marks it current only after the model returns a valid JSON array. A valid empty array remains a successful no-facts result.
 
 ## 11. Knowledge Graph Best-Child Picker
 
