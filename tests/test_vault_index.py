@@ -22,7 +22,10 @@ def test_memory_files_index_only_protected_region(tmp_path):
     memory = vault / "Jarvis"
     memory.mkdir(parents=True)
     (memory / "managed.md").write_text(
-        "# Machine\nsecret-machine-token\n" + END_MARKER + "\nuser-owned-token\n",
+        "---\njarvis_managed: true\n---\n"
+        "# Machine\nsecret-machine-token\n"
+        + END_MARKER
+        + "\nuser-owned-token\n",
         encoding="utf-8",
     )
     index = VaultIndex(vault, "Jarvis", max_file_kb=512)
@@ -31,6 +34,40 @@ def test_memory_files_index_only_protected_region(tmp_path):
     hits = index.search("user-owned-token")
     assert len(hits) == 1
     assert "user-owned-token" in hits[0].snippet
+
+
+def test_unmanaged_note_in_memory_folder_is_indexed_in_full(tmp_path):
+    vault = tmp_path / "vault"
+    memory = vault / "Jarvis"
+    memory.mkdir(parents=True)
+    (memory / "personal.md").write_text(
+        "# Personal note\nuser-written-memory-token\n",
+        encoding="utf-8",
+    )
+
+    hits = VaultIndex(vault, "Jarvis", max_file_kb=512).search(
+        "user-written-memory-token"
+    )
+
+    assert [hit.path for hit in hits] == ["Jarvis/personal.md"]
+
+
+def test_quarantined_managed_note_indexes_only_protected_region(tmp_path):
+    vault = tmp_path / "vault"
+    quarantine = vault / "Jarvis" / "_quarantine"
+    quarantine.mkdir(parents=True)
+    (quarantine / "managed.md").write_text(
+        "---\njarvis_managed: true\n---\n"
+        "# Stale machine content\nquarantined-machine-token\n"
+        + END_MARKER
+        + "\nquarantined-user-token\n",
+        encoding="utf-8",
+    )
+    index = VaultIndex(vault, "Jarvis", max_file_kb=512)
+
+    assert index.search("quarantined-machine-token") == []
+    hits = index.search("quarantined-user-token")
+    assert [hit.path for hit in hits] == ["Jarvis/_quarantine/managed.md"]
 
 
 def test_dot_directories_and_oversized_files_are_excluded(tmp_path):

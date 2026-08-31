@@ -148,7 +148,7 @@ With `obsidian_write_mode = "dry_run"` the worker computes the plan and reports 
 
 Excluded: any path component starting with `.` (`.obsidian`, `.trash`, `.git`), files above `obsidian_index_max_file_kb`, and non-markdown files. Attachments, canvases, and bases are not read.
 
-For files inside the memory folder, only the protected region below `<!-- jarvis:end -->` is indexed. The machine-written part is already in the graph and enriches replies through the graph path; indexing it too would inject the same fact twice into one system prompt.
+For Jarvis-managed files anywhere inside the memory folder, including `_quarantine`, only the protected region below `<!-- jarvis:end -->` is indexed. The machine-written part is already in the graph and enriches replies through the graph path; indexing it too would inject the same fact twice into one system prompt. An unmanaged note that the user places directly in the memory folder is indexed in full because Jarvis does not own any part of it.
 
 Each entry holds the vault-relative path, the note title (H1 if present, else filename stem), frontmatter tags, mtime, and the body text. An entry is re-read only when its mtime or size changed; every other file on the tree is served from memory. 392 notes at ~2 MB is small enough that a full re-scan is a few milliseconds, so there is no persistent index file to corrupt or invalidate.
 

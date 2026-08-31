@@ -99,10 +99,13 @@ class VaultIndex:
         body = content
         metadata = parse_frontmatter(content)
         try:
-            in_memory = relative.parent == self.memory_folder
+            managed_in_memory = (
+                is_managed_markdown(content)
+                and relative.is_relative_to(self.memory_folder)
+            )
         except ValueError:
-            in_memory = False
-        if in_memory:
+            managed_in_memory = False
+        if managed_in_memory:
             body = content.split(END_MARKER, 1)[1] if END_MARKER in content else ""
 
         h1 = _H1.search(body)
