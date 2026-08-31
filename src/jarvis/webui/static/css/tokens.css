@@ -59,7 +59,7 @@
 
   /* The deck. A rail is the column of widgets either side of the face; the
      face takes whatever is left, so the centre is the flexible one. */
-  --rail: 300px;
+  --rail: 320px;
   --panel: 420px;
   /* How wide the face draws by default. The face widget writes over this on
      the element itself when someone sizes it, so the token is the starting
@@ -120,6 +120,12 @@
   --hud-ring-soft: rgba(125, 211, 252, 0.06);
   --face-aura: rgba(125, 211, 252, 0.10);
   --face-bed: #0a0b0e;
+  /* The faces are third-party pages that paint in their own colours, and
+     they are never edited. Rotating the framed result onto the theme's own
+     hue is how a face joins the page it sits in rather than glowing a
+     different colour at the centre of it. Presentation only: the vendored
+     code is untouched and still renders exactly what its author wrote. */
+  --face-tint: hue-rotate(48deg) saturate(0.85);
 
   --scrim: rgba(8, 9, 11, 0.72);
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
@@ -134,23 +140,23 @@
    an instrument rather than as a film prop. */
 
 [data-theme="arc"] {
-  --bg: #070b12;
-  --bg-deep: #04070c;
-  --surface-inset: #0a1019;
-  --surface: #0e151f;
-  --surface-2: #131c28;
-  --surface-3: #1a2534;
-  --line: #1f2c3d;
-  --line-soft: #16202d;
+  --bg: #060a14;
+  --bg-deep: #02050c;
+  --surface-inset: #0a1220;
+  --surface: #101a2c;
+  --surface-2: #16233a;
+  --surface-3: #1e2f4a;
+  --line: #27395a;
+  --line-soft: #1a2740;
 
-  --fg: #e6f0fa;
-  --fg-dim: #94a7bd;
-  --fg-mute: #63758c;
+  --fg: #eaf2ff;
+  --fg-dim: #9db2d0;
+  --fg-mute: #677d9e;
 
-  --accent: #4cc9f0;
-  --accent-soft: rgba(76, 201, 240, 0.14);
-  --accent-line: rgba(76, 201, 240, 0.4);
-  --accent-glow: rgba(76, 201, 240, 0.3);
+  --accent: #58d7ff;
+  --accent-soft: rgba(88, 215, 255, 0.16);
+  --accent-line: rgba(88, 215, 255, 0.45);
+  --accent-glow: rgba(88, 215, 255, 0.34);
 
   --ok: #34d399;
   --ok-soft: rgba(52, 211, 153, 0.14);
@@ -164,12 +170,13 @@
   --bad-soft: rgba(251, 113, 133, 0.14);
   --bad-line: rgba(251, 113, 133, 0.34);
 
-  --hud-ring: rgba(76, 201, 240, 0.22);
-  --hud-ring-soft: rgba(76, 201, 240, 0.08);
-  --face-aura: rgba(76, 201, 240, 0.16);
-  --face-bed: #050910;
+  --hud-ring: rgba(88, 215, 255, 0.26);
+  --hud-ring-soft: rgba(88, 215, 255, 0.1);
+  --face-aura: rgba(88, 215, 255, 0.2);
+  --face-bed: #040810;
+  --face-tint: hue-rotate(44deg) saturate(1.15) brightness(1.05);
 
-  --scrim: rgba(4, 7, 12, 0.76);
+  --scrim: rgba(2, 5, 12, 0.78);
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.65);
 }
 

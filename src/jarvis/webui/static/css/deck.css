@@ -153,8 +153,20 @@
   gap: var(--s0);
 }
 
+/* Two tiles to a rail leaves about half its width for a name. Tracking that
+   is generous on a full-width heading spends most of it on the gaps between
+   letters, so a tile drops it and keeps the letters instead. */
 .widget-tile .widget-title {
-  font-size: 0.62rem;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+/* The arrow is the whole point of a tile being clickable, but at this size
+   it costs a third of the row. The tile itself opens, so it can go. */
+.widget-tile .widget-open {
+  width: 16px;
+  height: 16px;
 }
 
 .widget-tile .widget-reading .num {
@@ -236,7 +248,9 @@
   width: var(--face-size);
   height: var(--face-size);
   /* A face drawn in its own colours still belongs to this page if the light
-     around it is the page's own. */
+     around it is the page's own, and if its own light is rotated onto the
+     theme's hue on the way out of the frame. */
+  filter: var(--face-tint);
   box-shadow: 0 0 0 1px var(--line-soft), 0 0 60px var(--face-aura);
 }
 
