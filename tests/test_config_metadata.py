@@ -126,10 +126,12 @@ class TestFieldMetadata:
         assert field.field_type == "bool"
 
 
-class TestLLMProviderFields:
-    """The settings UI must expose the provider-aware LLM config so a user
-    can select an OpenAI-compatible backend without editing config.json by
-    hand."""
+class TestLocalAISettings:
+    """General settings expose only local runtime and behaviour controls.
+
+    Effective providers, credentials, route models, backend override, and
+    crew route selection have one authoritative editor at ``#/llm-routes``.
+    """
 
     def _field(self, key):
         for fm in FIELD_METADATA:
@@ -137,105 +139,77 @@ class TestLLMProviderFields:
                 return fm
         return None
 
-    def test_provider_settings_share_the_llm_category(self):
-        """Connection settings and model settings describe one decision."""
+    def test_local_ai_has_its_own_category(self):
         cat_keys = [k for k, _ in CATEGORIES]
-        assert "llm" in cat_keys
-        assert "llm_provider" not in cat_keys
+        assert "local_ai" in cat_keys
+        assert "llm" not in cat_keys
 
-    def test_provider_fields_present(self):
-        """All eight provider-aware config keys are surfaced."""
-        expected = {
+    def test_route_authoritative_fields_are_not_duplicated(self):
+        routed = {
             "llm_provider", "llm_base_url", "llm_api_key", "llm_chat_model",
             "embedding_provider", "embedding_base_url", "embedding_api_key",
-            "embedding_model",
+            "embedding_model", "chat_backend_override", "crew_chat_agent",
         }
         present = {fm.key for fm in FIELD_METADATA}
-        missing = expected - present
-        assert not missing, f"Provider fields missing from settings UI: {missing}"
+        assert not routed & present
 
-    def test_provider_fields_live_in_the_llm_category(self):
-        """The provider connection and model fields form one LLM page."""
-        for key in (
-            "llm_provider", "llm_base_url", "llm_api_key", "llm_chat_model",
-            "embedding_provider", "embedding_base_url", "embedding_api_key",
-            "embedding_model",
-        ):
-            fm = self._field(key)
-            assert fm is not None and fm.category == "llm", (
-                f"'{key}' should be in the 'llm' category"
-            )
-
-    def test_llm_provider_choices_match_config(self):
-        """The provider dropdown offers exactly the values the config loader
-        accepts ('ollama', 'openai_compatible')."""
-        fm = self._field("llm_provider")
-        assert fm is not None and fm.field_type == "choice"
-        values = {v for v, _ in (fm.choices or [])}
-        assert values == {"ollama", "openai_compatible"}
-
-    def test_embedding_provider_offers_inherit_option(self):
-        """embedding_provider includes the empty 'same as chat provider'
-        option plus the two concrete providers."""
-        fm = self._field("embedding_provider")
-        assert fm is not None and fm.field_type == "choice"
-        values = {v for v, _ in (fm.choices or [])}
-        assert "" in values, "must offer an inherit-from-chat-provider option"
-        assert {"ollama", "openai_compatible"} <= values
-
-    def test_api_key_fields_are_password_type(self):
-        """API keys must use the password field type so they render masked."""
-        for key in ("llm_api_key", "embedding_api_key"):
-            fm = self._field(key)
-            assert fm is not None and fm.field_type == "password", (
-                f"'{key}' should be a password field"
-            )
-
-    def test_model_fields_are_freetext(self):
-        """The provider model fields are free text — an OpenAI-compatible
-        server's model name is not in the Ollama SUPPORTED_CHAT_MODELS
-        catalogue, so a choice dropdown would be wrong."""
-        for key in ("llm_chat_model", "embedding_model"):
-            fm = self._field(key)
-            assert fm is not None and fm.field_type == "str", (
-                f"'{key}' should be a free-text str field"
-            )
-
-    def test_connection_fields_are_nullable(self):
-        """Connection/credential/model fields are nullable so leaving them
-        empty falls back to the Ollama settings and keeps config.json minimal."""
-        for key in (
-            "llm_base_url", "llm_api_key", "llm_chat_model",
-            "embedding_base_url", "embedding_api_key", "embedding_model",
-        ):
-            fm = self._field(key)
-            assert fm is not None and fm.nullable, f"'{key}' should be nullable"
+    def test_local_ai_follows_the_runtime_pipeline(self):
+        expected_sections = {
+            "ollama_chat_model": "Local models",
+            "local_fast_model": "Local models",
+            "ollama_embed_model": "Local models",
+            "ollama_base_url": "Local models",
+            "llm_chat_timeout_sec": "Timeouts",
+            "llm_tools_timeout_sec": "Timeouts",
+            "llm_embedding_timeout_sec": "Timeouts",
+            "llm_profile_select_timeout_sec": "Timeouts",
+            "intent_judge_timeout_sec": "Timeouts",
+            "llm_thinking_enabled": "Thinking and behaviour",
+            "intent_judge_thinking_enabled": "Thinking and behaviour",
+        }
+        for key, section in expected_sections.items():
+            field = self._field(key)
+            assert field is not None
+            assert field.category == "local_ai"
+            assert field.section == section
 
 
 class TestSpeechSettings:
-    """Input capture, wake detection and transcription are one pipeline."""
+    """Capture, recognition, and playback mirror the real pipeline."""
 
-    def test_input_pipeline_has_one_category(self):
+    def test_pipeline_categories_are_explicit(self):
         categories = {key for key, _label in CATEGORIES}
-        assert "speech_input" in categories
-        assert not {"voice_input", "wake", "whisper", "vad"} & categories
+        assert {"speech_input", "speech_recognition", "speech_output"} <= categories
+        assert not {"voice_input", "wake", "whisper", "vad", "tts",
+                    "piper", "chatterbox", "kokoro"} & categories
 
-    def test_input_pipeline_fields_share_that_category(self):
+    def test_capture_and_vad_fields_are_speech_input(self):
         by_key = {field.key: field for field in FIELD_METADATA}
         keys = {
             "voice_device", "sample_rate", "voice_min_energy", "wake_word",
-            "wake_fuzzy_ratio", "whisper_model", "whisper_backend",
-            "whisper_device", "whisper_compute_type", "whisper_vad",
-            "whisper_min_confidence", "whisper_no_speech_threshold",
-            "whisper_min_language_probability", "whisper_language",
-            "vad_enabled", "vad_aggressiveness", "endpoint_silence_ms",
-            "max_utterance_ms",
+            "wake_fuzzy_ratio", "vad_enabled", "vad_aggressiveness",
+            "endpoint_silence_ms", "max_utterance_ms",
         }
         assert {by_key[key].category for key in keys} == {"speech_input"}
 
-    def test_speaker_device_belongs_to_speech_output(self):
-        field = next(item for item in FIELD_METADATA if item.key == "tts_output_device")
-        assert field.category == "tts"
+    def test_whisper_fields_are_speech_recognition(self):
+        fields = [field for field in FIELD_METADATA if field.key.startswith("whisper_")]
+        assert fields
+        assert {field.category for field in fields} == {"speech_recognition"}
+        assert {field.section for field in fields} == {"Whisper"}
+
+    def test_output_engines_are_labelled_sections(self):
+        by_key = {field.key: field for field in FIELD_METADATA}
+        expected = {
+            "tts_output_device": "Common output",
+            "tts_cloud_providers": "Cloud chain",
+            "tts_piper_length_scale": "Piper",
+            "tts_chatterbox_device": "Chatterbox",
+            "tts_kokoro_voice": "Kokoro",
+        }
+        for key, section in expected.items():
+            assert by_key[key].category == "speech_output"
+            assert by_key[key].section == section
 
 
 class TestCloudTTSField:
@@ -246,7 +220,8 @@ class TestCloudTTSField:
         )
 
         assert field is not None
-        assert field.category == "tts"
+        assert field.category == "speech_output"
+        assert field.section == "Cloud chain"
         assert field.field_type == "object_list"
         assert field.item_fields == CLOUD_TTS_PROVIDER_FIELD_METADATA
 

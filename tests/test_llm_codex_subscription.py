@@ -396,12 +396,11 @@ class TestFactoryRouting:
         assert get_llm_backend(cfg).routes_for(Tier.CHAT)[0].provider == "ollama"
         assert isinstance(get_embedding_backend(cfg), OllamaBackend)
 
-    def test_config_metadata_offers_codex_as_a_chat_override(self):
-        from jarvis.config_metadata import FIELD_METADATA
+    def test_route_metadata_offers_codex_without_a_settings_duplicate(self):
+        from jarvis.config_metadata import FIELD_METADATA, LLM_ROUTE_FIELD_METADATA
 
-        field = next(
-            (item for item in FIELD_METADATA if item.key == "chat_backend_override"),
-            None,
+        provider = next(
+            item for item in LLM_ROUTE_FIELD_METADATA if item.key == "provider"
         )
-        assert field is not None
-        assert "codex_subscription" in {value for value, _label in field.choices}
+        assert "codex_subscription" in {value for value, _label in provider.choices}
+        assert "chat_backend_override" not in {item.key for item in FIELD_METADATA}

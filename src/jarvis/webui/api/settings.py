@@ -59,6 +59,7 @@ def _field_payload(meta, defaults: dict, config: dict) -> dict:
         "label": meta.label,
         "description": meta.description,
         "category": meta.category,
+        "section": meta.section,
         "type": meta.field_type,
         "choices": [{"value": v, "label": label}
                     for v, label in choices_for(meta, value)] or None,

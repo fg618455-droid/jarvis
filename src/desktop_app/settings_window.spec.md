@@ -28,7 +28,8 @@ FieldMeta (dataclass, src/jarvis/config_metadata.py)
   ├── suffix             # Unit label (e.g. "s", "ms", "WPM")
   ├── nullable           # Whether None is valid (shows placeholder)
   ├── item_fields        # Nested FieldMeta tuple for "object_list"
-  └── default_value      # Safe initial value when a structured item is added
+  ├── default_value      # Safe initial value when a structured item is added
+  └── section            # Optional heading inside a category
 ```
 
 ## Widget Mapping
@@ -63,60 +64,45 @@ The settings window uses a sidebar navigation pattern: a fixed-width `QListWidge
 
 ## Categories (Sidebar Order)
 
-1. LLM & AI Models
-2. Text-to-Speech
-3. Piper TTS
-4. Chatterbox TTS
-5. Kokoro TTS
-6. Speech Input (microphone, wake word, Whisper, and VAD)
-7. Timing & Windows
-8. Memory & Dialogue
-9. School
-10. Passive Capture
-11. Security
-12. Location
-13. Features (includes web search, Wikipedia fallback, low-power mode, startup tune, and dictation toggles)
-14. Control Centre
-15. Mission Control
-16. MCP Servers
-17. Advanced
+1. Local AI & Behaviour
+2. Speech Input
+3. Speech Recognition
+4. Speech Output
+5. Timing & Windows
+6. Memory & Dialogue
+7. School
+8. Passive Capture
+9. Security
+10. Location
+11. Features (includes web search, Wikipedia fallback, low-power mode, startup tune, and dictation toggles)
+12. Control Centre
+13. Mission Control
+14. MCP Servers
+15. Advanced
 
-### LLM & AI Models
+### Local AI & Behaviour
 
-This one category holds local model choices, timeouts, thinking controls, the
-single-endpoint runtime, and the provider-aware
-connection fields: `llm_provider` (Ollama / OpenAI-compatible), `llm_base_url`,
-`llm_api_key` (password), `llm_chat_model`, and the four `embedding_*` fields
-(`embedding_provider`, `embedding_base_url`, `embedding_api_key`,
-`embedding_model`). The model fields are free-text `str` — an OpenAI-compatible
-server's model name is not in the Ollama `SUPPORTED_CHAT_MODELS` catalogue.
+This category exposes only the local Ollama pipeline, grouped into **Local
+models**, **Timeouts**, and **Thinking and behaviour**. `ollama_chat_model` is
+the local CHAT fallback and PRIVATE model, `local_fast_model` is the separate
+FAST fallback, and `ollama_embed_model` handles local embeddings.
 
-The category explains that the ordered FAST and CHAT route chain takes
-precedence and directs the user to the control centre's LLM Routes view. The
-single-endpoint and Ollama fields are the fallback configuration when no route
-answers; editing the route chain remains the responsibility of that dedicated
-view.
+Effective FAST/CHAT providers, endpoint credentials, route models,
+`chat_backend_override`, and `crew_chat_agent` are not duplicated here. The
+category links to the control centre's authoritative LLM Routes editor. Legacy
+single-endpoint keys remain supported by config loading and are preserved when
+already present, but a general-settings save cannot silently reconstruct or
+overwrite them.
 
-Every connection/credential/model field is nullable: leaving it empty falls
-back to the Ollama settings in the same category. A default Ollama
-install therefore never needs to open this page, and the minimal-config save
-behaviour keeps these keys out of `config.json` until the user sets them.
+### Speech pipeline
 
-Unlike the setup wizard's provider page, the settings window does **not**
-clear the OpenAI-compatible fields when the user switches `llm_provider` back
-to Ollama: it is metadata-driven with no cross-field logic, and a blanket
-clear would wipe the supported "Ollama chat + remote embeddings" split
-(`llm_provider: ollama` with `embedding_provider: openai_compatible`). Stale
-values are harmless because the backend resolves per-provider: the Ollama path
-uses `ollama_base_url` / `ollama_chat_model` and `OllamaBackend` ignores any
-API key. To drop a leftover value, clear that field and save.
+Speech Input contains **Microphone**, **Wake word**, and **Voice activity and
+endpointing** sections. Speech Recognition owns the labelled **Whisper**
+section. Speech Output combines **Common output**, **Cloud chain**, **Piper**,
+**Chatterbox**, and **Kokoro**, rather than scattering one output pipeline over
+five sidebar entries.
 
-### Speech and TTS
-
-The Speech Input category follows the actual input pipeline: microphone and
-sample rate, wake-word matching, Whisper transcription, and VAD endpointing.
-The output device belongs to Text-to-Speech. The TTS category also exposes
-`tts_cloud_providers` as a structured ordered table. Each row edits the provider
+The Cloud chain section exposes `tts_cloud_providers` as a structured ordered table. Each row edits the provider
 name, vendor id, credential environment-variable name, voice id, model,
 enabled state, and timeout. Add, remove, enable/disable, and move controls are
 available without editing JSON. The vendor is selected from the supported
@@ -146,7 +132,7 @@ default, like every other metadata-managed field.
 
 ## Hardware Device Selection
 
-The Speech Input category includes a microphone dropdown populated at window open time via `sounddevice.query_devices()`. Text-to-Speech contains the matching output-device dropdown. Each lists the relevant devices with their index and name. The stored value is the device index as a string, or empty string for system default.
+The Speech Input category includes a microphone dropdown populated at window open time via `sounddevice.query_devices()`. Speech Output contains the matching output-device dropdown. Each lists the relevant devices with their index and name. The stored value is the device index as a string, or empty string for system default.
 
 ## Save Behaviour
 
@@ -202,6 +188,8 @@ On save, the `mcps` dict is written to config.json if non-empty, or removed enti
 
 These fields are managed elsewhere or are too complex for a simple form:
 
+- `llm_routes`, `chat_backend_override`, `crew_chat_agent`, and legacy
+  provider/embedding connection keys — authoritative LLM Routes view
 - `db_path` / `sqlite_vss_path` — internal storage paths
 - `active_profiles` — list managed by setup wizard
 - `allowlist_bundles` — list of bundle IDs

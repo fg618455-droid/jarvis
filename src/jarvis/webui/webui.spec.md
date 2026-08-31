@@ -169,11 +169,14 @@ The shared field registry also describes structured object lists. The cloud
 TTS chain uses that shape, so each ordered provider is editable as named
 controls for provider, credential environment variable, voice, model, enabled
 state, and timeout. The API accepts only the nested keys in that schema.
-LLM provider, connection, model, and timeout fields share one LLM category;
-microphone, wake word, Whisper, and VAD fields share one Speech Input category;
-and the speaker device remains with Text-to-Speech. The LLM category links to
-the route view and states that its ordered FAST and CHAT chains take precedence
-over the single-endpoint and Ollama fallback fields.
+The Local AI & Behaviour category contains labelled local-model, timeout, and
+thinking sections and links to the authoritative LLM Routes editor. Provider
+connections, route models, backend override, and crew route selection are not
+duplicated in general Settings. Speech Input owns microphone, wake-word, and
+VAD/endpointing sections; Speech Recognition owns Whisper; Speech Output owns
+common controls, the cloud chain, Piper, Chatterbox, and Kokoro as labelled
+sections. The API returns each field's section label so the web and Qt forms
+render the same structure.
 
 The Settings view carries a restart control alongside Save whenever a daemon
 is attached, rather than making it conditional on a changed field, because config the daemon read

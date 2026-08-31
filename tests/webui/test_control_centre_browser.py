@@ -338,28 +338,53 @@ class TestLlmRouteLayout:
 
 
 class TestSettingsCoherence:
+    def test_real_settings_follow_the_input_and_output_pipeline(self, page, served):
+        page.goto(f"{served}/#/settings", wait_until="networkidle")
+        nav = page.locator(".settings-nav")
+
+        assert nav.get_by_role("button", name="Local AI & Behaviour").is_visible()
+        assert nav.get_by_role("button", name="Speech Input").is_visible()
+        assert nav.get_by_role("button", name="Speech Recognition").is_visible()
+        assert nav.get_by_role("button", name="Speech Output").is_visible()
+        assert nav.get_by_role("button", name="Piper TTS").count() == 0
+
+        nav.get_by_role("button", name="Local AI & Behaviour").click()
+        assert page.get_by_role("heading", name="Local models").is_visible()
+        assert page.get_by_role("heading", name="Timeouts").is_visible()
+        assert page.get_by_role("heading", name="Thinking and behaviour").is_visible()
+        assert page.get_by_role("link", name="Open LLM routes").is_visible()
+
+        nav.get_by_role("button", name="Speech Recognition").click()
+        assert page.get_by_role("heading", name="Whisper").is_visible()
+
+        nav.get_by_role("button", name="Speech Output").click()
+        for heading in ("Common output", "Cloud chain", "Piper", "Chatterbox", "Kokoro"):
+            assert page.get_by_role("heading", name=heading, exact=True).is_visible()
+
     def test_cloud_provider_chain_is_editable_without_raw_json(self, page, served):
         payload = {
             "path": "C:/config.json", "daemon_running": True,
             "categories": [
                 {
-                    "key": "llm", "label": "LLM & AI Models",
-                    "description": "The ordered route chain decides CHAT first.",
+                    "key": "local_ai", "label": "Local AI & Behaviour",
+                    "description": "Effective providers are configured in LLM Routes.",
                     "action_label": "Open LLM routes", "action_href": "#/llm-routes",
                 },
-                {"key": "tts", "label": "Text-to-Speech"},
+                {"key": "speech_output", "label": "Speech Output"},
             ],
             "fields": [
                 {
-                    "key": "llm_provider", "label": "Provider", "description": "Fallback",
-                    "category": "llm", "type": "choice", "choices": [
-                        {"value": "ollama", "label": "Ollama"},
-                    ], "value": "ollama", "restart_required": True,
+                    "key": "ollama_chat_model", "label": "Chat Model", "description": "Local fallback",
+                    "category": "local_ai", "section": "Local models",
+                    "type": "choice", "choices": [
+                        {"value": "local-model", "label": "Local model"},
+                    ], "value": "local-model", "restart_required": True,
                     "is_secret": False,
                 },
                 {
                     "key": "tts_cloud_providers", "label": "Cloud Provider Chain",
-                    "description": "Ordered cloud voices", "category": "tts",
+                    "description": "Ordered cloud voices", "category": "speech_output",
+                    "section": "Cloud chain",
                     "type": "object_list", "restart_required": True,
                     "is_secret": False,
                     "value": [{
@@ -385,7 +410,7 @@ class TestSettingsCoherence:
         page.wait_for_selector("main h1", state="visible")
 
         assert page.get_by_role("link", name="Open LLM routes").is_visible()
-        page.get_by_role("button", name="Text-to-Speech").click()
+        page.get_by_role("button", name="Speech Output").click()
 
         assert page.locator(".object-item").count() == 1
         assert page.get_by_label("Name").input_value() == "ElevenLabs"
@@ -394,10 +419,11 @@ class TestSettingsCoherence:
     def test_cloud_provider_controls_add_disable_reorder_and_save(self, page, served):
         payload = {
             "path": "C:/config.json", "daemon_running": True,
-            "categories": [{"key": "tts", "label": "Text-to-Speech"}],
+            "categories": [{"key": "speech_output", "label": "Speech Output"}],
             "fields": [{
                 "key": "tts_cloud_providers", "label": "Cloud Provider Chain",
-                "description": "Ordered cloud voices", "category": "tts",
+                "description": "Ordered cloud voices", "category": "speech_output",
+                "section": "Cloud chain",
                 "type": "object_list", "restart_required": True,
                 "is_secret": False,
                 "value": [{

@@ -176,7 +176,16 @@ class SettingsWindow(QDialog):
             note.setObjectName("subtitle")
             form.addRow(note)
 
+        active_section = None
         for fm in fields:
+            if fm.section and fm.section != active_section:
+                active_section = fm.section
+                section = QLabel(fm.section)
+                section.setObjectName("settingsSection")
+                section.setStyleSheet(
+                    "font-size: 15px; font-weight: 600; padding-top: 12px;"
+                )
+                form.addRow(section)
             widget = self._create_widget(fm)
             self._widgets[fm.key] = widget
 

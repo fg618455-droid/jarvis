@@ -247,12 +247,29 @@ class TestWriting:
         assert response.status_code == 200
         assert _stored(client)["tts_cloud_providers"] == providers
 
-    def test_llm_category_points_to_the_route_chain_that_takes_precedence(self, client):
+    def test_local_ai_category_points_to_the_authoritative_route_editor(self, client):
         body = client.get("/api/settings", headers=HEADERS).get_json()
-        category = next(item for item in body["categories"] if item["key"] == "llm")
+        category = next(item for item in body["categories"] if item["key"] == "local_ai")
 
         assert category["action_href"] == "#/llm-routes"
-        assert "route chain" in category["description"].lower()
+        assert "route" in category["description"].lower()
+
+    def test_fields_expose_pipeline_section_labels(self, client):
+        body = client.get("/api/settings", headers=HEADERS).get_json()
+
+        assert _field(body, "ollama_chat_model")["section"] == "Local models"
+        assert _field(body, "whisper_model")["section"] == "Whisper"
+        assert _field(body, "tts_cloud_providers")["section"] == "Cloud chain"
+
+    def test_route_owned_fields_are_absent_from_general_settings(self, client):
+        body = client.get("/api/settings", headers=HEADERS).get_json()
+        keys = {field["key"] for field in body["fields"]}
+
+        assert not {
+            "llm_provider", "llm_base_url", "llm_api_key", "llm_chat_model",
+            "embedding_provider", "embedding_base_url", "embedding_api_key",
+            "embedding_model", "chat_backend_override", "crew_chat_agent",
+        } & keys
 
     def test_the_answer_names_what_needs_a_restart(self, client):
         body = client.put("/api/settings", headers=WRITE_HEADERS,

@@ -791,6 +791,19 @@ a.card-link:hover .stat-value {
   max-width: 420px;
 }
 
+.settings-section {
+  margin: var(--s5) 0 0;
+  padding-bottom: var(--s2);
+  border-bottom: 1px solid var(--line);
+  color: var(--fg);
+  font-size: var(--fs-md);
+}
+
+.settings-note + .settings-section,
+.card > header + .settings-section {
+  margin-top: var(--s3);
+}
+
 .field-control.wide {
   max-width: none;
 }

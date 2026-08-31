@@ -294,6 +294,38 @@ class TestChoiceFieldsShowWhatIsConfigured:
         assert offered.count(known) == 1
 
 
+class TestSettingsPipelineLayout:
+    def test_qt_pages_render_metadata_section_headings(
+        self, tmp_path, monkeypatch, qapp,
+    ):
+        from PyQt6.QtWidgets import QLabel
+        from desktop_app.settings_window import SettingsWindow
+
+        config_path = tmp_path / "config.json"
+        config_path.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(
+            "desktop_app.settings_window.default_config_path", lambda: config_path
+        )
+        window = SettingsWindow()
+
+        sidebar = [window._sidebar.item(i).text() for i in range(window._sidebar.count())]
+        assert any("Local AI & Behaviour" in label for label in sidebar)
+        assert any("Speech Recognition" in label for label in sidebar)
+        assert any("Speech Output" in label for label in sidebar)
+        assert not any("Piper TTS" in label for label in sidebar)
+
+        sections = {
+            label.text()
+            for label in window.findChildren(QLabel)
+            if label.objectName() == "settingsSection"
+        }
+        assert {
+            "Local models", "Timeouts", "Thinking and behaviour", "Microphone",
+            "Wake word", "Voice activity and endpointing", "Whisper",
+            "Common output", "Cloud chain", "Piper", "Chatterbox", "Kokoro",
+        } <= sections
+
+
 class TestCloudTTSProviderEditor:
     def _window(self, tmp_path, monkeypatch, qapp, providers):
         config_path = tmp_path / "config.json"

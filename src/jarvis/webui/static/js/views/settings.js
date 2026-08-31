@@ -307,7 +307,12 @@ export async function mount(root) {
       ]));
     }
 
+    let activeSection = null;
     for (const field of fields) {
+      if (field.section && field.section !== activeSection) {
+        activeSection = field.section;
+        panel.append(el("h3", { class: "settings-section", text: field.section }));
+      }
       const node = control(field);
       panel.append(
         el("div", { class: `field${changes.has(field.key) ? " changed" : ""}` }, [
