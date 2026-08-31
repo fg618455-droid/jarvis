@@ -25,6 +25,7 @@ src/desktop_app/
 ├── themes.py            # Qt stylesheets and color palette
 ├── diary_dialog.py      # End-of-session diary update dialog
 ├── chat_window.py       # Text chat interface (see chat_window.spec.md)
+├── headless_launcher.py # Splash + daemon, no tray/chat/face (see headless_launcher.spec.md)
 ├── updater.py           # Update checking logic
 ├── update_dialog.py     # Update notification dialogs
 └── desktop_assets/      # Icons and images
