@@ -1,73 +1,5 @@
 /* View-specific layout. Everything here builds on the components in app.css. */
 
-/* ── Overview ────────────────────────────────────────────────────────── */
-
-.turn-total {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: var(--s3) var(--s5);
-}
-
-.turn-total .big {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-  font-size: var(--fs-3xl);
-  line-height: 1;
-}
-
-/* The middle of the recent waits, beside the last one. A single reading
-   cannot say whether it was normal, and on this machine the difference
-   between a warm model and a cold one is most of a turn. */
-.turn-typical {
-  display: grid;
-  gap: 2px;
-}
-
-.turn-typical .num {
-  font-size: var(--fs-lg);
-  color: var(--fg-dim);
-}
-
-.turn-spark {
-  margin-left: auto;
-}
-
-/* A reading that leads somewhere. The whole card is the target, so the
-   number is the thing you click rather than a link underneath it. */
-a.card-link {
-  color: inherit;
-  text-decoration: none;
-  transition: background var(--t-fast), border-color var(--t-fast);
-}
-
-a.card-link:hover {
-  background: var(--surface-2);
-  border-color: var(--accent-line);
-  text-decoration: none;
-}
-
-a.card-link:hover .stat-value {
-  color: var(--accent);
-}
-
-.exchange {
-  display: grid;
-  gap: var(--s3);
-}
-
-.exchange .line {
-  display: grid;
-  grid-template-columns: 64px 1fr;
-  gap: var(--s3);
-  align-items: baseline;
-}
-
-.exchange .who {
-  font-size: var(--fs-xs);
-  color: var(--fg-mute);
-}
-
 /* ── Memory ──────────────────────────────────────────────────────────── */
 
 .tree {
@@ -417,24 +349,6 @@ a.card-link:hover .stat-value {
 .view-conversation {
   height: calc(100vh - var(--header) - var(--main-pad) * 2);
   grid-template-rows: auto auto minmax(0, 1fr) auto;
-}
-
-/* ── Face/visualizer ─────────────────────────────────────────────────── */
-
-/* The face is a third-party page in its own right, so it fills the view
-   rather than sitting inside another card: a canvas face inside a well
-   inside a card would just be chrome around chrome. */
-.view-visualizer {
-  height: calc(100vh - var(--header) - var(--main-pad) * 2);
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
-.visualizer-frame {
-  width: 100%;
-  height: 100%;
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r-sm);
-  background: #000;
 }
 
 .dialogue {
@@ -1507,4 +1421,102 @@ button.chip.crew-filter {
   .feed-model {
     margin-left: 0;
   }
+}
+
+/* ── MCP servers ─────────────────────────────────────────────────────── */
+
+.mcp-bar {
+  display: flex;
+  gap: var(--s2);
+  align-items: center;
+}
+
+.mcp-bar .btn.primary {
+  margin-left: auto;
+}
+
+.mcp-list {
+  display: grid;
+  gap: var(--s3);
+}
+
+.mcp-fields {
+  display: grid;
+  gap: var(--s3);
+}
+
+.mcp-field {
+  display: grid;
+  gap: var(--s1);
+}
+
+.mcp-label {
+  font-size: var(--fs-xs);
+  color: var(--fg-mute);
+}
+
+.mcp-note {
+  font-size: var(--fs-micro);
+  color: var(--fg-mute);
+}
+
+/* An environment entry is a name and a value, edited as two fields rather
+   than as one `KEY=value` line. A masked credential has to survive being
+   displayed and saved untouched, and inside a block of text the mask would
+   be indistinguishable from someone having typed eight bullets. */
+.mcp-env-block {
+  display: grid;
+  gap: var(--s2);
+  justify-items: start;
+}
+
+.mcp-env {
+  display: grid;
+  gap: var(--s2);
+  width: 100%;
+}
+
+.mcp-env-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  gap: var(--s2);
+  align-items: center;
+}
+
+.mcp-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ── Today ───────────────────────────────────────────────────────────── */
+
+.briefing-summary {
+  color: var(--fg);
+}
+
+.briefing-items {
+  display: grid;
+  gap: var(--s2);
+  padding: var(--s3);
+}
+
+.briefing-item {
+  display: grid;
+  gap: var(--s0);
+  padding-bottom: var(--s2);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.briefing-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.briefing-item-title {
+  font-weight: 600;
+}
+
+.briefing-item-note {
+  font-size: var(--fs-sm);
+  color: var(--fg-dim);
 }

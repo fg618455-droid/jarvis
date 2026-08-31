@@ -293,7 +293,7 @@ function paintDiscarded(band, discarded) {
 
   band.append(
     el("div", { class: "voice-discarded" }, [
-      el("span", { class: "voice-label", text: t("overview.discarded") }),
+      el("span", { class: "voice-label", text: t("deck.discarded") }),
       el(
         "span",
         { class: "turn-tools" },
@@ -356,11 +356,11 @@ function turnCard(turn, firstLoad, state) {
       el("span", { class: "num turn-cost", text: fmt.ms(turn.total_ms) }),
     ]),
     el("div", { class: "turn-line" }, [
-      el("span", { class: "who", text: t("overview.you") }),
+      el("span", { class: "who", text: t("deck.you") }),
       el("p", { class: "turn-said", text: turn.transcript || "—" }),
     ]),
     el("div", { class: "turn-line" }, [
-      el("span", { class: "who", text: t("overview.jarvis") }),
+      el("span", { class: "who", text: t("deck.jarvis") }),
       el("p", {
         class: `turn-reply${failed ? " failed" : ""}`,
         text: turn.reply || turn.error || "—",

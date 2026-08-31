@@ -157,7 +157,7 @@ export function stageBar(turn) {
   const totals = stageTotals(turn);
   const measured = [...totals.values()].reduce((a, b) => a + b, 0);
   const total = Math.max(turn.total_ms || 0, measured);
-  if (!total) return empty(t("overview.noTurns"));
+  if (!total) return empty(t("deck.noTurns"));
 
   const bar = el("div", { class: "stagebar" });
   for (const [name, duration] of totals) {
@@ -249,10 +249,8 @@ export function icon(path) {
 }
 
 export const ICONS = {
-  overview: "M4 13h6V4H4v9Zm0 7h6v-5H4v5Zm10 0h6v-9h-6v9Zm0-16v5h6V4h-6Z",
   memory: "M12 3v18M12 7h4a3 3 0 0 1 0 6h-4M12 12H8a3 3 0 0 0 0 6h4",
   conversation: "M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 12Z",
-  visualizer: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM9 10h.01M15 10h.01M8 15c1.2 1.2 2.6 1.8 4 1.8s2.8-.6 4-1.8",
   microphone: "M12 3a3 3 0 0 1 3 3v5a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3ZM5 11a7 7 0 0 0 14 0M12 18v3",
   tools: "M14.7 6.3a4 4 0 0 0 5 5l-9.9 9.9a2.1 2.1 0 0 1-3-3l9.9-9.9Z",
   security: "M12 3 4 6v6c0 5 3.4 8.4 8 9 4.6-.6 8-4 8-9V6l-8-3Z",
@@ -260,5 +258,12 @@ export const ICONS = {
   logs: "M5 3h10l4 4v14H5V3Zm9 1v4h4M8 12h8M8 16h8M8 8h2",
   llm: "M4 7h16v10H8l-4 4V7zm4 4h.01M12 11h.01M16 11h.01",
   crew: "M8 12a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM2 20a6 6 0 0 1 12 0M17 12a3 3 0 1 0 0-6M14 14.5A6 6 0 0 1 22 20",
+  briefing: "M8 3h8l4 4v14H4V3h4Zm0 0v4h8V3M8 12h8M8 16h5",
+  mcp: "M6 3v6M6 15v6M18 3v6M18 15v6M4 9h4v6H4V9Zm12 0h4v6h-4V9ZM8 12h8",
+  send: "M4 12 20 4l-3 8 3 8-16-8Zm0 0h13",
+  sliders: "M4 8h10M18 8h2M4 16h4M12 16h8M14 5v6M8 13v6",
+  close: "M6 6l12 12M18 6 6 18",
+  open: "M9 6l6 6-6 6",
+  back: "M15 6l-6 6 6 6",
   settings: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2v.1a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-2.9-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.1-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 2.9-1.2V3a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 2.9 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0 1.2 2.9H21a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.4 1Z",
 };

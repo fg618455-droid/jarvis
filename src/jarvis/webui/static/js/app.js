@@ -1,62 +1,37 @@
-/* Bootstrap: the shell, the navigation, the live header, and the router. */
+/* Bootstrap: the frame, the live header, and the two places there are.
+
+   There is one interface and one way out of it. The deck holds the face and
+   every reading around it; Settings is the only thing that replaces the deck
+   rather than opening over it, because editing the configuration is the one
+   task that is not about watching the assistant work.
+
+   Everything else is an address on the deck. `#/tools` opens the deck with
+   the tools panel over its right rail, which means every bookmark and every
+   link the views already hand each other still arrives somewhere sensible,
+   and the face is behind all of them. */
 
 import { api } from "./api.js";
+import { mountDeck, PANELS } from "./deck.js";
 import * as fmt from "./fmt.js";
 import { language, languages, setLanguage, t } from "./i18n.js";
-import { Router } from "./router.js";
 import { live } from "./sse.js";
-import { ICONS, el, icon, toast } from "./ui.js";
+import { applyTheme, activeTheme, THEMES } from "./theme.js";
+import { el, icon, ICONS, toast } from "./ui.js";
 
-/* Twelve destinations in one column read as a list to be searched. Grouped
-   by what they are for, they read as a map: what is happening now, what the
-   assistant knows, and how the machine is set up. */
-const NAV_GROUPS = [
-  {
-    name: "live",
-    views: [
-      { name: "overview", icon: ICONS.overview },
-      { name: "conversation", icon: ICONS.conversation },
-      { name: "visualizer", icon: ICONS.visualizer },
-      { name: "passive", icon: ICONS.microphone },
-      { name: "crew", icon: ICONS.crew },
-    ],
-  },
-  {
-    name: "knowledge",
-    views: [
-      { name: "memory", icon: ICONS.memory },
-      { name: "tools", icon: ICONS.tools },
-    ],
-  },
-  {
-    name: "operations",
-    views: [
-      { name: "security", icon: ICONS.security },
-      { name: "llm-routes", label: "llm", icon: ICONS.llm },
-      { name: "system", icon: ICONS.system },
-      { name: "logs", icon: ICONS.logs },
-      { name: "settings", icon: ICONS.settings },
-    ],
-  },
-];
+const DECK = "deck";
+const SETTINGS = "settings";
 
-const ROUTES = {
-  overview: () => import("./views/overview.js"),
-  memory: () => import("./views/memory.js"),
-  conversation: () => import("./views/conversation.js"),
-  visualizer: () => import("./views/visualizer.js"),
-  passive: () => import("./views/passive.js"),
-  tools: () => import("./views/tools.js"),
-  security: () => import("./views/security.js"),
-  system: () => import("./views/system.js"),
-  logs: () => import("./views/logs.js"),
-  "llm-routes": () => import("./views/llm.js"),
-  crew: () => import("./views/crew.js"),
-  settings: () => import("./views/settings.js"),
+/* Addresses that used to be pages of their own. The face and the overview
+   are the deck now; the rest are panels on it, so they keep their names. */
+const ALIASES = {
+  "": DECK,
+  overview: DECK,
+  visualizer: DECK,
+  llm: "llm-routes",
 };
 
 const dom = {
-  sidebar: document.getElementById("sidebar"),
+  main: document.querySelector(".main"),
   root: document.getElementById("view-root"),
   dot: document.getElementById("phase-dot"),
   phase: document.getElementById("phase-text"),
@@ -69,62 +44,110 @@ const dom = {
   lastTurnLabel: document.getElementById("last-turn-label"),
   lastTurn: document.getElementById("last-turn-value"),
   language: document.getElementById("language"),
+  theme: document.getElementById("theme"),
+  settingsButton: document.getElementById("settings-button"),
 };
 
 const state = {
   status: null,
   connected: false,
-  pendingConfirmations: 0,
 };
 
-/* ── Navigation ────────────────────────────────────────────────────── */
+let deck = null;
+let settingsCleanup = null;
 
-const navButtons = new Map();
+/* ── Where we are ──────────────────────────────────────────────────── */
 
-function buildSidebar(router) {
-  dom.sidebar.replaceChildren();
-  navButtons.clear();
-
-  for (const group of NAV_GROUPS) {
-    const label = t(`nav.group.${group.name}`);
-    const section = el("div", { class: "nav-group", role: "group", "aria-label": label }, [
-      el("span", { class: "nav-group-label", text: label }),
-    ]);
-
-    for (const view of group.views) {
-      const badge = el("span", { class: "badge" });
-      const button = el(
-        "button",
-        {
-          class: "nav-item",
-          type: "button",
-          onclick: () => router.go(view.name),
-        },
-        [icon(view.icon), el("span", { class: "text", text: t(`nav.${view.label || view.name}`) }), badge],
-      );
-      button._badge = badge;
-      navButtons.set(view.name, button);
-      section.append(button);
-    }
-
-    dom.sidebar.append(section);
-  }
-
-  const foot = el("div", { class: "sidebar-foot", id: "sidebar-foot" });
-  dom.sidebar.append(foot);
-  paintFoot();
+function requested() {
+  const raw = location.hash.replace(/^#\/?/, "").split("?")[0];
+  const name = ALIASES[raw] ?? raw;
+  if (name === SETTINGS) return SETTINGS;
+  return PANELS.includes(name) ? name : DECK;
 }
 
-function markCurrent(name) {
-  for (const [view, button] of navButtons) {
-    if (view === name) button.setAttribute("aria-current", "page");
-    else button.removeAttribute("aria-current");
+function go(name) {
+  const target = `#/${name}`;
+  if (location.hash === target) render();
+  else location.hash = target;
+}
+
+async function render() {
+  const where = requested();
+
+  if (where === SETTINGS) {
+    await showSettings();
+    return;
+  }
+
+  await showDeck();
+  if (where === DECK) deck.closePanel();
+  else deck.openPanel(where, { onClose: () => go(DECK) });
+
+  markSettings(false);
+  document.title = `${t(`nav.${where === DECK ? "deck" : where === "llm-routes" ? "llm" : where}`)} · ${t("app.title")}`;
+}
+
+async function showDeck() {
+  if (deck) return;
+  await teardownSettings();
+  dom.main.classList.add("is-deck");
+  dom.root.replaceChildren();
+  const host = el("div");
+  dom.root.append(host);
+  deck = mountDeck(host, { onOpenPanel: (panel) => go(panel) });
+  deck.paintPhase(state.status?.phase || "idle", state.connected);
+}
+
+function teardownDeck() {
+  if (!deck) return;
+  deck.destroy();
+  deck = null;
+  dom.main.classList.remove("is-deck");
+}
+
+async function teardownSettings() {
+  if (!settingsCleanup) return;
+  try {
+    settingsCleanup();
+  } catch (error) {
+    console.error("settings cleanup failed", error);
+  }
+  settingsCleanup = null;
+}
+
+async function showSettings() {
+  teardownDeck();
+  await teardownSettings();
+  markSettings(true);
+  document.title = `${t("nav.settings")} · ${t("app.title")}`;
+
+  dom.root.replaceChildren();
+  const view = el("div", { class: "view view-settings" });
+  view.append(
+    el(
+      "button",
+      {
+        type: "button",
+        class: "settings-back",
+        onclick: () => go(DECK),
+      },
+      [icon(ICONS.back), el("span", { text: t("deck.backToDeck") })],
+    ),
+  );
+  dom.root.append(view);
+
+  try {
+    const module = await import("./views/settings.js");
+    settingsCleanup = (await module.mount(view)) || null;
+  } catch (error) {
+    console.error("settings failed", error);
+    view.append(el("div", { class: "empty", text: String(error.message || error) }));
   }
 }
 
-function setBadge(view, text) {
-  const button = navButtons.get(view);
-  if (button) button._badge.textContent = text || "";
+function markSettings(current) {
+  if (current) dom.settingsButton.setAttribute("aria-current", "page");
+  else dom.settingsButton.removeAttribute("aria-current");
 }
 
 /* ── Header ────────────────────────────────────────────────────────── */
@@ -136,7 +159,8 @@ function paintHeader() {
   dom.passive.hidden = !passive?.enabled;
   dom.passiveText.textContent = passive?.enabled ? t("passive.recording") : "";
   // A conversation means the wake word is not being asked for, which is
-  // worth saying on every view rather than only on the one that set it.
+  // worth saying wherever the page happens to be rather than only where it
+  // was switched on.
   const conversation = state.status?.conversation;
   dom.conversation.hidden = !conversation?.active;
   dom.conversationText.textContent = conversation?.active
@@ -157,6 +181,7 @@ function paintHeader() {
     dom.phase.textContent = t("phase.offline");
     dom.uptime.textContent = "—";
     dom.lastTurn.textContent = "—";
+    deck?.paintPhase("offline", state.connected);
     return;
   }
 
@@ -166,52 +191,12 @@ function paintHeader() {
     : t("common.reconnecting");
   dom.uptime.textContent = fmt.seconds(status.uptime_seconds);
   dom.lastTurn.textContent = status.last_turn ? fmt.ms(status.last_turn.total_ms) : "—";
-}
-
-function paintFoot() {
-  const foot = document.getElementById("sidebar-foot");
-  if (!foot) return;
-  foot.replaceChildren(
-    el("span", { class: "sidebar-reading" }, [
-      el("span", { class: "label", text: t("sidebar.localModel") }),
-      el("span", { class: "num", id: "foot-local-model", text: "—" }),
-    ]),
-    el("span", { class: "sidebar-reading" }, [
-      el("span", { class: "label", text: t("sidebar.localGpu") }),
-      el("span", { class: "num", id: "foot-vram", text: "—" }),
-    ]),
-  );
-}
-
-/* Graphics memory is the ceiling of this setup, so it sits in the frame
-   rather than behind a tab. It is polled rather than pushed because it is a
-   reading of the machine, not an event in the assistant. */
-async function pollVram() {
-  try {
-    const system = await api.system();
-    const gpu = system.gpu;
-    const modelNode = document.getElementById("foot-local-model");
-    const node = document.getElementById("foot-vram");
-    if (!node || !modelNode) return;
-    const loaded = system.models?.resident || system.models?.loaded || [];
-    modelNode.textContent = loaded.length
-      ? loaded.map((model) => model.name).filter(Boolean).join(", ")
-      : t("sidebar.noLocalModel");
-    if (gpu?.used_mb && gpu?.total_mb) {
-      node.textContent = `${fmt.megabytes(gpu.used_mb)} / ${fmt.megabytes(gpu.total_mb)}`;
-    } else if (gpu?.total_mb) {
-      node.textContent = fmt.megabytes(gpu.total_mb);
-    } else {
-      node.textContent = "—";
-    }
-  } catch {
-    /* The daemon may be down; the header already says so. */
-  }
+  deck?.paintPhase(status.phase, state.connected);
 }
 
 /* ── Live wiring ───────────────────────────────────────────────────── */
 
-function wireLive(router) {
+function wireLive() {
   live.on("connection", ({ connected }) => {
     state.connected = connected;
     paintHeader();
@@ -220,8 +205,6 @@ function wireLive(router) {
   live.on("status", (status) => {
     state.status = status;
     paintHeader();
-    paintFoot();
-    refreshPending();
   });
 
   live.on("phase", (phase) => {
@@ -249,32 +232,32 @@ function wireLive(router) {
 
   live.on("error", ({ message }) => toast(message, "bad"));
 
+  // Something is waiting for an answer, and the widget that says how many
+  // reads it from the shared snapshot, so the snapshot is retaken rather
+  // than waiting up to ten seconds to agree with the toast.
   live.on("confirmation", () => {
-    state.pendingConfirmations += 1;
-    setBadge("security", String(state.pendingConfirmations));
     toast(t("security.pending"));
-    if (router.current !== "security") return;
+    deck?.refresh();
   });
-
-  live.on("confirmation_resolved", () => {
-    state.pendingConfirmations = Math.max(0, state.pendingConfirmations - 1);
-    setBadge("security", state.pendingConfirmations ? String(state.pendingConfirmations) : "");
-  });
+  live.on("confirmation_resolved", () => deck?.refresh());
 
   live.start();
 }
 
-async function refreshPending() {
-  try {
-    const security = await api.security();
-    state.pendingConfirmations = security.pending.length;
-    setBadge("security", state.pendingConfirmations ? String(state.pendingConfirmations) : "");
-  } catch {
-    /* Nothing to show while the daemon is unreachable. */
-  }
-}
+/* ── Pickers ───────────────────────────────────────────────────────── */
 
-/* ── Start ─────────────────────────────────────────────────────────── */
+function buildThemePicker() {
+  dom.theme.replaceChildren(
+    ...THEMES.map((theme) =>
+      el("option", {
+        value: theme.id,
+        text: theme.label,
+        selected: theme.id === activeTheme(),
+      }),
+    ),
+  );
+  dom.theme.addEventListener("change", () => applyTheme(dom.theme.value));
+}
 
 function buildLanguagePicker(rerender) {
   dom.language.replaceChildren(
@@ -289,35 +272,37 @@ function buildLanguagePicker(rerender) {
   });
 }
 
-function main() {
-  const router = new Router(dom.root, ROUTES, "overview", { llm: "llm-routes" });
-  router.onChange((name) => {
-    markCurrent(name);
-    const label = name === "llm-routes" ? "llm" : name;
-    document.title = `${t(`nav.${label}`)} · ${t("app.title")}`;
-  });
+/* ── Start ─────────────────────────────────────────────────────────── */
 
+function main() {
+  applyTheme(activeTheme());
   document.documentElement.lang = language();
-  buildSidebar(router);
+
+  dom.settingsButton.append(icon(ICONS.settings));
+  dom.settingsButton.setAttribute("aria-label", t("nav.settings"));
+  dom.settingsButton.addEventListener("click", () => go(SETTINGS));
+
+  buildThemePicker();
   buildLanguagePicker(() => {
-    buildSidebar(router);
-    markCurrent(router.current);
+    dom.settingsButton.setAttribute("aria-label", t("nav.settings"));
+    // The deck names every widget, so a language change rebuilds it rather
+    // than translating eleven cards in place.
+    teardownDeck();
     paintHeader();
-    router.go(router.current);
+    render();
   });
 
   paintHeader();
-  wireLive(router);
-  router.start();
+  wireLive();
+
+  window.addEventListener("hashchange", () => render());
+  render();
 
   api.status().then((status) => {
     state.status = status;
     paintHeader();
-    paintFoot();
-    pollVram();
   }).catch(() => paintHeader());
 
-  setInterval(pollVram, 5000);
   setInterval(() => {
     if (state.status?.daemon_running !== false && Number.isFinite(state.status?.uptime_seconds)) {
       state.status.uptime_seconds += 1;

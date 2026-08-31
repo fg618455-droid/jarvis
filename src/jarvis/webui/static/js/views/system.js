@@ -237,7 +237,7 @@ function paintHistory(container, turns) {
   );
 
   if (!turns.length) {
-    container.append(empty(t("overview.noTurns")));
+    container.append(empty(t("deck.noTurns")));
     return;
   }
 
