@@ -36,15 +36,37 @@ one file and no view can drift from the rest.
 | Overflow | A region that scrolls is sized against the window rather than a fixed count of pixels, and pins its heading above it, so a partly visible row reads as more below rather than as a rendering fault |
 | Shared parts | A component two views use is named for what it is rather than for whichever view needed it first, and lives in `app.css` rather than beside one of them |
 
-The sidebar groups its twelve destinations under three names: what is
-happening now, what the assistant knows, and how the machine is set up. Each
-group is an ARIA group carrying that name, so the structure is available to a
-screen reader and not only to the eye.
+### Themes
 
-The sidebar footer is explicitly local: its model names come from `ollama ps`
-and therefore describe models actually resident on this machine, while the
-memory reading comes from the local NVIDIA adapter. Configured remote reply
-models appear in the System and LLM Routes views, never beside local VRAM.
+`tokens.css` has two halves and the split is the point. `:root` holds the
+instrument: the type ladder, the spacing steps, the radii, the motion
+durations, and the sizes the layout is built from. A `[data-theme]` block
+holds only paint. A theme therefore changes what the interface looks like and
+never where anything is or how large it reads, so no heading changes size
+because someone preferred a different palette.
+
+| Theme | Is |
+|---|---|
+| `graphite` | Near-black and one cool accent. The default, and what the interface has always looked like |
+| `arc` | The same instrument under a colder light: a blue-white filament on deep slate, with the circular motif carrying more of the accent |
+
+Adding a theme is adding one block and one row in `theme.js`. No view knows a
+theme exists; every view reads `var(--accent)` and gets whatever the active
+block says it is.
+
+Every theme names the same tokens as every other one, because a token a theme
+forgets does not fall back to a sensible default: it keeps whatever the last
+theme painted, and one card quietly reads in the wrong palette.
+`tests/webui/test_theme_tokens.py` holds that rule as a mechanism rather than
+as a list of values, so it also holds for themes that do not exist yet.
+
+The choice is this browser's, in `localStorage`, and never reaches
+`config.json`. It is a preference about looking at a screen rather than a
+fact about the assistant, so two people on two machines reading the same
+daemon can disagree about the palette without either writing to the other's
+configuration. A small inline script in `index.html` applies it before the
+first paint, because the module that owns it is deferred and the page would
+otherwise flash the default on every load for anyone who changed it.
 
 The System model card makes three different facts explicit. **Effective
 routes** names the first currently available FAST, CHAT, and PRIVATE candidate
@@ -145,6 +167,9 @@ allowed; reading one back is not.
 | `POST /api/diary/scrub-deflections` | Rewrite diary summaries without deflection narration, streaming NDJSON progress |
 | `POST /api/diary/optimise-topics` | Normalise topic tags across diary rows, streaming NDJSON progress |
 | `GET /api/tools`, `POST /api/tools/refresh` | The tool catalogue, MCP server state, rediscovery |
+| `GET/PUT /api/mcp/servers` | The configured MCP servers, how each launches, whether it connected, and the editor's schema. Writes replace the set, preserving unchanged masked credentials |
+| `GET /api/briefing` | Today's School items, the cached prose if it exists, and the spoken briefing's own state. Reads no model |
+| `POST /api/briefing/refresh` | Generate today's prose through the spoken briefing's own generator and cache it for the local day |
 | `GET /api/security`, `/api/security/pending`, `POST /api/security/decide` | The confirmation policy, what is waiting, and the answer |
 | `GET /api/system` | GPU, effective routes with locality, configured local model roles, actual Ollama residency, speech configuration, paths, process |
 | `POST /api/system/restart` | Ask the daemon to tear down and start a fresh generation in place; 409 in standalone mode |
@@ -215,28 +240,75 @@ nothing at all for a bare terminal launch) sees one long call rather than
 an exit — the tray's crash/stopped-unexpectedly handling never fires for a
 requested restart.
 
-## Overview
+## The deck
 
-The only page that reads across the others, so what it holds is a reading
-per destination and a way into each. It keeps no turn history of its own:
-the Conversation view holds the turns and holds them as a conversation, and
-a second, worse copy here would only teach a reader that the two disagree.
+The interface is one place. The face is the page rather than a destination
+inside it, every reading is a widget in a rail either side of it, and a
+detail that needs room opens over the right rail instead of replacing the
+page. Settings is the only thing that takes the whole window, because
+editing the configuration is the only task that is not about watching the
+assistant work.
 
-| Band | Holds |
+| Region | Holds |
 |---|---|
-| Where the time went | The last turn's total, the median of the recent ones beside it, the recent totals as a sparkline, and the stage breakdown with its legend |
-| Readings | Memory, tools, security, and discarded utterances. Each is a card that links to the view holding the detail |
-| Last exchange | What was just said and what came back, and a way into the conversation |
+| Left rail | Today, System, Memory, Security, and the passive record. What the assistant knows and what state it is in |
+| Centre | The face, the assistant's name, what it is doing in words, and the dock that speaks or types to it |
+| Right rail | The last exchange, then Tools, MCP servers, LLM routes, Mission Control, and Logs as compact tiles. How the machine is wired |
+| Panel | Whichever detail is open, over the right rail |
 
-The median rather than the mean: one turn that waited on a cold model would
-drag an average somewhere no turn has ever actually been, and a single last
-reading cannot say whether it was normal.
+The deck is sized against the window rather than flowed down it. Only a rail
+and an open panel's body scroll: a deck that grew past the bottom of the
+screen would put the face somewhere you have to scroll back to, which is the
+one thing this layout exists to prevent.
 
-## LLM routes view
+### Widgets
 
-`#/llm-routes` is the canonical address. The former `#/llm` address is a
-compatibility alias that is replaced in place with the canonical hash, so old
-bookmarks still open the view without leaving two URLs for the same state.
+A widget is a reading and a way into the detail behind it, not a small
+version of its panel. It answers one question at a glance and the panel
+answers the rest.
+
+Every widget paints from one shared snapshot the deck fetches for all of
+them, so eleven readings on screen are not eleven timers against the daemon
+and every widget is looking at the same moment rather than at eleven
+slightly different ones. Mission Control is the exception in the other
+direction: it is read once and then follows the `crew` event, because the
+daemon already takes one reading for everyone watching and the machine it
+reaches is often asleep.
+
+A widget never invents a reading. A source that failed or has not answered
+yet shows an em dash, because a zero meaning "no answer" and a zero meaning
+"none" are very different facts on the security widget.
+
+### Panels
+
+A panel mounts a view module into its body, and that module is the same one
+whatever else it is reached from: a panel is somewhere to put a view, not a
+different implementation of one. The panel names itself in its head, so the
+view's own heading is hidden inside one; its lead and its actions stay,
+because those are the view's rather than the panel's.
+
+The conversation is the one view that keeps its own height. It scrolls its
+exchange internally and holds its composer in place, so the panel around it
+stops scrolling and hands the whole height over. Two nested scrollers would
+mean every gesture had two possible answers and the composer would slide out
+of reach, which is the exact fault that view was built to avoid.
+
+### Addresses
+
+`#/deck` is where the interface opens. Every panel keeps the address it had
+as a page, so `#/tools` opens the deck with the tools panel over it and every
+existing bookmark and cross-link still arrives somewhere sensible with the
+face behind it. `#/settings` is the only address that replaces the deck.
+
+An address that no longer names anything is followed and then replaced in
+place: `#/overview` and `#/visualizer` resolve to `#/deck`, and `#/llm` to
+`#/llm-routes`, so an old bookmark opens the thing that replaced it without
+leaving two URLs for one state.
+
+## LLM routes panel
+
+`#/llm-routes` is the canonical address; `#/llm` is an alias for it, resolved
+the same way every other retired address is.
 
 The LLM routes view displays the ordered FAST, CHAT, and PRIVATE chains. Each
 entry keeps active state, protocol, model, masked credential, hit and failure
@@ -264,6 +336,75 @@ built and never enter this payload.
 Loading and refreshing the view reads local config and cooldown state only.
 The only control that contacts a configured endpoint is **Probe models**.
 Resetting cooldowns and saving routes are local file writes.
+
+## MCP servers panel
+
+An MCP server is a command line, an environment, and a name. All three are
+edited as named controls rather than as raw JSON, the same way the LLM route
+editor works and for the same reason: a text area holding a configuration
+object is a way of asking someone to get the commas right.
+
+`config.mcps` cannot ride `PUT /api/settings`. That endpoint refuses any key
+the field registry does not describe, and the registry describes scalars and
+lists of uniform objects; a map from a name the user invents to a launch
+description with an arbitrary environment is neither. It gets its own door
+rather than a special case inside someone else's, and that door carries the
+same three rules: only non-default values are stored, keys this endpoint does
+not own survive untouched, and a credential is writable but never readable.
+
+The environment is where a server's credentials live, so it is edited as a
+name and a value rather than as a block of `KEY=value` text: a masked value
+has to survive being displayed and saved untouched, and in a text block the
+mask would be indistinguishable from someone having typed eight bullets.
+Values are masked to their last four, and a mask returned unchanged leaves
+the stored secret alone. A stable `_index` on each entry is what makes that
+survive a rename, so renaming a server is an edit rather than a new server
+whose credentials were left behind under the old name.
+
+Everything is validated before anything is written. A refusal half way down
+the list would otherwise leave the file describing a set of servers nobody
+asked for.
+
+Two facts sit side by side on every card and are never merged. What is
+*configured* is what this panel writes; what is *connected* is what the
+running daemon actually managed to launch and ask. A server saved a moment
+ago is configured and not connected, and the panel says so: tools are
+discovered when the daemon starts, so a new server is on disk now and
+reachable after a restart. Before any discovery pass has run, "not connected"
+would be a guess rather than a reading, and the panel says that instead.
+
+## Today panel
+
+The assistant already has a morning briefing: once per local day, at a
+configured time, it reads the School branch and speaks the result. That is
+the right shape for something that should find you without being asked, and
+the wrong shape for something you want to check. Speech has happened or it
+has not, it cannot be re-read, and before the trigger time it does not exist.
+
+This is the same question put to the same source. It shares the branch reader
+and the generator with `../memory/morning_briefing.py` deliberately: two
+briefings phrased by two prompts would eventually disagree about the same
+day, and the one you could not re-read would be the one you half remembered.
+
+What differs is only what a screen can do that a speaker cannot:
+
+| Reading | Cost | When |
+|---|---|---|
+| The items | A bounded graph read, no model | Every request |
+| The prose | One CHAT-tier call | Only when asked, then cached for the local day |
+
+The split is the whole design. A widget on the deck repaints every ten
+seconds; a briefing that generated prose on every repaint would run a
+CHAT-tier model six times a minute for a card three lines tall.
+
+The cached prose is kept in `app_state` under its own key, deliberately
+separate from the spoken briefing's own gate, because reading a briefing on
+screen must never persuade the spoken one that it has already delivered
+today. A summary written yesterday is not shown and not deleted: the next
+refresh overwrites it, and until then it is simply not today's.
+
+Nothing here invents a school. An empty branch reads as empty and is never
+sent to a model; a generation that fails says so.
 
 ## Logs view
 
@@ -359,7 +500,7 @@ its own when the user asks Jarvis to stop.
 Standalone there is no voice loop, so the switch reaches nothing and says
 so instead of showing a mode that is not running anywhere.
 
-## Face/visualizer view
+## The face
 
 A face that idles, listens, thinks, and speaks in step with the real
 conversation: the AGPL-3.0-licensed [ai-visualizer](https://github.com/jaredrhod/ai-visualizer)
@@ -367,9 +508,35 @@ face gallery, vendored under `src/jarvis/webui/visualizer/vendor/` and
 served by this process rather than ai-visualizer's own stdlib HTTP server —
 see `THIRD_PARTY_NOTICES.md` for the licence terms this carries.
 
-The view itself is a thin frame: an iframe pointed at `/visualizer/`, which
-answers with the vendored gallery. Picking a face is the gallery's own job;
-nothing in this app's own views duplicates that switch. The face polls
+The face is the centre of the deck and is mounted once for as long as the
+page is open. Opening a panel does not rebuild it: a face rebuilt on every
+navigation would reload its frame, restart its animation, and blink at the
+reader each time they looked at a different reading.
+
+One face is framed directly, at `/visualizer/faces/<id>/index.html`. Which
+one is a control on the deck rather than a page inside the frame, because
+reaching the gallery's own picker meant loading its index into the frame and
+choosing there, which put a second, differently-styled navigation inside the
+page.
+
+### Dressing it
+
+The face's own controls sit beside the face rather than in Settings. How the
+assistant looks while it is talking to you is a different kind of decision
+from which port the daemon binds, and it is made while looking at the thing
+it changes. Which face and how large are this browser's, in `localStorage`,
+the same way the theme is.
+
+The vendored pages are never edited, so everything that makes a face belong
+to the interface is on this side of the frame: the bed it sits on, the aura
+behind it, three quiet concentric rings, its size, and `--face-tint`. That
+last one is a filter, named per theme, that rotates the framed result onto
+the theme's own hue on the way out of the frame. It is presentation only:
+the third-party code is untouched and still renders exactly what its author
+wrote. Without it a face painted in its own palette glows a different colour
+at the centre of a page built around one accent.
+
+The face polls
 `/api/visualizer/state` roughly eight times a second and `/api/visualizer/config`
 once, both answered by `jarvis.webui.visualizer.state`, which derives the
 reading entirely from Jarvis's own live objects:
@@ -390,7 +557,7 @@ the phase on every view, so a page open at any depth still says whether the
 room is being written down. It is driven by the `passive` event rather than
 polling, and shows nothing at all while the switch is off.
 
-The record has a view of its own rather than a section inside another one.
+The record has a panel of its own rather than a section inside another one.
 It is a privacy surface before it is a reading, and it grows without limit:
 an account of every word spoken in the room cannot sit on a page that is
 also meant to show a conversation.

@@ -4,6 +4,21 @@ The morning school briefing is an optional, short spoken summary of the fixed
 School graph branch. It covers upcoming examinations, homework deadlines, and
 other school information useful for the current day. It defaults off.
 
+## Two callers, one generator
+
+`generate_morning_briefing` has two callers and they share it deliberately:
+this scheduler, which speaks it once per local day, and the control centre's
+Today panel (`../webui/api/briefing.py`), which writes it on demand and
+caches it for the local day. Two briefings phrased by two prompts would
+eventually disagree about the same day, and the one that could not be
+re-read would be the one half remembered.
+
+The two gates are separate. This scheduler's
+`morning_briefing.last_delivered_local_date` records that speech happened;
+the panel's own key records that prose was written. Reading a briefing on
+screen never persuades the spoken one that it has already delivered today,
+and writing prose on screen never speaks.
+
 ## Scheduling and worker ownership
 
 `MorningBriefingScheduler` has no timer and creates no thread. The daemon
