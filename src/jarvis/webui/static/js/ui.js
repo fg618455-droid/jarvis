@@ -98,9 +98,12 @@ export function table(columns, rows) {
           {},
           columns.map((column) => {
             const value = column.render ? column.render(row) : row[column.key];
+            // A container too narrow for the columns stacks each row into
+            // labelled lines, and the label is this one. It travels on the
+            // cell so a value never arrives without the question it answers.
             return el(
               "td",
-              { class: column.numeric ? "num" : null },
+              { class: column.numeric ? "num" : null, "data-label": column.label },
               value instanceof Node ? [value] : [String(value ?? "—")],
             );
           }),

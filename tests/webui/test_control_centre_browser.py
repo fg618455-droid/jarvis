@@ -157,13 +157,18 @@ class TestEveryViewRenders:
 
 
 class TestALongTableSaysThereIsMoreBelow:
-    """A table taller than its container used to end in a sliced row.
+    """A row cut in half at the bottom of a scroll region has to read as more
+    below rather than as a rendering fault, and the thing that makes it read
+    that way is the column name still being on screen.
 
-    Cut through the middle of its own text with nothing pinned above it,
-    that reads as a rendering fault rather than as more below.
+    Which name that is depends on the room. Given the columns, the heading row
+    is pinned above the rows and stays put as they scroll. Given a container
+    too narrow for the columns, there is no heading row to pin: the rows stack
+    and every value carries its own column name, so a sliced record is still
+    labelled.
     """
 
-    def test_the_column_headings_stay_put_while_the_rows_scroll(self, page, served):
+    def _with_sixty_tools(self, page, served):
         page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
         page.evaluate(
             """async () => {
@@ -179,6 +184,15 @@ class TestALongTableSaysThereIsMoreBelow:
             }"""
         )
         page.goto(f"{served}/#/tools")
+        page.wait_for_selector(".panel .view table", state="attached")
+
+    def test_the_column_headings_stay_put_while_the_rows_scroll(self, page, served):
+        self._with_sixty_tools(page, served)
+        # A container wide enough to be offering the columns in the first
+        # place, without touching the window the rest of the deck is sized to.
+        page.evaluate(
+            "() => document.documentElement.style.setProperty('--panel', '1180px')"
+        )
         page.wait_for_selector("table th", state="visible")
 
         page.evaluate(
@@ -193,6 +207,30 @@ class TestALongTableSaysThereIsMoreBelow:
         assert heading.bounding_box()["y"] >= (
             page.locator(".card .scroll").bounding_box()["y"] - 1
         )
+        assert not page.console_errors
+
+    def test_a_stacked_row_carries_its_own_column_names(self, page, served):
+        self._with_sixty_tools(page, served)
+
+        labels = page.evaluate(
+            """() => {
+                const row = document.querySelector('.panel .view tbody tr');
+                return [...row.querySelectorAll('td')].map(
+                    (cell) => getComputedStyle(cell, '::before').content
+                );
+            }"""
+        )
+        columns = page.evaluate(
+            "() => [...document.querySelectorAll('.panel .view thead th')]"
+            "  .map((head) => head.textContent.trim())"
+        )
+
+        assert columns, "the tools table rendered no columns"
+        assert len(labels) == len(columns)
+        for name, rendered in zip(columns, labels):
+            assert name in rendered, (
+                f"a stacked cell dropped the column name {name!r}: {rendered!r}"
+            )
         assert not page.console_errors
 
 

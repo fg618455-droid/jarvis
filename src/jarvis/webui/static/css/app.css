@@ -211,10 +211,19 @@ a:hover {
   padding: var(--header) 0 0;
 }
 
+/* The box a view lays itself out in. The same module is a full-window page
+   at one address and a column inside a panel at another, so it is this box
+   rather than the window that decides how many columns a reading gets: a
+   view names `view` in a container query and gets the room it actually has.
+   The single column is `minmax(0, 1fr)` so one wide child, a table with five
+   columns of tool names, cannot drag every other card out past the edge with
+   it. */
 .view {
+  container: view / inline-size;
   max-width: var(--content-max);
   margin: 0 auto;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--s4);
   animation: appear var(--t-view);
 }
@@ -302,9 +311,12 @@ a:hover {
   align-items: start;
 }
 
-@media (max-width: 900px) {
+/* A list beside the thing it selects. Below the width that holds both, the
+   list would be too narrow to read a label in and the detail too narrow to
+   edit one, so they become one column. */
+@container view (max-width: 620px) {
   .split {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -429,6 +441,67 @@ tbody tr:hover td {
 td.num,
 th.num {
   text-align: right;
+}
+
+/* A table is a comparison down a page, and a container too narrow to hold
+   the columns is not offering one: the columns either squeeze every
+   description into a stack of single words or push the last of them off the
+   edge. Below that width each row reads as a record instead, one labelled
+   line per reading, so the whole table is still there and every value still
+   carries the question it answers. */
+@container view (max-width: 560px) {
+  table,
+  tbody,
+  tr,
+  td {
+    display: block;
+  }
+
+  /* The column names travel with their values, so the row of them at the
+     top would be the same words a second time with nothing under them. */
+  thead {
+    display: none;
+  }
+
+  tr {
+    padding: var(--s2) 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  tbody tr:last-child {
+    border-bottom: none;
+  }
+
+  td {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: var(--s3);
+    align-items: baseline;
+    padding: var(--s1) var(--s3);
+    border-bottom: none;
+    overflow-wrap: anywhere;
+  }
+
+  td::before {
+    content: attr(data-label);
+    font-size: var(--fs-micro);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-mute);
+  }
+
+  /* A figure is right-aligned so it can be compared with the one above it.
+     Stacked there is nothing above it, and the label is on the left. */
+  td.num {
+    text-align: left;
+  }
+
+  /* A chip is sized by its word. Stretched across the value column it reads
+     as a bar the length of the panel rather than as one short label. */
+  td > .chip {
+    justify-self: start;
+  }
 }
 
 /* ── Controls ────────────────────────────────────────────────────────── */

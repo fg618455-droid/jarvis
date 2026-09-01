@@ -33,7 +33,8 @@ one file and no view can drift from the rest.
 | Colour | One accent, for what is active, focused, selected, or newly arrived. Three status tones, each with a text, fill, and border value so a chip, a rail, and a meter read the same |
 | Type | An eight-step scale. Headings, labels, and readings are chosen from the ladder rather than per view |
 | Motion | Transitions mark a change of state, never decorate one. `prefers-reduced-motion` disables every animation and transition outright, and anything painted from JavaScript, which that rule cannot reach, asks `motionAllowed()` for itself |
-| Overflow | A region that scrolls is sized against the window rather than a fixed count of pixels, and pins its heading above it, so a partly visible row reads as more below rather than as a rendering fault |
+| Overflow | A region that scrolls is sized against the window rather than a fixed count of pixels, and pins its heading above it, so a partly visible row reads as more below rather than as a rendering fault. Where the container is too narrow to hold the columns, the rows stack and each value carries its own column name instead, so a sliced record is still labelled |
+| Width | A view lays itself out against the box it is in, not against the window. The same module is a full-width page at one address and a column inside a panel at another, so its layout rules are container queries on `view`; only the shell around it, the header, the deck, and the page gutter, is sized against the window |
 | Shared parts | A component two views use is named for what it is rather than for whichever view needed it first, and lives in `app.css` rather than beside one of them |
 
 ### Themes

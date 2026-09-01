@@ -444,10 +444,14 @@
   color: var(--accent);
 }
 
-/* The panel body is the one region on the deck that scrolls a view. The
-   views mounted into it are the same modules the interface has always had,
-   so it carries `.view` and they render exactly as they did. */
+/* The panel body is the one region on the deck that scrolls a view, and the
+   width it hands the view is a third of the window. It is a query container
+   so the view mounted inside it is measured against this box: the same
+   module reads as a page at its own address and as a column here, and picks
+   which of the two it is from the room it is given rather than from how wide
+   the screen happens to be. */
 .panel-body {
+  container: view / inline-size;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -480,15 +484,6 @@
 
 .panel-body-conversation > .view-conversation {
   height: 100%;
-}
-
-/* A view built for a full page assumes it can put two cards side by side.
-   In a panel there is one column, and a grid that keeps trying to make two
-   produces cards too narrow to read. */
-.panel-body .grid,
-.panel-body .grid-2,
-.panel-body .split {
-  grid-template-columns: 1fr;
 }
 
 /* ── Settings as its own place ───────────────────────────────────────── */

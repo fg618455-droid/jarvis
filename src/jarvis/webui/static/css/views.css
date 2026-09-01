@@ -188,9 +188,11 @@
   align-items: start;
 }
 
-@media (max-width: 900px) {
+/* Three readings need three columns' worth of room. Below it they stack
+   rather than shrink: a phase name that wraps mid-word is not a reading. */
+@container view (max-width: 760px) {
   .voice {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--s4);
   }
 }
@@ -567,7 +569,9 @@
   color: var(--fg-mute);
 }
 
-@media (max-width: 760px) {
+/* The timestamp column keeps a line's readings aligned down the list, so it
+   narrows rather than leaves: a stamp is still a stamp at 56px. */
+@container view (max-width: 560px) {
   .passive-line {
     grid-template-columns: 56px minmax(0, 1fr) auto;
     gap: var(--s2);
@@ -640,9 +644,12 @@
   align-items: start;
 }
 
-@media (max-width: 900px) {
+/* The category list beside the category. Below the width that holds both,
+   the list cannot show a label and the detail cannot show a field, so the
+   list becomes a row of its own above what it selects. */
+@container view (max-width: 620px) {
   .settings-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -784,14 +791,14 @@
   padding: var(--s1) var(--s2);
 }
 
-@media (max-width: 700px) {
+@container view (max-width: 560px) {
   .settings-note {
     align-items: flex-start;
     flex-direction: column;
   }
 
   .object-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -878,9 +885,11 @@
   min-height: 2.25rem;
 }
 
-@media (max-width: 700px) {
+/* A route's fields are already one per line here, so the two that span both
+   columns have nothing left to span. */
+@container view (max-width: 560px) {
   .route-config-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .route-field-base_url,
@@ -1077,7 +1086,10 @@ button.chip.log-filter {
   white-space: pre-wrap;
 }
 
-@media (max-width: 760px) {
+/* The message is the reading; the stamp and the category are how it is
+   found. Narrow, they give the message the full width and take a line of
+   their own above it. */
+@container view (max-width: 560px) {
   .log-line {
     grid-template-columns: 68px minmax(0, 1fr);
     gap: var(--s2);
@@ -1413,7 +1425,9 @@ button.chip.crew-filter {
   animation: arrived var(--t-glow) ease-out;
 }
 
-@media (max-width: 760px) {
+/* The ribbon keeps its bars and loses its words: a day's shape still reads
+   at this width, a day's name does not. */
+@container view (max-width: 560px) {
   .ribbon-label {
     display: none;
   }
