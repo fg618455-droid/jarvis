@@ -42,6 +42,13 @@
   gap: var(--s2);
 }
 
+/* An odd number of tiles leaves the last one beside a gap, which reads as a
+   tile that failed to load rather than as the end of the list. It takes the
+   width instead. */
+.widget-tiles > :last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
 /* ── Widgets ─────────────────────────────────────────────────────────── */
 
 .widget {
@@ -65,6 +72,13 @@
   align-items: center;
   gap: var(--s2);
   min-width: 0;
+}
+
+/* A chip is sized by its word. As a grid item in a widget it would otherwise
+   stretch the full width of the rail, where a bordered box spanning the card
+   reads as an empty input rather than as one short status. */
+.widget .chip {
+  justify-self: start;
 }
 
 .widget-title {
@@ -155,7 +169,14 @@
 
 /* Two tiles to a rail leaves about half its width for a name. Tracking that
    is generous on a full-width heading spends most of it on the gaps between
-   letters, so a tile drops it and keeps the letters instead. */
+   letters, so a tile drops it and keeps the letters instead. The row spends
+   less between its parts for the same reason: the longest name a tile
+   carries fits only if it is not paying for a full-width gap either side of
+   its icon. */
+.widget-tile .widget-head {
+  gap: var(--s1);
+}
+
 .widget-tile .widget-title {
   font-size: var(--fs-micro);
   letter-spacing: 0.02em;

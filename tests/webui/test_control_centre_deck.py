@@ -328,3 +328,70 @@ class TestMotionStaysOptional:
             assert moving == [], f"still animating: {sorted(set(moving))}"
         finally:
             context.close()
+
+
+class TestARailReadsAsReadingsRatherThanAsAForm:
+    """Three ways a rail stops looking like what it is.
+
+    A widget is a card with a heading and one short reading under it. The
+    reading is often a status chip, which is sized by its word: stretched to
+    the width of the rail it becomes a bordered box spanning the card, and a
+    bordered box spanning a card is the shape of an empty text input. A name
+    clipped by two pixels reads as a different, shorter name. A last tile
+    beside a gap reads as a tile that failed to load.
+    """
+
+    def _deck(self, page, served):
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
+        page.wait_for_selector(".widget-tiles", state="visible", timeout=5000)
+        page.wait_for_timeout(400)
+
+    def test_a_status_chip_is_as_wide_as_its_word(self, page, served):
+        self._deck(page, served)
+
+        stretched = page.evaluate(
+            """() => [...document.querySelectorAll('.widget .chip')].filter((chip) => {
+                const card = chip.closest('.widget').getBoundingClientRect();
+                // Padding aside, a chip filling its card is a chip that was
+                // stretched rather than one with a very long word in it.
+                return chip.getBoundingClientRect().width > card.width * 0.85;
+            }).map((chip) => chip.textContent.trim())"""
+        )
+
+        assert stretched == [], f"chips stretched into input-shaped boxes: {stretched}"
+
+    def test_a_widget_shows_its_whole_name(self, page, served):
+        self._deck(page, served)
+
+        clipped = page.evaluate(
+            """() => [...document.querySelectorAll('.widget-title')]
+                .filter((title) => title.scrollWidth > title.clientWidth + 1)
+                .map((title) => title.textContent.trim())"""
+        )
+
+        assert clipped == [], f"widget names cut off by their own tile: {clipped}"
+
+    def test_an_odd_last_tile_takes_the_width_rather_than_leaving_a_gap(
+        self, page, served
+    ):
+        self._deck(page, served)
+
+        shape = page.evaluate(
+            """() => {
+                const tiles = document.querySelector('.widget-tiles');
+                return {
+                    count: tiles.children.length,
+                    row: Math.round(tiles.getBoundingClientRect().width),
+                    last: Math.round(
+                        tiles.lastElementChild.getBoundingClientRect().width
+                    ),
+                };
+            }"""
+        )
+
+        if shape["count"] % 2 == 0:
+            pytest.skip("an even number of tiles leaves no gap to fill")
+        assert shape["last"] == pytest.approx(shape["row"], abs=2), (
+            f"the last of {shape['count']} tiles is {shape['last']}px in a "
+            f"{shape['row']}px row, so it sits beside a gap"
+        )
