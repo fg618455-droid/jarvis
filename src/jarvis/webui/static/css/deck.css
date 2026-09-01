@@ -518,6 +518,13 @@
    and the deck becomes two columns rather than three. */
 @media (max-width: 1240px) {
   .deck {
+    /* Folding the right rail under adds a row the fixed, viewport-height
+       layout above was never sized for; without this, a short window
+       clips or overlaps whatever falls past the bottom edge instead of
+       reflowing to it, exactly the failure the arrangement below 900px
+       already avoids. */
+    height: auto;
+    min-height: calc(100vh - var(--header));
     grid-template-columns: var(--rail) minmax(0, 1fr);
   }
 

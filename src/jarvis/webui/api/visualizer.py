@@ -61,7 +61,7 @@ def config() -> Response:
     return jsonify({
         "name": name,
         "badge": "",
-        "face": "board",
+        "face": "radial",
         # Jarvis's TTS engines never play a thinking sound of their own, so
         # there is nothing this would ever collide with; the browser's own
         # SND toggle (bottom left of the face) still lets a user turn it off.

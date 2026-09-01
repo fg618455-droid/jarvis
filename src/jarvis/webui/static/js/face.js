@@ -20,7 +20,7 @@ import { el, icon, ICONS } from "./ui.js";
 const FACE_KEY = "jarvis.face";
 const SIZE_KEY = "jarvis.faceSize";
 
-const DEFAULT_FACE = "board";
+const DEFAULT_FACE = "radial";
 export const MIN_SIZE = 180;
 export const MAX_SIZE = 560;
 const DEFAULT_SIZE = 320;
