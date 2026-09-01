@@ -9,6 +9,11 @@ Two properties are asserted for every view: nothing lands in the console,
 and nothing is fetched from outside the server's own origin. The second is
 the offline rule, which a stray font or CDN reference would break without
 any visible symptom.
+
+The views are panels on the deck rather than pages of their own, which
+changes the shell around them and not what they render. A test that opens an
+address and reads what appeared is testing the same thing it always was. The
+deck's own structure is asserted in `test_control_centre_deck.py`.
 """
 
 from __future__ import annotations
@@ -21,13 +26,14 @@ import pytest
 from jarvis.webui.server import WebUIConfig, WebUIMode, WebUIServer
 
 
+# Every detail the deck can open, plus the one destination that replaces it.
 VIEWS = [
-    "overview",
     "memory",
     "conversation",
-    "visualizer",
     "passive",
     "tools",
+    "mcp",
+    "briefing",
     "security",
     "system",
     "settings",
@@ -111,17 +117,20 @@ def page(browser, served):
 
 class TestEveryViewRenders:
     def test_each_view_paints_its_heading_without_console_errors(self, page, served):
-        page.goto(served, wait_until="networkidle")
+        page.goto(served, wait_until="domcontentloaded")
 
         for view in VIEWS:
             page.goto(f"{served}/#/{view}")
             page.wait_for_selector("main h1", state="visible", timeout=5000)
             page.wait_for_timeout(400)
-            assert page.locator("main h1").inner_text().strip(), f"{view} has no heading"
+            # A panel names itself in its head; Settings replaces the deck and
+            # keeps the heading its own view renders.
+            heading = ".panel-title" if view != "settings" else ".view-settings h1"
+            assert page.locator(heading).inner_text().strip(), f"{view} has no heading"
             assert not page.console_errors, f"{view}: {page.console_errors}"
 
     def test_nothing_is_fetched_from_outside_the_server(self, page, served):
-        page.goto(served, wait_until="networkidle")
+        page.goto(served, wait_until="domcontentloaded")
 
         for view in VIEWS:
             page.goto(f"{served}/#/{view}")
@@ -129,22 +138,11 @@ class TestEveryViewRenders:
 
         assert not page.foreign_requests, f"outbound: {page.foreign_requests}"
 
-    def test_every_destination_sits_inside_a_named_navigation_group(self, page, served):
-        page.goto(served, wait_until="networkidle")
-        page.wait_for_selector(".nav-group", state="visible")
-
-        grouped = page.locator(".nav-group .nav-item").count()
-
-        assert grouped == len(VIEWS), "a destination escaped its group"
-        assert page.locator(".nav-item").count() == grouped
-        for group in page.locator(".nav-group").all():
-            assert group.get_attribute("aria-label"), "a group has no accessible name"
-
     def test_switching_language_keeps_the_view_you_are_on(self, page, served):
-        page.goto(f"{served}/#/tools", wait_until="networkidle")
+        page.goto(f"{served}/#/tools", wait_until="domcontentloaded")
         page.wait_for_selector("main h1", state="visible")
 
-        page.select_option("header select", "de")
+        page.select_option("#language", "de")
         page.wait_for_timeout(300)
 
         assert page.evaluate("location.hash") == "#/tools"
@@ -166,7 +164,7 @@ class TestALongTableSaysThereIsMoreBelow:
     """
 
     def test_the_column_headings_stay_put_while_the_rows_scroll(self, page, served):
-        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
         page.evaluate(
             """async () => {
                 const { api } = await import('/static/js/api.js');
@@ -202,7 +200,7 @@ class TestLlmRouteLayout:
     """The route view keeps every operational detail inside its own card."""
 
     def _open_with_routes(self, page, served):
-        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
         page.evaluate(
             """async () => {
                 const { api } = await import('/static/js/api.js');
@@ -349,7 +347,9 @@ class TestLlmRouteLayout:
 
 class TestSettingsCoherence:
     def test_real_settings_follow_the_input_and_output_pipeline(self, page, served):
-        page.goto(f"{served}/#/settings", wait_until="networkidle")
+        page.goto(f"{served}/#/settings", wait_until="domcontentloaded")
+        # Settings reads the whole field registry before it renders anything.
+        page.wait_for_selector(".settings-nav button", state="visible")
         nav = page.locator(".settings-nav")
 
         assert nav.get_by_role("button", name="Local AI & Behaviour").is_visible()
@@ -494,7 +494,7 @@ class TestStandaloneShell:
     def test_header_does_not_claim_a_live_session(self, browser, standalone_served):
         context = browser.new_context()
         page = context.new_page()
-        page.goto(standalone_served, wait_until="networkidle")
+        page.goto(standalone_served, wait_until="domcontentloaded")
         page.wait_for_function("document.querySelector('#phase-text').textContent.length > 0")
 
         assert page.locator("#phase-text").inner_text() == "not running"
@@ -503,7 +503,10 @@ class TestStandaloneShell:
         assert page.locator("#conversation-indicator").is_hidden()
         context.close()
 
-    def test_footer_names_the_local_resident_model(self, browser, standalone_served):
+    def test_the_system_widget_names_the_local_resident_model(
+        self, browser, standalone_served,
+    ):
+        """A remote reply model never appears beside local graphics memory."""
         context = browser.new_context()
         page = context.new_page()
         page.route("**/api/system", lambda route: route.fulfill(json={
@@ -513,13 +516,16 @@ class TestStandaloneShell:
                 "loaded": [{"name": "qwen2.5:7b-ctx8k"}],
             },
         }))
-        page.goto(standalone_served, wait_until="networkidle")
-        page.wait_for_function("document.querySelector('#foot-local-model')?.textContent.includes('qwen')")
+        page.goto(standalone_served, wait_until="domcontentloaded")
+        page.wait_for_function(
+            "document.querySelector('.widget[data-panel=\\'system\\']')"
+            "?.textContent.includes('qwen')"
+        )
 
-        footer = page.locator("#sidebar-foot").inner_text()
-        assert "qwen2.5:7b-ctx8k" in footer
-        assert "gpt-oss-120b" not in footer
-        assert "5.94 GB / 7.77 GB" in footer
+        widget = page.locator('.widget[data-panel="system"]').inner_text()
+        assert "qwen2.5:7b-ctx8k" in widget
+        assert "gpt-oss-120b" not in widget
+        assert "5.94 GB" in widget
         context.close()
 
 
@@ -549,7 +555,7 @@ class TestSystemModelTruth:
             "process": {"pid": 1, "python": "3", "platform": "test", "threads": 1},
         }))
         page.route("**/api/turns?*", lambda route: route.fulfill(json={"turns": []}))
-        page.goto(f"{served}/#/system", wait_until="networkidle")
+        page.goto(f"{served}/#/system", wait_until="domcontentloaded")
 
         effective = page.locator(".effective-models")
         local = page.locator(".local-models")
@@ -565,7 +571,7 @@ class TestSystemModelTruth:
 
 class TestMemoryMaintenance:
     def _open_with_memory_data(self, page, served):
-        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
         page.evaluate(
             """async () => {
                 const { api } = await import('/static/js/api.js');
@@ -668,7 +674,7 @@ class TestMotionIsOptional:
         page = context.new_page()
         # The test server has no crew endpoint, and a state the view reports
         # as unreachable has nothing to beat for.
-        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
         page.evaluate(
             """async () => {
                 const { api } = await import('/static/js/api.js');
@@ -713,7 +719,7 @@ class TestCalendarDaysKeepTheirName:
     def _in_timezone(self, browser, served, zone):
         context = browser.new_context(timezone_id=zone)
         page = context.new_page()
-        page.goto(served, wait_until="networkidle")
+        page.goto(served, wait_until="domcontentloaded")
         try:
             return page.evaluate(
                 """async () => {
@@ -782,7 +788,7 @@ class TestMissionControl:
             else self._agent(name)
             for name in self.ROSTER
         ]
-        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
         page.evaluate(
             """async (reading) => {
                 const { api } = await import('/static/js/api.js');
@@ -822,7 +828,9 @@ class TestMissionControl:
     def test_the_reading_says_how_old_it_is(self, page, served):
         self._open(page, served, self.ENTRIES)
 
-        assert page.locator(".state-pill").inner_text().strip()
+        # The face carries a state pill of its own, so this one is named by
+        # the panel it belongs to rather than by being the only one.
+        assert page.locator(".panel .state-pill").first.inner_text().strip()
         assert page.locator(".state-pill-age").inner_text().strip()
 
     def test_a_pushed_reading_repaints_without_being_asked_for(self, page, served):
@@ -903,83 +911,6 @@ class TestMissionControl:
         assert page.locator("main script").count() == 0
 
 
-class TestTheOverviewLeadsSomewhere:
-    """The landing page reads across the others, so it links into them.
-
-    It stopped keeping its own list of recent turns: the Conversation view
-    shows the same history as a conversation, and a worse copy of it here
-    only teaches a reader that the two disagree.
-    """
-
-    def _turn(self, turn_id, at, total_ms):
-        return {
-            "turn_id": turn_id, "started_at": at, "source": "voice",
-            "language": "de", "total_ms": total_ms,
-            "transcript": f"question {turn_id}", "reply": f"answer {turn_id}",
-            "error": None, "tools": [],
-            "stages": [{"name": "stt", "duration_ms": total_ms * 0.2},
-                       {"name": "llm", "duration_ms": total_ms * 0.6}],
-        }
-
-    def _open(self, page, served):
-        turns = [self._turn(n, 1_755_800_000 + n * 60, total)
-                 for n, total in enumerate([1800, 2000, 2200, 9000], start=1)]
-        page.goto(f"{served}/#/logs", wait_until="networkidle")
-        page.evaluate(
-            """async (turns) => {
-                const { api } = await import('/static/js/api.js');
-                api.turns = async () => ({ turns });
-                api.status = async () => ({
-                    phase: 'idle', phase_since: 1755800000, uptime_seconds: 900,
-                    last_turn: turns[turns.length - 1], discarded: { no_speech: 2 },
-                    models: { chat: 'qwen2.5:7b-ctx8k' },
-                });
-                api.tools = async () => ({ tools: [
-                    { name: 'getWeather', origin: 'builtin' },
-                    { name: 'askCrew', origin: 'builtin' },
-                ], servers: [] });
-                api.security = async () => ({ level: 'critical', pending: [] });
-                api.graphStats = async () => ({ total_nodes: 42, total_tokens: 1337 });
-            }""",
-            turns,
-        )
-        page.goto(f"{served}/#/overview")
-        page.wait_for_selector(".readings", state="visible")
-        return turns
-
-    def test_it_no_longer_keeps_its_own_list_of_recent_turns(self, page, served):
-        self._open(page, served)
-
-        assert page.get_by_text("question 1", exact=True).count() == 0
-        assert not page.console_errors
-
-    def test_the_typical_wait_is_shown_beside_the_last_one(self, page, served):
-        """One slow turn is not the state of things."""
-        self._open(page, served)
-
-        # Totals are 1.80, 2.00, 2.20 and 9.00 seconds: the median is 2.10.
-        assert "2.10 s" in page.locator(".turn-typical").inner_text()
-        assert "9.00 s" in page.locator(".turn-total-big").inner_text()
-
-    def test_every_reading_leads_to_the_view_that_holds_it(self, page, served):
-        self._open(page, served)
-
-        targets = page.locator(".readings a.card").evaluate_all(
-            "cards => cards.map(card => new URL(card.href).hash)"
-        )
-
-        assert targets == ["#/memory", "#/tools", "#/security", "#/conversation"]
-
-    def test_following_a_reading_opens_its_view(self, page, served):
-        self._open(page, served)
-
-        page.locator(".readings a.card").first.click()
-        page.wait_for_timeout(300)
-
-        assert page.evaluate("location.hash") == "#/memory"
-        assert not page.console_errors
-
-
 class TestTheConversationIsTheConversationView:
     """The exchange is what this view is for.
 
@@ -1005,7 +936,7 @@ class TestTheConversationIsTheConversationView:
             self._turn(1, 1_755_800_000, "Wie ist das Wetter", "Vierzehn Grad und bewölkt."),
             self._turn(2, 1_755_800_100, "Und morgen", "Morgen wird es trocken."),
         ]
-        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
         page.evaluate(
             """async (turns) => {
                 const { api } = await import('/static/js/api.js');
@@ -1139,7 +1070,7 @@ class TestTheConversationIsTheConversationView:
         for preference, expected in (("reduce", False), ("no-preference", True)):
             context = browser.new_context(reduced_motion=preference)
             opened = context.new_page()
-            opened.goto(served, wait_until="networkidle")
+            opened.goto(served, wait_until="domcontentloaded")
             try:
                 allowed = opened.evaluate(
                     """async () => {
@@ -1168,7 +1099,7 @@ class TestTheMicrophoneReachesTheDaemon:
         page = context.new_page()
         page.console_errors = []
         page.on("pageerror", lambda error: page.console_errors.append(str(error)))
-        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
         # Standalone nothing is listening, so the view would refuse to open
         # the microphone at all. The socket it opens is the real one.
         page.evaluate(
@@ -1207,7 +1138,7 @@ class TestTheMicrophoneReachesTheDaemon:
             page.locator(".voice-mic").click()
             page.wait_for_timeout(1500)
 
-            page.goto(f"{served}/#/overview")
+            page.goto(f"{served}/#/deck")
             page.wait_for_timeout(800)
 
             page.goto(f"{served}/#/conversation")
@@ -1237,7 +1168,7 @@ class TestPassiveRecordHasItsOwnHome:
     ]
 
     def _open(self, page, served, enabled=False):
-        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
         page.evaluate(
             """async ([lines, enabled]) => {
                 const { api } = await import('/static/js/api.js');
@@ -1256,7 +1187,7 @@ class TestPassiveRecordHasItsOwnHome:
         page.wait_for_selector("main h1", state="visible")
 
     def test_the_conversation_view_no_longer_carries_the_record(self, page, served):
-        page.goto(f"{served}/#/conversation", wait_until="networkidle")
+        page.goto(f"{served}/#/conversation", wait_until="domcontentloaded")
         page.wait_for_selector("main h1", state="visible")
         page.wait_for_timeout(400)
 
@@ -1326,7 +1257,7 @@ class TestTheDiagnosticLogIsReadable:
     ]
 
     def _open(self, page, served, entries=None):
-        page.goto(f"{served}/#/overview", wait_until="networkidle")
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
         page.evaluate(
             """async (entries) => {
                 const { api } = await import('/static/js/api.js');
@@ -1456,7 +1387,7 @@ class TestStreamingApiClient:
             )
 
         page.route(f"**{path}", respond)
-        page.goto(served, wait_until="networkidle")
+        page.goto(served, wait_until="domcontentloaded")
         result = page.evaluate(
             """async (methodName) => {
                 const { api } = await import('/static/js/api.js');
@@ -1485,7 +1416,7 @@ class TestStreamingApiClient:
             )
 
         page.route("**/api/graph/import-diary", respond)
-        page.goto(served, wait_until="networkidle")
+        page.goto(served, wait_until="domcontentloaded")
         result = page.evaluate(
             """async () => {
                 const { api } = await import('/static/js/api.js');

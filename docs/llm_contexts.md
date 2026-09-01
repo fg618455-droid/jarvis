@@ -244,6 +244,18 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 
 ---
 
+## 17c. Today panel briefing (control centre)
+
+- **File**: [src/jarvis/webui/api/briefing.py](src/jarvis/webui/api/briefing.py), calling the same `generate_morning_briefing()` as 17b.
+- **Trigger**: `POST /api/briefing/refresh` only, i.e. a person pressing a button in the control centre. `GET /api/briefing` never calls a model: it extracts School items deterministically and returns the cached prose if one was written for the current local day. An empty School branch is refused with 409 before any call.
+- **Model / gating**: CHAT tier via `resolve_model(cfg, Tier.CHAT)`, inherited from `generate_morning_briefing()`. Not gated by `morning_briefing_enabled`: that switch governs whether the assistant speaks unprompted, not whether a person may read a summary they asked for.
+- **Inputs**: identical to 17b, because it is the same function: the reply prefix with persona and voice-language instruction, the local ISO date, and the bounded School-branch snapshot fenced as untrusted data.
+- **System prompt**: identical to 17b.
+- **Output**: one natural-language briefing returned as JSON and cached in `app_state` under `briefing.web_summary` with `briefing.web_summary_date`. Nothing is spoken. The spoken briefing's own delivery gate is a separate key and is never written here, so reading on screen does not suppress the morning speech.
+- **Limits**: `llm_chat_timeout_sec`; `max_tokens: 350`; at most one call per press. A repeated read of the same local day costs nothing.
+
+---
+
 ## 18. Canned Fallback Rendering
 
 - **File**: [src/jarvis/reply/fallbacks.py](src/jarvis/reply/fallbacks.py) — `in_the_voices_language()`.
@@ -298,6 +310,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 | 14 | Tool-specific | per-tool | n/a | FAST or CHAT as listed above |
 | 17 | Ambient digest | 0-1 per configured interval | passive capture only | untiered (`llm_chat_model` direct) |
 | 17b | Morning School briefing | 0-N retries until one briefing is queued that local day | `morning_briefing_enabled` | CHAT |
+| 17c | Today panel briefing | 0-1 per press of Write a summary | control centre open, non-empty School branch | CHAT |
 | 18 | Canned fallback rendering | 0-1, once per message per language | only with a named voice language | SMALL (FAST tier) |
 | 19 | Browser semantic action resolver | 0-8 per browserInteract | opt-in tool + confirmed invocation | CHAT |
 | 20 | Desktop semantic action resolver | 0-8 per desktopInteract | opt-in tool + confirmed invocation | CHAT |

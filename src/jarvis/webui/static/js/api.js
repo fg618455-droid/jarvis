@@ -113,6 +113,15 @@ export const api = {
   tools: () => request("/api/tools"),
   refreshTools: () => request("/api/tools/refresh", { method: "POST" }),
 
+  visualizerConfig: () => request("/api/visualizer/config"),
+
+  mcpServers: () => request("/api/mcp/servers"),
+  saveMcpServers: (servers) =>
+    request("/api/mcp/servers", { method: "PUT", body: { servers } }),
+
+  briefing: () => request("/api/briefing"),
+  refreshBriefing: () => request("/api/briefing/refresh", { method: "POST" }),
+
   security: () => request("/api/security"),
   decide: (requestId, approved) =>
     request("/api/security/decide", {

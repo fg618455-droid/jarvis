@@ -164,8 +164,10 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 - **Conversational Awareness** - Understands ongoing discussions. Ask "Jarvis, what do you think?" and it knows what you're talking about. Works naturally in multi-person conversations.
 - **Text Chat** - Type to Jarvis alongside voice. Voice and text share one conversation, so a follow-up typed in the chat window continues a voice discussion. Text never speaks. Open it from the tray menu (`💬 Chat…`) while Jarvis is listening. The window is styled like an SMS thread with a single contact: speech bubbles, timestamps, and an online/typing presence line. It shows a local status banner while Jarvis starts, stops, or needs to be restarted, and every message you send carries a rewind button that rolls the conversation back to that point and regenerates the reply.
 - **Unlimited Memory** - Never forgets. Searches across all your conversation history and can add bounded, attributable excerpts from a local Remio knowledge base. Browse and edit Jarvis memory in the Control Centre.
-- **Control Centre** - A local web interface the daemon serves at `http://127.0.0.1:5055`: live state, memory, conversation, tools, security, technical readings, and every setting. Offline, no build step, nothing leaves the machine.
-- **Face/Visualizer** - A face in the Control Centre that idles, listens, thinks, and speaks in step with the real conversation, reading Jarvis's own live state directly (no signal files, no second server). The face gallery itself is a vendored, AGPL-3.0-licensed third-party component; see `THIRD_PARTY_NOTICES.md`.
+- **Control Centre** - A local web interface the daemon serves at `http://127.0.0.1:5055`. The face is the page: it sits at the centre with widgets around it for memory, tools, MCP servers, security, LLM routes, system readings, and the day's briefing. Each widget opens its detail beside the face rather than replacing it, and Settings is the one button that takes the whole window. Two themes, offline, no build step, nothing leaves the machine.
+- **Face/Visualizer** - A face at the centre of the Control Centre that idles, listens, thinks, and speaks in step with the real conversation, reading Jarvis's own live state directly (no signal files, no second server). Pick which face and how large it draws from the control beside it; it takes its colour from the active theme. The face gallery itself is a vendored, AGPL-3.0-licensed third-party component; see `THIRD_PARTY_NOTICES.md`.
+- **MCP servers from the interface** - Add, edit, and remove MCP servers in the Control Centre instead of hand-editing `config.json`. Credentials are writable but never readable, and each server says whether it is configured, connected, or waiting on a restart.
+- **Today** - A briefing widget over what Jarvis has learned about school: what is on, and a short written summary on request. It shares its source and its wording with the spoken morning briefing, so the two never disagree about the same day.
 - **Passive Capture (opt-in)** - Keep a local, text-only record of speech the recogniser already transcribed, including ambient conversation not addressed to Jarvis. It is off by default, visibly indicated while active, and deletable by line, day, or in full. No audio is written to disk.
 - **School Briefing (opt-in)** - Ask for a raw countdown to examinations at any time, or enable one short spoken School-memory briefing after a chosen local time each morning. Proactive speech is off by default and defers whenever the user or Jarvis is already speaking.
 - **Adaptive Tone** - Automatically surgical for code, pragmatic for business, encouraging for wellbeing — no manual mode switching
@@ -177,7 +179,7 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 - **Knowledge Graph Memory** - Self-organising memory that learns from conversations, auto-splits by topic, and surfaces relevant knowledge automatically
 - **Natural Voice** - Address Jarvis at either end of your sentence, then follow up without repeating the wake word after the reply finishes
 - **Starts Talking Sooner** - Jarvis speaks each sentence as it finishes writing it, instead of waiting for the whole answer. Long replies begin about a second earlier; short ones are unchanged, because there is nothing to overlap
-- **Conversation Mode** - Turn it on in the Control Centre's Conversation view and the follow-up window stays open: no question needs the wake word until you ask Jarvis to stop. The header says so on every view while it runs.
+- **Conversation Mode** - Turn it on in the Control Centre's Conversation panel and the follow-up window stays open: no question needs the wake word until you ask Jarvis to stop. The header says so wherever you are while it runs.
 - **Fast Stop** - Use the tray action `⚡ Stop Now (Skip Diary)` to release local model resources quickly when you need your machine back immediately.
 - **Dictation Mode** - Free, offline alternative to WisprFlow — hold a hotkey, speak, release to paste text into any app
 - **MCP Integration** - Connect to thousands of external tools (Home Assistant, GitHub, Slack, etc.)
@@ -207,7 +209,7 @@ Most users won't need to change anything. Open **⚙️ Settings** from the tray
 <details>
 <summary><strong>Passive Capture</strong></summary>
 
-Passive Capture is off by default. When enabled under **📝 Passive Capture**, it preserves text that speech recognition already produced as a readable room transcript. It does not add another microphone stream and never stores audio. The header shows **recording everything** on every Control Centre view while the switch is on.
+Passive Capture is off by default. When enabled under **📝 Passive Capture**, it preserves text that speech recognition already produced as a readable room transcript. It does not add another microphone stream and never stores audio. The header shows **recording everything** in the Control Centre while the switch is on.
 
 Transcript text is stored as heard in the local SQLite database. Before ambient lines reach the configured LLM backend, credentials are redacted and the text is fenced as untrusted data. Useful plans, decisions, appointments, and events can be folded into the diary as explicitly overheard information. Addressed speech is not digested again. If `llm_provider` points at a remote server, that server sees the redacted ambient text, so the interface names the configured backend before enabling capture.
 
@@ -297,7 +299,7 @@ Tested local servers (all run on your own machine):
 | vLLM | `http://localhost:8000/v1` | Tool calling depends on the model. |
 | oMLX (Apple Silicon) | varies | No embeddings endpoint, so memory uses keyword search unless you route embeddings to Ollama (below). |
 
-The control centre's **LLM routes** view shows active routes, cooldowns, failures, and masked keys. It performs no outbound request until you press **Probe models**. A route entry has this shape:
+The control centre's **LLM routes** panel shows active routes, cooldowns, failures, and masked keys. It performs no outbound request until you press **Probe models**. A route entry has this shape:
 
 ```json
 {
@@ -748,7 +750,7 @@ Get API key at [composio.dev](https://composio.dev)
 
 **Linux: No tray icon** - `sudo apt install libayatana-appindicator3-1`
 
-**Jarvis keeps deflecting on questions it answered before** - small models can record their own past failures into the diary, which then primes future sessions to repeat them. New writes are scrubbed automatically; to clean stored entries, open the control centre's **Memory** view and choose **Clean deflection narration** in the **Maintenance** section. Only sentences that narrate the assistant's failures are removed; the rest of each entry stays.
+**Jarvis keeps deflecting on questions it answered before** - small models can record their own past failures into the diary, which then primes future sessions to repeat them. New writes are scrubbed automatically; to clean stored entries, open the control centre's **Memory** panel and choose **Clean deflection narration** in the **Maintenance** section. Only sentences that narrate the assistant's failures are removed; the rest of each entry stays.
 
 </details>
 

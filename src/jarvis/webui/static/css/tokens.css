@@ -8,42 +8,22 @@
    that needs a shade it cannot find should gain a token rather than a
    literal, so the whole instrument can be retuned from one file.
 
+   The file has two halves, and the split is the point. `:root` holds the
+   instrument: the type ladder, the spacing steps, the radii, the motion
+   durations, and the sizes the layout is built from. A `[data-theme]` block
+   holds only paint. A theme therefore changes what the interface looks like
+   and never where anything is or how large it reads, so no heading changes
+   size because someone preferred a different palette.
+
+   Adding a theme is adding one block. Every theme names the same tokens as
+   every other one, because a token a theme forgets does not fall back to a
+   sensible default: it keeps whatever the last theme painted, and one card
+   quietly reads in the wrong palette. `tests/webui/test_theme_tokens.py`
+   holds that rule for themes that do not exist yet.
+
    Fonts are the system stack. Nothing here reaches the network. */
 
 :root {
-  /* Surfaces, from the page backwards to the deepest well. A card sits
-     above the page; a feed or a table sits inside the card, below it. */
-  --bg: #0d0e11;
-  --surface-inset: #101216;
-  --surface: #14161b;
-  --surface-2: #191c22;
-  --surface-3: #1e222a;
-  --line: #23262e;
-  --line-soft: #1b1e24;
-
-  --fg: #e8eaed;
-  --fg-dim: #9aa1ac;
-  --fg-mute: #6b7280;
-
-  --accent: #7dd3fc;
-  --accent-soft: rgba(125, 211, 252, 0.12);
-  --accent-line: rgba(125, 211, 252, 0.35);
-
-  /* Status. Each tone carries a fill and a border alongside its text
-     colour, because a chip, a rail, and a meter all need the same reading
-     at three different weights. */
-  --ok: #4ade80;
-  --ok-soft: rgba(74, 222, 128, 0.12);
-  --ok-line: rgba(74, 222, 128, 0.3);
-
-  --warn: #fbbf24;
-  --warn-soft: rgba(251, 191, 36, 0.12);
-  --warn-line: rgba(251, 191, 36, 0.3);
-
-  --bad: #f87171;
-  --bad-soft: rgba(248, 113, 113, 0.12);
-  --bad-line: rgba(248, 113, 113, 0.3);
-
   --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
   --mono: ui-monospace, "Cascadia Mono", "Consolas", "SF Mono", monospace;
 
@@ -68,21 +48,144 @@
 
   --r: 10px;
   --r-sm: 6px;
+  /* A pill: a control whose shape says it is a switch rather than a field. */
+  --r-pill: 999px;
 
-  --sidebar: 240px;
   --header: 56px;
   --content-max: 1200px;
   /* The gutter around a view. Named because a view that fills the window
      rather than growing past it has to subtract exactly this. */
   --main-pad: var(--s5);
 
+  /* The deck. A rail is the column of widgets either side of the face; the
+     face takes whatever is left, so the centre is the flexible one. */
+  --rail: 320px;
+  --panel: 420px;
+  /* How wide the face draws by default. The face widget writes over this on
+     the element itself when someone sizes it, so the token is the starting
+     point rather than the only value. */
+  --face-size: 320px;
+
   --t-fast: 120ms ease-out;
   --t-view: 200ms ease-out;
   /* Long enough that a reading which arrived while you were looking
      elsewhere is still marked when you look back. */
   --t-glow: 2400ms;
+}
 
+/* ── Graphite ─────────────────────────────────────────────────────────────
+
+   The established look: a measuring instrument in near-black and one cool
+   accent. Retuned for the deck rather than replaced, so an interface
+   someone already reads fluently still reads the same way. */
+
+[data-theme="graphite"] {
+  --bg: #0d0e11;
+  /* Behind the face, where the page falls away. */
+  --bg-deep: #08090b;
+  --surface-inset: #101216;
+  --surface: #14161b;
+  --surface-2: #191c22;
+  --surface-3: #1e222a;
+  --line: #23262e;
+  --line-soft: #1b1e24;
+
+  --fg: #e8eaed;
+  --fg-dim: #9aa1ac;
+  --fg-mute: #6b7280;
+
+  --accent: #7dd3fc;
+  --accent-soft: rgba(125, 211, 252, 0.12);
+  --accent-line: rgba(125, 211, 252, 0.35);
+  --accent-glow: rgba(125, 211, 252, 0.22);
+
+  /* Status. Each tone carries a fill and a border alongside its text
+     colour, because a chip, a rail, and a meter all need the same reading
+     at three different weights. */
+  --ok: #4ade80;
+  --ok-soft: rgba(74, 222, 128, 0.12);
+  --ok-line: rgba(74, 222, 128, 0.3);
+
+  --warn: #fbbf24;
+  --warn-soft: rgba(251, 191, 36, 0.12);
+  --warn-line: rgba(251, 191, 36, 0.3);
+
+  --bad: #f87171;
+  --bad-soft: rgba(248, 113, 113, 0.12);
+  --bad-line: rgba(248, 113, 113, 0.3);
+
+  /* The face and the rings around it. Restrained on purpose: the reference
+     is the atmosphere of a heads-up display, not its clutter. */
+  --hud-ring: rgba(125, 211, 252, 0.16);
+  --hud-ring-soft: rgba(125, 211, 252, 0.06);
+  --face-aura: rgba(125, 211, 252, 0.10);
+  --face-bed: #0a0b0e;
+  /* The faces are third-party pages that paint in their own colours, and
+     they are never edited. Rotating the framed result onto the theme's own
+     hue is how a face joins the page it sits in rather than glowing a
+     different colour at the centre of it. Presentation only: the vendored
+     code is untouched and still renders exactly what its author wrote. */
+  --face-tint: hue-rotate(48deg) saturate(0.85);
+
+  --scrim: rgba(8, 9, 11, 0.72);
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
+}
+
+/* ── Arc ──────────────────────────────────────────────────────────────────
+
+   The new one. The same instrument under a colder light: a blue-white
+   filament on deep slate, with the circular motif carrying a little more of
+   the accent than graphite allows. It takes the atmosphere of the reference
+   heads-up displays and none of their density, so the page still reads as
+   an instrument rather than as a film prop. */
+
+[data-theme="arc"] {
+  --bg: #060a14;
+  --bg-deep: #02050c;
+  --surface-inset: #0a1220;
+  --surface: #101a2c;
+  --surface-2: #16233a;
+  --surface-3: #1e2f4a;
+  --line: #27395a;
+  --line-soft: #1a2740;
+
+  --fg: #eaf2ff;
+  --fg-dim: #9db2d0;
+  --fg-mute: #677d9e;
+
+  --accent: #58d7ff;
+  --accent-soft: rgba(88, 215, 255, 0.16);
+  --accent-line: rgba(88, 215, 255, 0.45);
+  --accent-glow: rgba(88, 215, 255, 0.34);
+
+  --ok: #34d399;
+  --ok-soft: rgba(52, 211, 153, 0.14);
+  --ok-line: rgba(52, 211, 153, 0.34);
+
+  --warn: #f0b429;
+  --warn-soft: rgba(240, 180, 41, 0.14);
+  --warn-line: rgba(240, 180, 41, 0.34);
+
+  --bad: #fb7185;
+  --bad-soft: rgba(251, 113, 133, 0.14);
+  --bad-line: rgba(251, 113, 133, 0.34);
+
+  --hud-ring: rgba(88, 215, 255, 0.26);
+  --hud-ring-soft: rgba(88, 215, 255, 0.1);
+  --face-aura: rgba(88, 215, 255, 0.2);
+  --face-bed: #040810;
+  --face-tint: hue-rotate(44deg) saturate(1.15) brightness(1.05);
+
+  --scrim: rgba(2, 5, 12, 0.78);
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.65);
+}
+
+/* A page that has not been told which theme to wear still has to be
+   readable, so the established one is the fallback rather than a blank
+   palette. `theme.js` sets the attribute before first paint; this covers the
+   moment before it runs and the case where scripting never arrives. */
+:root:not([data-theme]) {
+  color-scheme: dark;
 }
 
 @media (prefers-reduced-motion: reduce) {

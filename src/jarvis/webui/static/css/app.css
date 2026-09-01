@@ -163,122 +163,52 @@ a:hover {
   50% { opacity: 0.35; }
 }
 
-/* ── Sidebar ─────────────────────────────────────────────────────────── */
+/* ── Settings button ─────────────────────────────────────────────────── */
 
-.sidebar {
-  position: fixed;
-  top: var(--header);
-  bottom: 0;
-  left: 0;
-  width: var(--sidebar);
-  padding: var(--s4) var(--s3);
-  border-right: 1px solid var(--line);
-  display: flex;
-  flex-direction: column;
-  gap: var(--s1);
-  overflow-y: auto;
-}
-
-.nav-item {
-  display: flex;
+/* The only control in the frame that replaces the whole interface, so it is
+   the only one shaped like a destination rather than a reading. */
+.settings-button {
+  display: inline-flex;
   align-items: center;
-  gap: var(--s3);
-  padding: var(--s2) var(--s3);
+  justify-content: center;
+  width: 32px;
+  height: 32px;
   border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
   color: var(--fg-dim);
   cursor: pointer;
-  border: none;
-  background: none;
-  font: inherit;
-  text-align: left;
-  width: 100%;
-  transition: background var(--t-fast), color var(--t-fast);
+  flex: none;
+  transition: background var(--t-fast), color var(--t-fast),
+    border-color var(--t-fast);
 }
 
-.nav-item:hover {
-  background: var(--surface);
+.settings-button:hover {
+  background: var(--surface-2);
+  border-color: var(--accent-line);
   color: var(--fg);
 }
 
-.nav-item[aria-current="page"] {
+.settings-button[aria-current="page"] {
   background: var(--accent-soft);
+  border-color: var(--accent-line);
   color: var(--accent);
-}
-
-.nav-item .badge {
-  margin-left: auto;
-  font-family: var(--mono);
-  font-size: var(--fs-micro);
-  color: var(--fg-mute);
-}
-
-.nav-item[aria-current="page"] .badge {
-  color: var(--accent);
-}
-
-/* Ten destinations read as a list; three named groups read as a map. The
-   label is decoration for the eye and structure for a screen reader, so
-   the buttons under it sit in a group that carries the same name. */
-.nav-group {
-  display: grid;
-  gap: var(--s1);
-}
-
-.nav-group + .nav-group {
-  margin-top: var(--s4);
-}
-
-.nav-group-label {
-  padding: 0 var(--s3);
-  font-size: var(--fs-micro);
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--fg-mute);
-}
-
-.sidebar-foot {
-  margin-top: auto;
-  padding: var(--s3);
-  border-top: 1px solid var(--line-soft);
-  color: var(--fg-mute);
-  font-size: var(--fs-xs);
-  display: grid;
-  gap: var(--s1);
-}
-
-.sidebar-foot .num {
-  color: var(--fg-dim);
-}
-
-.sidebar-reading {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.sidebar-reading .label {
-  color: var(--fg-mute);
-  font-size: 0.68rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.sidebar-reading .num {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* ── Main ────────────────────────────────────────────────────────────── */
 
 /* The header's height is padding rather than a top margin. As body's first
-   in-flow child (the header and sidebar are both fixed) a top margin here
-   collapses out through html and adds its own height to the page, so every
-   view scrolled by the height of the header with nothing under it. */
+   in-flow child (the header is fixed) a top margin here collapses out
+   through html and adds its own height to the page, so every view scrolled
+   by the height of the header with nothing under it. */
 .main {
-  margin-left: var(--sidebar);
   padding: calc(var(--header) + var(--main-pad)) var(--main-pad) var(--main-pad);
+}
+
+/* The deck is sized against the window rather than flowed down the page, so
+   it opts out of the gutter the scrolling views use. */
+.main.is-deck {
+  padding: var(--header) 0 0;
 }
 
 .view {
@@ -771,28 +701,11 @@ input[type="checkbox"] {
 
 @media (max-width: 760px) {
   :root {
-    --sidebar: 60px;
     --main-pad: var(--s3);
   }
 
-  .nav-item span.text,
-  .nav-group-label,
-  .sidebar-foot {
-    display: none;
-  }
-
-  /* Without their labels the groups still need to read as groups, so the
-     gap between them becomes the only separator. */
-  .nav-group + .nav-group {
-    margin-top: var(--s3);
-  }
-
-  .nav-item {
-    justify-content: center;
-  }
-
   .main {
-    padding: var(--s3);
+    padding: calc(var(--header) + var(--s3)) var(--s3) var(--s3);
   }
 
   .header {
