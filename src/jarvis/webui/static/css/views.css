@@ -746,6 +746,13 @@
   color: var(--fg-dim);
 }
 
+/* The prose takes the room the note has left. A control shrunk until its own
+   label wraps mid-phrase reads as two stacked words rather than as the one
+   thing it does, and the sentence beside it has room to give. */
+.settings-note .btn {
+  flex: none;
+}
+
 .object-list,
 .object-list-items {
   display: grid;

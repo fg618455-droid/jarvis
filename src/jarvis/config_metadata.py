@@ -115,23 +115,29 @@ CLOUD_TTS_PROVIDER_FIELD_METADATA = (
 )
 
 
-# Categories and their display order
+# Categories and their display order.
+#
+# A label is words. The interfaces that build a form from this registry say
+# what a thing is with type and with their own icon set, both of which a
+# theme can restyle and neither of which depends on the reader's font vendor
+# for its colour. There are also more categories here than there are obvious
+# pictures for them, so a pictograph per label ends up repeating itself.
 CATEGORIES = [
-    ("local_ai", "🤖 Local AI & Behaviour"),
-    ("speech_input", "🎤 Speech Input"),
-    ("speech_recognition", "📝 Speech Recognition"),
-    ("speech_output", "🔊 Speech Output"),
-    ("timing", "⏱️ Timing & Windows"),
-    ("memory", "🧠 Memory & Dialogue"),
-    ("school", "🎓 School"),
-    ("passive", "📝 Passive Capture"),
-    ("security", "🔐 Security"),
-    ("location", "📍 Location"),
-    ("features", "✨ Features"),
-    ("webui", "🖥️ Control Centre"),
-    ("crew", "👥 Mission Control"),
-    ("mcps", "🔌 MCP Servers"),
-    ("advanced", "🔧 Advanced"),
+    ("local_ai", "Local AI & Behaviour"),
+    ("speech_input", "Speech Input"),
+    ("speech_recognition", "Speech Recognition"),
+    ("speech_output", "Speech Output"),
+    ("timing", "Timing & Windows"),
+    ("memory", "Memory & Dialogue"),
+    ("school", "School"),
+    ("passive", "Passive Capture"),
+    ("security", "Security"),
+    ("location", "Location"),
+    ("features", "Features"),
+    ("webui", "Control Centre"),
+    ("crew", "Mission Control"),
+    ("mcps", "MCP Servers"),
+    ("advanced", "Advanced"),
 ]
 
 

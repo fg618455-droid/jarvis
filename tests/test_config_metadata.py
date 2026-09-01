@@ -5,6 +5,8 @@ forms from, so a field with a bad category, a missing default, or a choice
 list that has drifted from the config makes a setting unreachable in both.
 """
 
+import re
+
 from jarvis.config import get_default_config
 from jarvis.config_metadata import (
     CATEGORIES,
@@ -323,3 +325,43 @@ class TestDefaultValueTypes:
                 )
 
 
+
+
+class TestACategoryNamesItselfInWords:
+    """A settings category is a word, not a picture of one.
+
+    The interface already says what a thing is with type: one accent, one
+    type ladder, one icon set drawn in the current colour. A pictograph in
+    the label ignores all three. It arrives in whatever palette the reader's
+    font vendor chose, it cannot be restyled by a theme, and there are more
+    categories than there are obvious pictures for them, so the set repeats
+    itself and two unrelated categories end up wearing the same glyph.
+
+    The label is asserted rather than the rendering because the label is
+    what every surface reads: strip it here and every consumer is clean.
+    """
+
+    # Pictographs and their modifiers, rather than a list of the ones that
+    # happen to be in the file today. Any language's letters, marks and
+    # punctuation pass; a picture does not.
+    PICTOGRAPHS = re.compile(
+        "[\U0001f000-\U0001faff\u2190-\u2bff\ufe0f\u200d]",
+    )
+
+    def test_no_category_label_carries_a_pictograph(self):
+        offenders = {
+            key: label
+            for key, label in CATEGORIES
+            if self.PICTOGRAPHS.search(label)
+        }
+
+        assert not offenders, f"category labels carrying pictographs: {offenders}"
+
+    def test_every_category_is_named_and_named_once(self):
+        """Two categories wearing one glyph is what made this worth asserting."""
+        labels = [label for _, label in CATEGORIES]
+
+        assert all(label.strip() for label in labels), "a category with no name"
+        assert len(set(labels)) == len(labels), (
+            f"two categories share a name: {sorted(labels)}"
+        )
