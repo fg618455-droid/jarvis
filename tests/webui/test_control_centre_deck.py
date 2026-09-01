@@ -395,3 +395,39 @@ class TestARailReadsAsReadingsRatherThanAsAForm:
             f"the last of {shape['count']} tiles is {shape['last']}px in a "
             f"{shape['row']}px row, so it sits beside a gap"
         )
+
+
+class TestAWidgetReadsTheSameSourceAsItsPanel:
+    """A widget is the compact version of its panel, so it has to agree with it.
+
+    The two are fed by different endpoints, and a widget wired to the wrong
+    one does not fail: it reads a field the payload does not carry, falls back
+    to its default, and shows a confident zero next to a panel showing five.
+    Nothing throws and nothing logs, so the only thing that catches it is
+    asserting the number the widget paints against the number its panel is
+    built from.
+    """
+
+    def test_the_memory_widget_counts_the_nodes_its_panel_counts(self, page, served):
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
+        page.wait_for_selector(".deck-rail-left .widget", state="visible", timeout=5000)
+        page.wait_for_timeout(900)
+
+        graphed = page.evaluate(
+            """async () => {
+                const response = await fetch('/api/graph/stats');
+                return (await response.json()).total_nodes;
+            }"""
+        )
+        painted = page.evaluate(
+            r"""() => {
+                const widget = [...document.querySelectorAll('.deck-rail-left .widget')]
+                    .find((node) => node.querySelector('.widget-title')
+                        .textContent.trim().toLowerCase().includes('memory'));
+                return Number(widget.querySelector('.num').textContent.replace(/\D/g, ''));
+            }"""
+        )
+
+        assert painted == graphed, (
+            f"the rail says {painted} nodes where the graph has {graphed}"
+        )

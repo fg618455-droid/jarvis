@@ -116,7 +116,11 @@ export function mountDeck(root, { onOpenPanel } = {}) {
       into("tools", () => api.tools()),
       into("security", () => api.security()),
       into("system", () => api.system()),
-      into("memory", () => api.memoryStats()),
+      // The node count and its token weight, which is what the memory widget
+      // shows and what its panel is built from. `/api/stats` is the diary's
+      // tally and carries neither, so a widget fed from there reads a field
+      // that is not in the payload and paints a confident zero.
+      into("memory", () => api.graphStats()),
       into("routes", () => api.llmRoutes()),
       into("logs", () => api.logs(200)),
       into("passive", () => api.passive("", 1)),
