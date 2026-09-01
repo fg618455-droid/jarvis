@@ -245,3 +245,17 @@ def test_protocol_preserves_unicode_text_on_windows(tmp_path):
         assert client.generate("model", "system", "prompt", 2.0) == "Grüße — 世界"
     finally:
         client.stop()
+
+
+def test_default_ready_timeout_tolerates_a_slow_cold_start():
+    """A fresh sidecar interpreter importing the Claude Agent SDK and
+    authenticating a session has been observed taking several seconds
+    (~6-11s) to report ready. The default must clear that with headroom, or
+    every merely-slow-not-broken start gets misreported as a provider
+    failure and silently falls back to a different chat backend."""
+    from jarvis.llm.claude_subscription_sidecar_client import (
+        ClaudeSubscriptionSidecarClient,
+    )
+
+    client = ClaudeSubscriptionSidecarClient()
+    assert client._ready_timeout_sec >= 15.0

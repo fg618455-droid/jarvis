@@ -54,7 +54,7 @@ class ClaudeSubscriptionSidecarClient:
         *,
         interpreter_path: Optional[Path] = None,
         entrypoint_path: Optional[Path] = None,
-        ready_timeout_sec: float = 5.0,
+        ready_timeout_sec: float = 20.0,
     ) -> None:
         self._interpreter_path = interpreter_path or default_sidecar_interpreter()
         self._entrypoint_path = entrypoint_path or Path(__file__).with_name(
