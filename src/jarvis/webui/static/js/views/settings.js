@@ -7,6 +7,7 @@
 import { api } from "../api.js";
 import { t } from "../i18n.js";
 import { chip, clear, el, toast } from "../ui.js";
+import { holdingUnsaved } from "../unsaved.js";
 
 export async function mount(root) {
   const payload = await api.settings();
@@ -402,5 +403,8 @@ export async function mount(root) {
   paintPanel();
   markChanged();
 
-  return () => {};
+  // A field typed back to what it already was is not a change: `changes`
+  // holds only what differs from the stored value, so the shell stays quiet
+  // for an edit that was undone.
+  return holdingUnsaved(() => changes.size > 0);
 }

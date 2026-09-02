@@ -3,6 +3,7 @@
 import { api } from "../api.js";
 import { t } from "../i18n.js";
 import { chip, clear, el, empty, toast } from "../ui.js";
+import { holdingUnsaved } from "../unsaved.js";
 
 const CHAT_BACKEND_CHOICES = [
   "auto", "ollama", "claude_subscription", "codex_subscription", "crew_chat",
@@ -26,12 +27,18 @@ export async function mount(root) {
   root.append(head, actions, backendCard, chains, editorCard);
 
   let payload = null;
+  /* The editor holds a copy of the routes and writes them in one go, so
+     until Save is pressed a change lives in the page and nowhere else. A
+     reload replaces that copy with what is stored, which is what refresh
+     does, so it is also what clears this. */
+  let edited = false;
 
   async function refresh() {
     payload = await api.llmRoutes();
+    edited = false;
     paintBackendSelectors(backendCard, payload, refresh);
     paintChains(chains, payload.effective_chains || payload.chains || {});
-    paintEditor(editorCard, payload, refresh);
+    paintEditor(editorCard, payload, refresh, () => { edited = true; });
   }
 
   const probe = el("button", {
@@ -61,6 +68,8 @@ export async function mount(root) {
   actions.append(probe, reset);
 
   await refresh();
+
+  return holdingUnsaved(() => edited);
 }
 
 function clone(value) {
@@ -78,7 +87,7 @@ function initialRoute(fields) {
   return route;
 }
 
-function paintEditor(container, currentPayload, refresh) {
+function paintEditor(container, currentPayload, refresh, touch) {
   clear(container);
   const fields = currentPayload.route_fields || [];
   const placeholders = currentPayload.provider_placeholders || {};
@@ -98,6 +107,7 @@ function paintEditor(container, currentPayload, refresh) {
           field, route, placeholders,
           (value) => {
             route[field.key] = value;
+            touch();
             if (field.key === "name") titleNode.textContent = value || title;
             if (field.key === "provider" && CHAT_ONLY_PROVIDERS.has(value)) {
               route.tier = "chat";
@@ -127,6 +137,7 @@ function paintEditor(container, currentPayload, refresh) {
               disabled: index === 0,
               onclick: () => {
                 [routes[index - 1], routes[index]] = [routes[index], routes[index - 1]];
+                touch();
                 repaint();
               },
             }),
@@ -137,6 +148,7 @@ function paintEditor(container, currentPayload, refresh) {
               disabled: index === routes.length - 1,
               onclick: () => {
                 [routes[index + 1], routes[index]] = [routes[index], routes[index + 1]];
+                touch();
                 repaint();
               },
             }),
@@ -144,7 +156,7 @@ function paintEditor(container, currentPayload, refresh) {
               class: "btn icon-btn", type: "button", text: "×",
               title: t("common.remove"),
               "aria-label": `${t("common.remove")}: ${title}`,
-              onclick: () => { routes.splice(index, 1); repaint(); },
+              onclick: () => { routes.splice(index, 1); touch(); repaint(); },
             }),
           ]),
         ]),
@@ -157,7 +169,7 @@ function paintEditor(container, currentPayload, refresh) {
 
   const add = el("button", {
     class: "btn", type: "button", text: t("llm.addRoute"),
-    onclick: () => { routes.push(initialRoute(fields)); repaint(); },
+    onclick: () => { routes.push(initialRoute(fields)); touch(); repaint(); },
   });
   const save = el("button", {
     class: "btn primary", type: "button", text: t("llm.save"),

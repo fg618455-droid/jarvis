@@ -16,6 +16,8 @@ const STRINGS = {
     "deck.close": "Close",
     "deck.backToDeck": "Back to the deck",
 
+    "unsaved.leaveConfirm": "You have changes here that have not been saved. Leave and lose them?",
+
     "face.askLabel": "Ask Jarvis",
     "face.askPlaceholder": "Type a message\u2026",
     "face.microphone": "Microphone",
@@ -416,6 +418,8 @@ const STRINGS = {
     "deck.openNamed": "{name} \u00f6ffnen",
     "deck.close": "Schlie\u00dfen",
     "deck.backToDeck": "Zur\u00fcck zum Deck",
+
+    "unsaved.leaveConfirm": "Hier gibt es \u00c4nderungen, die nicht gespeichert sind. Verlassen und verwerfen?",
 
     "face.askLabel": "Jarvis fragen",
     "face.askPlaceholder": "Nachricht eingeben\u2026",

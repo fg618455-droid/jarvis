@@ -15,6 +15,7 @@
 import { api } from "../api.js";
 import { t } from "../i18n.js";
 import { chip, clear, el, empty, toast } from "../ui.js";
+import { holdingUnsaved } from "../unsaved.js";
 
 export async function mount(root) {
   let payload = await api.mcpServers();
@@ -60,6 +61,10 @@ export async function mount(root) {
 
   root.append(head, bar, list);
   paint();
+
+  // What is typed here is credentials, read back masked once written. The
+  // shell asks before it takes this view away.
+  const releaseUnsaved = holdingUnsaved(() => dirty);
 
   function touch() {
     dirty = true;
@@ -204,7 +209,7 @@ export async function mount(root) {
     ]);
   }
 
-  return () => {};
+  return releaseUnsaved;
 }
 
 /* ── Small controls ──────────────────────────────────────────────────── */

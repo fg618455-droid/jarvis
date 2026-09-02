@@ -159,11 +159,10 @@ class TestTheFaceIsThePage:
         assert not page.console_errors
 
     def test_escape_in_a_field_is_left_to_the_field(self, page, served):
-        """Reflex should not discard an edit nobody has saved.
+        """In a field, Escape belongs to the field.
 
-        The MCP and route editors hold typed changes with no warning of their
-        own, so the one key a person presses without thinking must not be the
-        one that throws them away.
+        A key press there was never a departure, so it neither closes the
+        panel nor raises the question about leaving one.
         """
         # The log's search box, because it is the one field in a panel that is
         # there whatever this machine happens to have configured.

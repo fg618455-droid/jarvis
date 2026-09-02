@@ -17,6 +17,7 @@ import { language, languages, setLanguage, t } from "./i18n.js";
 import { live } from "./sse.js";
 import { applyTheme, activeTheme, THEMES } from "./theme.js";
 import { el, icon, ICONS, toast } from "./ui.js";
+import { anythingUnsaved } from "./unsaved.js";
 
 const DECK = "deck";
 const SETTINGS = "settings";
@@ -56,6 +57,14 @@ const state = {
 let deck = null;
 let settingsCleanup = null;
 
+/* The address the mounted view belongs to, and whether the address is being
+   put back after a departure that was refused. Leaving has several doors —
+   the close button, Escape, the browser's back button, the widget for
+   another panel, the way out of Settings — and every one of them ends here
+   as the address changing, so this is the only place that has to ask. */
+let at = null;
+let returning = false;
+
 /* ── Where we are ──────────────────────────────────────────────────── */
 
 function resolve(raw) {
@@ -83,8 +92,29 @@ function go(name) {
   else location.hash = target;
 }
 
+/* Whether the page may become a different one. Silent unless a view says it
+   is holding something: a warning raised on every panel switch is trained
+   away inside a day, and then the one that mattered is clicked through as
+   fast as the rest. */
+function mayLeave() {
+  return !anythingUnsaved() || window.confirm(t("unsaved.leaveConfirm"));
+}
+
 async function render() {
   const where = requested();
+
+  // The address was put back by the refusal below; the view never moved.
+  if (returning) {
+    returning = false;
+    return;
+  }
+
+  if (at !== null && where !== at && !mayLeave()) {
+    returning = true;
+    location.hash = `#/${at}`;
+    return;
+  }
+  at = where;
 
   if (where === SETTINGS) {
     await showSettings();
@@ -278,6 +308,14 @@ function buildLanguagePicker(rerender) {
     ),
   );
   dom.language.addEventListener("change", () => {
+    // A language change rebuilds the deck, which tears down whatever view is
+    // open along with anything typed into it. That is leaving by another
+    // door, so it is asked the same way — and put back if the answer is no,
+    // because the picker has already moved.
+    if (!mayLeave()) {
+      dom.language.value = language();
+      return;
+    }
     setLanguage(dom.language.value);
     document.documentElement.lang = dom.language.value;
     rerender();
@@ -308,6 +346,15 @@ function main() {
   wireLive();
 
   window.addEventListener("hashchange", () => render());
+  /* Reloading the page and closing the tab leave by a door this program does
+     not own, so the browser is asked to raise its own warning. It shows its
+     own words rather than ours and only after the reader has touched the
+     page, which is the only case where there is anything typed to lose. */
+  window.addEventListener("beforeunload", (event) => {
+    if (!anythingUnsaved()) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
   render();
 
   api.status().then((status) => {

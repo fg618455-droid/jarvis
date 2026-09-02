@@ -183,10 +183,10 @@ export function mountDeck(root, { onOpenPanel } = {}) {
   let panelEscape = null;
 
   /* A panel calls itself a dialog, so it answers to the key that dismisses
-     one. Not while someone is typing, though: the MCP and route editors hold
-     changes nobody has saved and warn about none of them, so the one key a
-     person presses without thinking must not be the one that discards an
-     edit. In a field, Escape belongs to the field. */
+     one. Not while someone is typing, though: in a field, Escape belongs to
+     the field, and a key press there was never a departure to ask about.
+     Outside one it is a departure like any other and goes through the shell,
+     which asks first if the view is holding anything unsaved. */
   function isEditing() {
     const focused = document.activeElement;
     if (!focused || !panelNode || !panelNode.contains(focused)) return false;

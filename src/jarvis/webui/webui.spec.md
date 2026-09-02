@@ -335,9 +335,33 @@ box, and so does anything else looking at it.
 
 A panel is dismissed by its close button, by Escape, or by going to
 `#/deck`. Escape is left to the field while a field inside the panel has
-focus: the MCP and route editors hold typed changes and warn about none of
-them, so the one key a person presses without thinking is not allowed to be
-the one that discards an edit.
+focus: a key press there was never a departure, so it neither closes the
+panel nor raises the question below.
+
+### Unsaved changes
+
+Settings, the MCP editor and the LLM route editor collect a whole form and
+write it in one go, because what is being written is only coherent once its
+parts agree. Until Save is pressed, everything typed lives in the page and
+nowhere else. The MCP editor is why this matters: its fields are
+credentials, and a saved credential is read back masked, so a change
+discarded there is not an edit to make again but a secret to go and find
+again.
+
+A view says whether it is holding anything unsaved; the shell asks before
+the page becomes a different one. Leaving has several doors — the close
+button, Escape outside a field, the browser's back button, the widget for
+another panel, the way out of Settings, the language picker — and all of
+them end at the same address change, so all of them are asked once, there.
+Refusing puts the address back and leaves what was typed exactly where it
+was. Reloading or closing the tab is the browser's own door, so the browser
+raises its own warning.
+
+The ask is silent unless a view says it is holding something, and a view
+holds something only when what is in the page differs from what is stored: a
+field typed and typed back again is not a change. A warning on every panel
+switch would be trained away inside a day, and then the one that mattered
+would be clicked through as fast as the rest.
 
 The conversation is the one view that keeps its own height. It scrolls its
 exchange internally and holds its composer in place, so the panel around it
