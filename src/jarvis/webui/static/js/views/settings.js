@@ -314,10 +314,19 @@ export async function mount(root) {
         panel.append(el("h3", { class: "settings-section", text: field.section }));
       }
       const node = control(field);
+      // A label that only sits near a control is not a label on it: to
+      // anything reading the accessibility tree that is an unnamed edit box
+      // beside some unrelated text, and the field holding the Ollama URL is
+      // announced exactly like the one holding a timeout. A switch already
+      // wraps its own label, and an object list is many controls rather than
+      // one, so both are left as they are.
+      const single = ["INPUT", "SELECT", "TEXTAREA"].includes(node.tagName);
+      const controlId = `setting-${field.key}`;
+      if (single) node.id = controlId;
       panel.append(
         el("div", { class: `field${changes.has(field.key) ? " changed" : ""}` }, [
           el("div", { class: "field-head" }, [
-            el("label", { text: field.label }),
+            el("label", { text: field.label, for: single ? controlId : null }),
             field.restart_required ? chip(t("settings.restart")) : null,
             field.is_secret ? chip(field.is_set ? t("settings.secretSet") : t("settings.secretUnset")) : null,
           ]),

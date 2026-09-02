@@ -312,6 +312,12 @@ different implementation of one. The panel names itself in its head, so the
 view's own heading is hidden inside one; its lead and its actions stay,
 because those are the view's rather than the panel's.
 
+A panel is dismissed by its close button, by Escape, or by going to
+`#/deck`. Escape is left to the field while a field inside the panel has
+focus: the MCP and route editors hold typed changes and warn about none of
+them, so the one key a person presses without thinking is not allowed to be
+the one that discards an edit.
+
 The conversation is the one view that keeps its own height. It scrolls its
 exchange internally and holds its composer in place, so the panel around it
 stops scrolling and hands the whole height over. Two nested scrollers would

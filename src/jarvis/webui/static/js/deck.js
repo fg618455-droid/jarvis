@@ -155,6 +155,10 @@ export function mountDeck(root, { onOpenPanel } = {}) {
     snapshot.crew = reading;
     paint();
   });
+  /* The face reads its own state on a slow timer and speeds up only while
+     there is a waveform to follow, so a phase the daemon announces is handed
+     to it directly rather than waited for. */
+  const offPhase = live.on("phase", () => face.poll());
   const offStatus = live.on("status", (status) => {
     snapshot.status = status;
     paint();
@@ -176,6 +180,21 @@ export function mountDeck(root, { onOpenPanel } = {}) {
   let panelNode = null;
   let panelCleanup = null;
   let panelName = null;
+  let panelEscape = null;
+
+  /* A panel calls itself a dialog, so it answers to the key that dismisses
+     one. Not while someone is typing, though: the MCP and route editors hold
+     changes nobody has saved and warn about none of them, so the one key a
+     person presses without thinking must not be the one that discards an
+     edit. In a field, Escape belongs to the field. */
+  function isEditing() {
+    const focused = document.activeElement;
+    if (!focused || !panelNode || !panelNode.contains(focused)) return false;
+    return (
+      focused.isContentEditable
+      || ["INPUT", "TEXTAREA", "SELECT"].includes(focused.tagName)
+    );
+  }
 
   async function openPanel(name, { onClose } = {}) {
     if (!PANEL_VIEWS[name]) return;
@@ -209,6 +228,13 @@ export function mountDeck(root, { onOpenPanel } = {}) {
     ]);
     root.append(panelNode);
 
+    panelEscape = (event) => {
+      if (event.key !== "Escape" || isEditing()) return;
+      event.preventDefault();
+      if (onClose) onClose();
+    };
+    document.addEventListener("keydown", panelEscape);
+
     try {
       const module = await PANEL_VIEWS[name]();
       panelCleanup = (await module.mount(view)) || null;
@@ -219,6 +245,10 @@ export function mountDeck(root, { onOpenPanel } = {}) {
   }
 
   function closePanel() {
+    if (panelEscape) {
+      document.removeEventListener("keydown", panelEscape);
+      panelEscape = null;
+    }
     if (panelCleanup) {
       try {
         panelCleanup();
@@ -251,6 +281,7 @@ export function mountDeck(root, { onOpenPanel } = {}) {
       closePanel();
       clearInterval(timer);
       offCrew();
+      offPhase();
       offStatus();
       offTurn();
       offPassive();

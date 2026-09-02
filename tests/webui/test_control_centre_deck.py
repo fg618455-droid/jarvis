@@ -124,6 +124,38 @@ class TestTheFaceIsThePage:
             assert page.locator(".face-stage").count() == 1, f"{panel} replaced the face"
             assert not page.console_errors, f"{panel}: {page.console_errors}"
 
+    def test_escape_closes_the_panel(self, page, served):
+        """It calls itself a dialog, so it answers to the dialog key."""
+        page.goto(f"{served}/#/tools", wait_until="domcontentloaded")
+        page.wait_for_selector(".panel", state="visible")
+        page.wait_for_timeout(300)
+
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(400)
+
+        assert page.locator(".panel").count() == 0
+        assert page.evaluate("location.hash") == "#/deck"
+        assert not page.console_errors
+
+    def test_escape_in_a_field_is_left_to_the_field(self, page, served):
+        """Reflex should not discard an edit nobody has saved.
+
+        The MCP and route editors hold typed changes with no warning of their
+        own, so the one key a person presses without thinking must not be the
+        one that throws them away.
+        """
+        # The log's search box, because it is the one field in a panel that is
+        # there whatever this machine happens to have configured.
+        page.goto(f"{served}/#/logs", wait_until="domcontentloaded")
+        page.wait_for_selector(".panel", state="visible")
+        page.wait_for_selector(".panel input[type='search']", timeout=8000)
+        page.locator(".panel input[type='search']").first.click()
+
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(400)
+
+        assert page.locator(".panel").count() == 1, "an edit in progress was discarded"
+
     def test_closing_a_panel_returns_to_the_deck(self, page, served):
         page.goto(f"{served}/#/tools", wait_until="domcontentloaded")
         page.wait_for_selector(".panel", state="visible")

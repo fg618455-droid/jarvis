@@ -27,9 +27,18 @@ const MIN_SIZE = 180;
 export const MAX_SIZE = 560;
 const DEFAULT_SIZE = 400;
 
-/* Eight times a second: fast enough that speech and the mouth agree, slow
-   enough that an idle assistant is not being asked constantly. */
-const POLL_MS = 125;
+/* Eight times a second is what a mouth needs to agree with speech, and it is
+   far more than anything else here needs: idle, listening and thinking change
+   on a human timescale and are announced on the event stream the moment they
+   change. So the fast rate is spent only while there is a waveform to follow,
+   and the deck nudges the face to read again whenever the phase changes, so a
+   state still arrives at once rather than up to the slow interval late.
+
+   It is not a free choice. The server closes every connection it answers, so
+   a poll is a new socket that the operating system then holds for minutes;
+   eight a second, all day, exhausts the pool. */
+const POLL_SPEAKING_MS = 125;
+const POLL_IDLE_MS = 400;
 
 /* How large the disc is drawn, as a share of the ring it sits in. This table
    is the state contract: four values far enough apart to be told apart in a
@@ -248,6 +257,14 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
   /* ── The reading ─────────────────────────────────────────────────── */
 
   let polling = null;
+  let pollRate = null;
+
+  function pollEvery(ms) {
+    if (pollRate === ms) return;
+    pollRate = ms;
+    clearInterval(polling);
+    polling = setInterval(takeReading, ms);
+  }
 
   async function takeReading() {
     // The server closes every connection it answers, so a poll is a fresh
@@ -263,6 +280,7 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
       const changed = named !== state.reading;
       state.reading = named;
       state.wave = named === "speaking" ? reading.samples || [] : null;
+      pollEvery(named === "speaking" ? POLL_SPEAKING_MS : POLL_IDLE_MS);
       if (changed) repaint();
     } catch {
       /* A poll that failed says nothing about the assistant, so the face
@@ -362,7 +380,10 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
 
   setSize(state.size);
 
-  stage.append(portrait, dock, settingsToggle, settings);
+  // In the order they are read. The size control sits at the top of the
+  // stage and the dock along the bottom of it, so appending the control last
+  // put a keyboard on it after the thing below it.
+  stage.append(settingsToggle, settings, portrait, dock);
 
   /* ── What it is doing, in words ─────────────────────────────────── */
 
@@ -394,10 +415,13 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
   paintPhase("idle");
   startPainting();
   takeReading();
-  polling = setInterval(takeReading, POLL_MS);
+  pollEvery(POLL_IDLE_MS);
 
   return {
     paintPhase,
+    /* The deck calls this when the daemon announces a new phase, so a state
+       change is drawn at once rather than at the next slow tick. */
+    poll: takeReading,
     setName(name) {
       if (!name) return;
       state.name = name;

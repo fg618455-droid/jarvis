@@ -150,10 +150,14 @@ class TestEveryViewRenders:
 
     def test_legacy_llm_hash_is_canonicalised(self, page, served):
         page.goto(f"{served}/#/llm", wait_until="domcontentloaded")
-        page.wait_for_selector("main h1", state="visible")
+        # The panel's own head, not "any heading in main": a mounted view
+        # brings its own `h1` and the panel hides it, so there are two the
+        # moment the view arrives and only one before it. Asking for either
+        # made this pass or fail on how quickly the module loaded.
+        page.wait_for_selector(".panel-title", state="visible", timeout=8000)
 
         assert page.evaluate("location.hash") == "#/llm-routes"
-        assert page.locator("main h1").inner_text().strip()
+        assert page.locator(".panel-title").inner_text().strip()
 
 
 class TestALongTableSaysThereIsMoreBelow:
@@ -1469,3 +1473,52 @@ class TestStreamingApiClient:
         ]
         assert result["complete"]["total_facts"] == 5
         assert seen_request == {"method": "POST", "ui_header": "1"}
+
+
+class TestEveryFieldSaysWhatItIs:
+    """A label beside a control is not a label on it.
+
+    Settings is where the assistant is configured, and its fields are named
+    only by a `<label>` that sits next to them with nothing joining the two.
+    Sighted, that reads perfectly; to anything reading the accessibility tree
+    it is an unnamed edit box next to some unrelated text, and the field that
+    holds the Ollama URL is announced the same way as the one that holds a
+    timeout.
+
+    Asserted across every form in the interface rather than only the one that
+    was wrong, so the next form is held to it too.
+    """
+
+    UNNAMED = """() => {
+        const fields = [...document.querySelectorAll(
+            'main input:not([type=hidden]), main select, main textarea'
+        )];
+        const named = (node) => (
+            (node.labels && node.labels.length > 0)
+            || !!node.getAttribute('aria-label')
+            || !!node.getAttribute('aria-labelledby')
+            || !!node.getAttribute('title')
+        );
+        return {
+            total: fields.length,
+            unnamed: fields.filter((node) => !named(node)).map((node) => {
+                const near = (node.closest('.field, label, .row, section') || node);
+                return `${node.tagName.toLowerCase()}[${node.type || ''}] near ${
+                    near.textContent.trim().slice(0, 40)}`;
+            }),
+        };
+    }"""
+
+    @pytest.mark.parametrize("view", ["settings", "mcp", "llm-routes", "deck"])
+    def test_no_control_is_left_unnamed(self, page, served, view):
+        page.goto(f"{served}/#/{view}", wait_until="domcontentloaded")
+        page.wait_for_selector("main", state="visible", timeout=8000)
+        page.wait_for_timeout(1100)
+
+        found = page.evaluate(self.UNNAMED)
+
+        assert found["total"], f"{view} rendered no fields to check"
+        assert not found["unnamed"], (
+            f"{view}: {len(found['unnamed'])} of {found['total']} fields are "
+            f"unnamed: {found['unnamed']}"
+        )
