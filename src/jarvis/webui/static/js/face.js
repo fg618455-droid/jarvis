@@ -24,7 +24,7 @@ import { el, icon, ICONS, motionAllowed } from "./ui.js";
 const SIZE_KEY = "jarvis.faceSize";
 
 const MIN_SIZE = 180;
-export const MAX_SIZE = 560;
+const MAX_SIZE = 560;
 const DEFAULT_SIZE = 400;
 
 /* Eight times a second is what a mouth needs to agree with speech, and it is

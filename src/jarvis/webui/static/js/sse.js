@@ -8,7 +8,7 @@ import { eventsUrl } from "./api.js";
 
 const RETRY_MS = 2000;
 
-export class LiveStream {
+class LiveStream {
   constructor() {
     this._handlers = new Map();
     this._source = null;
