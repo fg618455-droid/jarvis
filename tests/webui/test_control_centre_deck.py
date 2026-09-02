@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 
 import pytest
 
@@ -41,6 +42,30 @@ def _free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         return probe.getsockname()[1]
+
+
+def open_panel(page, served: str, panel: str) -> None:
+    """Go to a panel's address and wait until the view inside it is mounted.
+
+    The panel is drawn the moment it opens and its body stays empty until the
+    view module has been fetched, run, and asked its endpoint. Waiting for the
+    panel alone reads the page a module load too early; the panel says when
+    its contents have settled, so that is what to wait for.
+    """
+    page.goto(f"{served}/#/{panel}")
+    page.wait_for_selector('.panel[aria-busy="false"]', timeout=20000)
+
+
+def painted_deck(page, served: str) -> None:
+    """Open the deck and wait until its widgets have a reading in them.
+
+    A widget is built empty and filled from the first snapshot, and what is
+    in one decides how tall it is. Measuring before that lands measures a
+    rail of blank cards.
+    """
+    page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
+    # Written on the conversation card by the first paint, and by nothing else.
+    page.wait_for_selector(".widget[data-panel='conversation'][data-empty]", timeout=20000)
 
 
 @pytest.fixture(scope="module")
@@ -101,8 +126,7 @@ class TestTheFaceIsThePage:
         page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
         page.wait_for_selector(".face-stage", state="visible")
 
-        page.goto(f"{served}/#/tools")
-        page.wait_for_selector(".panel", state="visible", timeout=5000)
+        open_panel(page, served, "tools")
 
         assert page.locator(".face-stage").is_visible(), "the face was replaced"
         assert page.locator(".deck").is_visible()
@@ -112,9 +136,7 @@ class TestTheFaceIsThePage:
         page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
 
         for panel in PANELS:
-            page.goto(f"{served}/#/{panel}")
-            page.wait_for_selector(".panel", state="visible", timeout=5000)
-            page.wait_for_timeout(250)
+            open_panel(page, served, panel)
             assert page.locator(".panel-title").inner_text().strip(), f"{panel} has no heading"
             # The panel names itself; the view inside it having rendered
             # something is the separate fact worth checking.
@@ -126,12 +148,11 @@ class TestTheFaceIsThePage:
 
     def test_escape_closes_the_panel(self, page, served):
         """It calls itself a dialog, so it answers to the dialog key."""
-        page.goto(f"{served}/#/tools", wait_until="domcontentloaded")
-        page.wait_for_selector(".panel", state="visible")
-        page.wait_for_timeout(300)
+        page.goto(served, wait_until="domcontentloaded")
+        open_panel(page, served, "tools")
 
         page.keyboard.press("Escape")
-        page.wait_for_timeout(400)
+        page.wait_for_selector(".panel", state="detached", timeout=20000)
 
         assert page.locator(".panel").count() == 0
         assert page.evaluate("location.hash") == "#/deck"
@@ -146,26 +167,80 @@ class TestTheFaceIsThePage:
         """
         # The log's search box, because it is the one field in a panel that is
         # there whatever this machine happens to have configured.
-        page.goto(f"{served}/#/logs", wait_until="domcontentloaded")
-        page.wait_for_selector(".panel", state="visible")
-        page.wait_for_selector(".panel input[type='search']", timeout=8000)
+        page.goto(served, wait_until="domcontentloaded")
+        open_panel(page, served, "logs")
         page.locator(".panel input[type='search']").first.click()
 
         page.keyboard.press("Escape")
+        # Long enough that a panel which was going to close would have.
         page.wait_for_timeout(400)
 
         assert page.locator(".panel").count() == 1, "an edit in progress was discarded"
 
     def test_closing_a_panel_returns_to_the_deck(self, page, served):
-        page.goto(f"{served}/#/tools", wait_until="domcontentloaded")
-        page.wait_for_selector(".panel", state="visible")
+        page.goto(served, wait_until="domcontentloaded")
+        open_panel(page, served, "tools")
 
         page.locator(".panel-close").click()
-        page.wait_for_timeout(300)
+        page.wait_for_selector(".panel", state="detached", timeout=20000)
 
         assert page.locator(".panel").count() == 0
         assert page.evaluate("location.hash") == "#/deck"
         assert not page.console_errors
+
+
+class TestAPanelSaysWhenItsViewIsIn:
+    """A panel exists before the view it holds does.
+
+    Its head is drawn the moment it opens and its body stays empty until the
+    view module has been fetched, run, and asked its endpoint. In between, a
+    panel that says nothing about itself is indistinguishable from one whose
+    view has arrived and had nothing to show: a screen reader announces the
+    dialog and reads an empty box, and anything else looking at the page
+    reads the same box and believes it.
+    """
+
+    def _slow_view(self, page, view, delay_sec):
+        """Hold the view module back so the gap is long enough to look at."""
+        def held(route):
+            time.sleep(delay_sec)
+            route.continue_()
+
+        page.route(f"**/static/js/views/{view}.js", held)
+
+    def test_a_panel_is_busy_until_its_view_has_mounted(self, page, served):
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
+        page.wait_for_selector(".face-stage", state="visible")
+        self._slow_view(page, "tools", 1.5)
+
+        page.goto(f"{served}/#/tools")
+        page.wait_for_selector(".panel", state="visible", timeout=5000)
+
+        # Open, named, and still empty: it has to say so rather than present
+        # an empty body as the view's answer.
+        assert page.locator(".panel-body .card").count() == 0, "the view arrived too fast"
+        assert page.locator(".panel").get_attribute("aria-busy") == "true"
+
+        page.wait_for_selector('.panel[aria-busy="false"]', timeout=15000)
+
+        assert page.locator(".panel-body .card, .panel-body .empty").count(), (
+            "the panel stopped saying it was busy before its view was in"
+        )
+        assert not page.console_errors
+        page.unroute_all(behavior="ignoreErrors")
+
+    def test_a_panel_whose_view_fails_stops_being_busy_too(self, page, served):
+        """Otherwise a broken view leaves the page busy for ever."""
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
+        page.wait_for_selector(".face-stage", state="visible")
+        page.route("**/static/js/views/tools.js", lambda route: route.abort())
+
+        page.goto(f"{served}/#/tools")
+        page.wait_for_selector('.panel[aria-busy="false"]', timeout=15000)
+
+        assert page.locator(".panel-body .empty").count() == 1, (
+            "a view that never arrived left no explanation in its place"
+        )
 
 
 class TestOneSettingsButton:
@@ -207,7 +282,7 @@ class TestWidgetsLeadToTheirDetail:
         page.wait_for_selector(".widget", state="visible")
 
         page.locator('.widget[data-panel="tools"] .widget-open').click()
-        page.wait_for_selector(".panel", state="visible", timeout=5000)
+        page.wait_for_selector('.panel[aria-busy="false"]', timeout=20000)
 
         assert page.evaluate("location.hash") == "#/tools"
         assert not page.console_errors
@@ -227,10 +302,9 @@ class TestTheOfflineRuleSurvivesTheRedesign:
     def test_nothing_is_fetched_from_outside_the_server(self, page, served):
         page.goto(served, wait_until="domcontentloaded")
         for panel in PANELS:
-            page.goto(f"{served}/#/{panel}")
-            page.wait_for_timeout(250)
+            open_panel(page, served, panel)
         page.goto(f"{served}/#/settings")
-        page.wait_for_timeout(400)
+        page.wait_for_selector(".view-settings .settings-nav", state="visible", timeout=20000)
 
         assert not page.foreign_requests, f"outbound: {page.foreign_requests}"
 
@@ -321,9 +395,7 @@ class TestARailReadsAsReadingsRatherThanAsAForm:
     """
 
     def _deck(self, page, served):
-        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
-        page.wait_for_selector(".widget-tiles", state="visible", timeout=5000)
-        page.wait_for_timeout(400)
+        painted_deck(page, served)
 
     def test_a_status_chip_is_as_wide_as_its_word(self, page, served):
         self._deck(page, served)
@@ -391,9 +463,7 @@ class TestTheDeckFillsTheHeightItTakes:
     """
 
     def _deck(self, page, served):
-        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
-        page.wait_for_selector(".widget-tiles", state="visible", timeout=5000)
-        page.wait_for_timeout(500)
+        painted_deck(page, served)
 
     @pytest.mark.parametrize("rail", [".deck-rail-left", ".deck-rail-right"])
     def test_a_rail_of_readings_reaches_the_bottom_of_the_deck(

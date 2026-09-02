@@ -181,25 +181,31 @@ def page(browser, served):
     context.close()
 
 
-def _painted(page) -> None:
-    """Wait until the stylesheet has actually applied.
+def _painted(page, view: str) -> None:
+    """Wait until the view is in the page and the stylesheet has applied.
 
-    Measuring before it has is the one way this whole file can lie: every
-    element reports no focus ring and no colour, and the sweep reads that as
-    an interface with no contrast anywhere rather than as a page that has not
-    finished loading. A token resolving is the cheapest proof that the
-    cascade is in place.
+    Measuring early is the one way this whole file can lie, in two ways.
+    Before the cascade is in place every element reports no focus ring and no
+    colour, and the sweep reads that as an interface with no contrast anywhere
+    rather than as a page that has not finished loading. And before the view
+    is mounted there is nothing of it to sweep: the panel is drawn while its
+    module is still being fetched, so a sweep of "the page" measures the deck
+    behind it and reports the view as clean.
     """
-    page.wait_for_selector("main", state="visible", timeout=5000)
+    if view == "deck":
+        page.wait_for_selector(".widget[data-panel='conversation'][data-empty]", timeout=20000)
+    elif view == "settings":
+        page.wait_for_selector(".view-settings .settings-nav", state="visible", timeout=20000)
+    else:
+        page.wait_for_selector('.panel[aria-busy="false"]', timeout=20000)
     page.wait_for_function(
         """() => {
             const accent = getComputedStyle(document.documentElement)
                 .getPropertyValue('--accent').trim();
             return accent.length > 0;
         }""",
-        timeout=5000,
+        timeout=20000,
     )
-    page.wait_for_timeout(600)
 
 
 def _themes(page, served) -> list[str]:
@@ -315,7 +321,7 @@ class TestTextClearsItsSurfaceInEveryTheme:
     @pytest.mark.parametrize("view", VIEWS)
     def test_no_reading_falls_under_its_floor(self, page, served, view):
         page.goto(f"{served}/#/{view}", wait_until="domcontentloaded")
-        _painted(page)
+        _painted(page, view)
 
         failures = {}
         for theme in page.evaluate(THEMES_FROM_SOURCE):
@@ -342,7 +348,7 @@ class TestEveryFocusableThingSaysWhereFocusIs:
     @pytest.mark.parametrize("view", ["deck", "settings", "mcp", "llm-routes", "logs"])
     def test_a_focused_control_is_visibly_ringed(self, page, served, view):
         page.goto(f"{served}/#/{view}", wait_until="domcontentloaded")
-        _painted(page)
+        _painted(page, view)
 
         results = page.evaluate(FOCUS_SWEEP)
         assert results, f"{view} offered nothing focusable"
@@ -357,7 +363,7 @@ class TestEveryFocusableThingSaysWhereFocusIs:
     @pytest.mark.parametrize("view", ["deck", "settings", "mcp", "llm-routes", "logs"])
     def test_the_ring_is_legible_against_what_it_sits_on(self, page, served, view):
         page.goto(f"{served}/#/{view}", wait_until="domcontentloaded")
-        _painted(page)
+        _painted(page, view)
 
         results = page.evaluate(FOCUS_SWEEP)
         faint = [

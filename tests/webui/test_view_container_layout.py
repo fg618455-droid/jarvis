@@ -104,10 +104,14 @@ def page(browser, served):
 
 
 def _open(page, served: str, panel: str) -> None:
+    """Open a panel and wait until the view inside it is mounted.
+
+    The panel is drawn while its module is still being fetched, so anything
+    that waits for the shell measures an empty body.
+    """
     page.goto(f"{served}/#/{panel}", wait_until="domcontentloaded")
-    page.wait_for_selector(".panel .view", state="visible", timeout=5000)
-    page.wait_for_selector(".panel-body .card, .panel-body .empty", timeout=5000)
-    page.wait_for_timeout(400)
+    page.wait_for_selector('.panel[aria-busy="false"]', timeout=20000)
+    page.wait_for_selector(".panel-body .card, .panel-body .empty", timeout=20000)
 
 
 def _widen_the_panel(page, width: str = "1180px") -> None:
@@ -212,8 +216,8 @@ class TestSmallReadingsPackIntoAPanel:
         page = context.new_page()
         try:
             page.goto(f"{served}/#/memory", wait_until="domcontentloaded")
-            page.wait_for_selector(".panel-body .readings", state="visible", timeout=8000)
-            page.wait_for_timeout(700)
+            page.wait_for_selector('.panel[aria-busy="false"]', timeout=20000)
+            page.wait_for_selector(".panel-body .readings", state="visible", timeout=20000)
 
             shape = page.evaluate(
                 """() => {

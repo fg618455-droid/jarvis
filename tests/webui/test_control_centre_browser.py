@@ -49,6 +49,26 @@ def _free_port() -> int:
         return probe.getsockname()[1]
 
 
+def open_view(page, served: str, view: str) -> None:
+    """Go to a view's address and wait until the view is in the page.
+
+    A panel's head is drawn the moment it opens and its body stays empty
+    until the view module has been fetched, run, and asked its endpoint.
+    Waiting for anything in the shell — ``main h1``, the panel, its title —
+    reads the page a module load and a request too early, which passes on an
+    idle machine and fails on a busy one. The panel says when its contents
+    have settled, so that is what to wait for.
+
+    Settings is the one address that replaces the deck instead of opening a
+    panel, so it has its own view to wait for.
+    """
+    page.goto(f"{served}/#/{view}")
+    if view == "settings":
+        page.wait_for_selector(".view-settings .settings-nav", state="visible", timeout=20000)
+    else:
+        page.wait_for_selector('.panel[aria-busy="false"]', timeout=20000)
+
+
 @pytest.fixture(scope="module")
 def browser():
     """A headless Chromium, skipped when the browser is not installed.
@@ -120,9 +140,7 @@ class TestEveryViewRenders:
         page.goto(served, wait_until="domcontentloaded")
 
         for view in VIEWS:
-            page.goto(f"{served}/#/{view}")
-            page.wait_for_selector("main h1", state="visible", timeout=5000)
-            page.wait_for_timeout(400)
+            open_view(page, served, view)
             # A panel names itself in its head; Settings replaces the deck and
             # keeps the heading its own view renders.
             heading = ".panel-title" if view != "settings" else ".view-settings h1"
@@ -133,28 +151,21 @@ class TestEveryViewRenders:
         page.goto(served, wait_until="domcontentloaded")
 
         for view in VIEWS:
-            page.goto(f"{served}/#/{view}")
-            page.wait_for_timeout(400)
+            open_view(page, served, view)
 
         assert not page.foreign_requests, f"outbound: {page.foreign_requests}"
 
     def test_switching_language_keeps_the_view_you_are_on(self, page, served):
-        page.goto(f"{served}/#/tools", wait_until="domcontentloaded")
-        page.wait_for_selector("main h1", state="visible")
+        open_view(page, served, "tools")
 
         page.select_option("#language", "de")
-        page.wait_for_timeout(300)
+        page.wait_for_selector('.panel[aria-busy="false"]', timeout=20000)
 
         assert page.evaluate("location.hash") == "#/tools"
         assert not page.console_errors
 
     def test_legacy_llm_hash_is_canonicalised(self, page, served):
-        page.goto(f"{served}/#/llm", wait_until="domcontentloaded")
-        # The panel's own head, not "any heading in main": a mounted view
-        # brings its own `h1` and the panel hides it, so there are two the
-        # moment the view arrives and only one before it. Asking for either
-        # made this pass or fail on how quickly the module loaded.
-        page.wait_for_selector(".panel-title", state="visible", timeout=8000)
+        open_view(page, served, "llm")
 
         assert page.evaluate("location.hash") == "#/llm-routes"
         assert page.locator(".panel-title").inner_text().strip()
@@ -187,8 +198,7 @@ class TestALongTableSaysThereIsMoreBelow:
                 )});
             }"""
         )
-        page.goto(f"{served}/#/tools")
-        page.wait_for_selector(".panel .view table", state="attached")
+        open_view(page, served, "tools")
 
     def test_the_column_headings_stay_put_while_the_rows_scroll(self, page, served):
         self._with_sixty_tools(page, served)
@@ -322,8 +332,7 @@ class TestLlmRouteLayout:
                 };
             }"""
         )
-        page.goto(f"{served}/#/llm-routes")
-        page.wait_for_selector(".llm-chain", state="visible")
+        open_view(page, served, "llm-routes")
 
     def test_route_details_wrap_within_each_chain_card(self, page, served):
         self._open_with_routes(page, served)
@@ -458,8 +467,7 @@ class TestSettingsCoherence:
             ],
         }
         page.route("**/api/settings", lambda route: route.fulfill(json=payload))
-        page.goto(f"{served}/#/settings", wait_until="domcontentloaded")
-        page.wait_for_selector("main h1", state="visible")
+        open_view(page, served, "settings")
 
         assert page.get_by_role("link", name="Open LLM routes").is_visible()
         page.get_by_role("button", name="Speech Output").click()
@@ -597,7 +605,8 @@ class TestSystemModelTruth:
             "process": {"pid": 1, "python": "3", "platform": "test", "threads": 1},
         }))
         page.route("**/api/turns?*", lambda route: route.fulfill(json={"turns": []}))
-        page.goto(f"{served}/#/system", wait_until="domcontentloaded")
+        page.goto(served, wait_until="domcontentloaded")
+        open_view(page, served, "system")
 
         effective = page.locator(".effective-models")
         local = page.locator(".local-models")
@@ -657,8 +666,7 @@ class TestMemoryMaintenance:
                 }
             }"""
         )
-        page.goto(f"{served}/#/memory")
-        page.wait_for_selector("main h1", state="visible")
+        open_view(page, served, "memory")
 
     def test_memory_view_shows_meals_and_topic_tally_as_text(self, page, served):
         self._open_with_memory_data(page, served)
@@ -726,8 +734,7 @@ class TestMotionIsOptional:
                 });
             }"""
         )
-        page.goto(f"{served}/#/crew")
-        page.wait_for_selector(".state-pill", state="visible")
+        open_view(page, served, "crew")
         try:
             return page.evaluate(
                 """() => [...document.querySelectorAll('*')]
@@ -842,8 +849,7 @@ class TestMissionControl:
             }""",
             self._reading(entries, agents),
         )
-        page.goto(f"{served}/#/crew")
-        page.wait_for_selector(".agent", state="visible")
+        open_view(page, served, "crew")
         return agents
 
     ENTRIES = [
@@ -993,8 +999,7 @@ class TestTheConversationIsTheConversationView:
             }""",
             turns,
         )
-        page.goto(f"{served}/#/conversation")
-        page.wait_for_selector(".dialogue", state="visible")
+        open_view(page, served, "conversation")
         return turns
 
     def test_the_exchange_is_the_first_thing_you_see(self, page, served):
@@ -1150,8 +1155,7 @@ class TestTheMicrophoneReachesTheDaemon:
                 api.voiceStatus = async () => ({ ingress: true, sample_rate: 16000 });
             }"""
         )
-        page.goto(f"{served}/#/conversation")
-        page.wait_for_selector(".voice-mic", state="visible")
+        open_view(page, served, "conversation")
         return context, page
 
     def test_opening_it_streams_and_the_level_follows_what_it_hears(
@@ -1160,15 +1164,21 @@ class TestTheMicrophoneReachesTheDaemon:
         context, page = self._open(browser, served)
         try:
             page.locator(".voice-mic").click()
-            page.wait_for_timeout(2500)
+            # Permission, a worklet, a socket and the first frame of audio all
+            # have to happen before there is a level to read, and how long that
+            # takes is a property of the machine rather than of the interface.
+            # Waiting for the level itself fails only if one never arrives.
+            page.wait_for_function(
+                """() => {
+                    const bar = document.querySelector('.voice-level > span');
+                    return bar && bar.style.height && bar.style.height !== '0%';
+                }""",
+                timeout=30000,
+            )
 
             assert page.locator(".voice-mic").get_attribute("aria-pressed") == "true"
             # The state is in words, not only in the meter.
             assert page.locator(".voice-mic-state").inner_text().strip()
-            height = page.evaluate(
-                "() => document.querySelector('.voice-level > span').style.height"
-            )
-            assert height not in ("", "0%"), f"no level from a live capture: {height!r}"
             assert not page.console_errors
         finally:
             context.close()
@@ -1178,13 +1188,12 @@ class TestTheMicrophoneReachesTheDaemon:
         context, page = self._open(browser, served)
         try:
             page.locator(".voice-mic").click()
-            page.wait_for_timeout(1500)
+            page.wait_for_selector('.voice-mic[aria-pressed="true"]', timeout=30000)
 
             page.goto(f"{served}/#/deck")
-            page.wait_for_timeout(800)
+            page.wait_for_selector(".panel", state="detached", timeout=20000)
 
-            page.goto(f"{served}/#/conversation")
-            page.wait_for_selector(".voice-mic", state="visible")
+            open_view(page, served, "conversation")
             assert page.locator(".voice-mic").get_attribute("aria-pressed") == "false"
             assert not page.console_errors
         finally:
@@ -1225,13 +1234,11 @@ class TestPassiveRecordHasItsOwnHome:
             }""",
             [self.LINES, enabled],
         )
-        page.goto(f"{served}/#/passive")
-        page.wait_for_selector("main h1", state="visible")
+        open_view(page, served, "passive")
 
     def test_the_conversation_view_no_longer_carries_the_record(self, page, served):
-        page.goto(f"{served}/#/conversation", wait_until="domcontentloaded")
-        page.wait_for_selector("main h1", state="visible")
-        page.wait_for_timeout(400)
+        page.goto(served, wait_until="domcontentloaded")
+        open_view(page, served, "conversation")
 
         assert page.locator(".passive-day").count() == 0
         assert not page.console_errors
@@ -1308,8 +1315,7 @@ class TestTheDiagnosticLogIsReadable:
             }""",
             self.ENTRIES if entries is None else entries,
         )
-        page.goto(f"{served}/#/logs")
-        page.wait_for_selector(".log-line", state="visible")
+        open_view(page, served, "logs")
 
     def test_every_entry_is_a_row_rather_than_one_block_of_text(self, page, served):
         self._open(page, served)
@@ -1511,9 +1517,15 @@ class TestEveryFieldSaysWhatItIs:
 
     @pytest.mark.parametrize("view", ["settings", "mcp", "llm-routes", "deck"])
     def test_no_control_is_left_unnamed(self, page, served, view):
-        page.goto(f"{served}/#/{view}", wait_until="domcontentloaded")
-        page.wait_for_selector("main", state="visible", timeout=8000)
-        page.wait_for_timeout(1100)
+        page.goto(served, wait_until="domcontentloaded")
+        if view == "deck":
+            # The deck is the page rather than a panel over it, and the field
+            # this checks is the face's size control behind its own toggle.
+            page.wait_for_selector(".face-settings-open", state="visible", timeout=20000)
+            page.locator(".face-settings-open").click()
+            page.wait_for_selector(".face-settings", state="visible")
+        else:
+            open_view(page, served, view)
 
         found = page.evaluate(self.UNNAMED)
 

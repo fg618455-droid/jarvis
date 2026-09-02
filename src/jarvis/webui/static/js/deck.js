@@ -210,7 +210,19 @@ export function mountDeck(root, { onOpenPanel } = {}) {
     const view = el("div", { class: "view" });
     body.append(view);
 
-    panelNode = el("div", { class: "panel", role: "dialog", "aria-label": panelTitle(name) }, [
+    /* The panel is drawn before the view it holds exists: the module is
+       fetched, run, and asked its endpoint after this, and until all three
+       have happened the body is empty. Said nothing about, that empty body
+       reads as the view's answer — a screen reader announces the dialog and
+       finds nothing in it, and so does anything else looking at the page.
+       So the panel carries whether its contents have settled, from the
+       moment it opens until its view is mounted or has failed trying. */
+    panelNode = el("div", {
+      class: "panel",
+      role: "dialog",
+      "aria-busy": "true",
+      "aria-label": panelTitle(name),
+    }, [
       el("div", { class: "panel-head" }, [
         el("h1", { class: "panel-title", text: panelTitle(name) }),
         el(
@@ -235,12 +247,21 @@ export function mountDeck(root, { onOpenPanel } = {}) {
     };
     document.addEventListener("keydown", panelEscape);
 
+    // The panel this call opened, rather than whichever one is open by the
+    // time the view arrives: a panel closed while its module was still
+    // loading must not have its state written by the load it outlived.
+    const opened = panelNode;
     try {
       const module = await PANEL_VIEWS[name]();
       panelCleanup = (await module.mount(view)) || null;
     } catch (error) {
       console.error(`panel ${name} failed`, error);
       view.append(el("div", { class: "empty", text: String(error.message || error) }));
+    } finally {
+      // Failed the same as mounted: a view that never arrived left a reason
+      // in its place, and a panel left announcing itself as busy for ever
+      // would be a worse answer than the reason.
+      opened.setAttribute("aria-busy", "false");
     }
   }
 

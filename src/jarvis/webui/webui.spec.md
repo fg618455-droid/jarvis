@@ -325,6 +325,14 @@ different implementation of one. The panel names itself in its head, so the
 view's own heading is hidden inside one; its lead and its actions stay,
 because those are the view's rather than the panel's.
 
+A panel is drawn before the view it holds exists, and says so. From the
+moment it opens until its module has been fetched, run, and has finished
+asking its endpoint it is `aria-busy`; a view that failed to arrive clears
+it too, leaving the reason in the body. Without that, the empty body of a
+panel still loading and the empty body of a view that had nothing to show
+are the same page: a screen reader announces the dialog and reads an empty
+box, and so does anything else looking at it.
+
 A panel is dismissed by its close button, by Escape, or by going to
 `#/deck`. Escape is left to the field while a field inside the panel has
 focus: the MCP and route editors hold typed changes and warn about none of
