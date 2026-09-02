@@ -1,0 +1,263 @@
+"""Contrast is measured in a browser, not promised in a review.
+
+A palette is the one part of an interface whose correctness is a number, and
+the number is invisible from the source: a token is legible or not only once
+it is painted on whatever surface it actually lands on, at whatever size the
+rule that used it chose. Reading `tokens.css` cannot tell you that
+`--fg-mute` carries 11px widget titles onto three different surfaces.
+
+So the check renders the real interface and measures what a reader sees. It
+is written as a mechanism rather than as a table of expected values, which
+means it holds for tokens and themes that do not exist yet: whatever a future
+theme paints, it is held to the same floor as the ones here.
+
+Two floors, both from WCAG 2.2:
+
+- text against the surface behind it: 4.5:1, or 3:1 once the text is large
+  (24px, or 18.66px when bold)
+- a focus indicator against what sits next to it: 3:1
+
+The second one exists because a rule setting `outline: none` on a field
+outranks a global `:focus-visible` rule and removes the ring everywhere at
+once, silently, in a way no view test notices: the page still renders, still
+answers, and simply cannot be navigated by keyboard.
+"""
+
+from __future__ import annotations
+
+import socket
+import threading
+
+import pytest
+
+from jarvis.webui.server import WebUIConfig, WebUIMode, WebUIServer
+
+
+# Everything the deck can open, plus the destination that replaces it.
+VIEWS = [
+    "deck",
+    "memory",
+    "conversation",
+    "passive",
+    "tools",
+    "mcp",
+    "briefing",
+    "security",
+    "system",
+    "settings",
+    "llm-routes",
+    "logs",
+    "crew",
+]
+
+# Read from `theme.js` rather than listed, so a theme added there is measured
+# here without anyone remembering to add it.
+THEMES_FROM_SOURCE = """() => {
+    return fetch('/static/js/theme.js')
+        .then((r) => r.text())
+        .then((source) => [...source.matchAll(/id:\\s*"([a-z0-9-]+)"/g)].map((m) => m[1]));
+}"""
+
+
+# Shared measuring instrument. Colours are resolved by painting them into a
+# canvas, because a computed style may still be `oklch(...)` and every theme
+# here is authored in it.
+COLOUR_JS = """
+const _cv = document.createElement('canvas');
+_cv.width = _cv.height = 1;
+const _ctx = _cv.getContext('2d', { willReadFrequently: true });
+
+function srgb(value) {
+    _ctx.clearRect(0, 0, 1, 1);
+    _ctx.fillStyle = '#000000';
+    _ctx.fillStyle = value;
+    _ctx.fillRect(0, 0, 1, 1);
+    const d = _ctx.getImageData(0, 0, 1, 1).data;
+    return [d[0] / 255, d[1] / 255, d[2] / 255];
+}
+
+function alphaOf(value) {
+    const m = String(value).match(/^rgba?\\([^)]*?,\\s*([\\d.]+)\\s*\\)$/);
+    if (m) return parseFloat(m[1]);
+    const slash = String(value).match(/\\/\\s*([\\d.]+%?)\\s*\\)/);
+    if (slash) {
+        const raw = slash[1];
+        return raw.endsWith('%') ? parseFloat(raw) / 100 : parseFloat(raw);
+    }
+    if (String(value) === 'transparent') return 0;
+    return 1;
+}
+
+function luminance(value) {
+    const lin = (u) => (u <= 0.04045 ? u / 12.92 : Math.pow((u + 0.055) / 1.055, 2.4));
+    const [r, g, b] = srgb(value).map(lin);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function ratio(a, b) {
+    const l1 = luminance(a);
+    const l2 = luminance(b);
+    const hi = Math.max(l1, l2);
+    const lo = Math.min(l1, l2);
+    return (hi + 0.05) / (lo + 0.05);
+}
+
+/* What is really behind a node. A background is only a reading once it is
+   opaque, so a translucent fill is composited onto whatever it sits on and
+   the walk carries on upwards. */
+function effectiveBackground(node) {
+    let composite = null;
+    let current = node;
+    while (current && current !== document.documentElement.parentNode) {
+        const style = getComputedStyle(current);
+        const colour = style.backgroundColor;
+        const a = alphaOf(colour);
+        if (a > 0) {
+            const [r, g, b] = srgb(colour);
+            if (composite === null) composite = { r, g, b, a };
+            else {
+                const out = composite.a + a * (1 - composite.a);
+                composite = {
+                    r: (composite.r * composite.a + r * a * (1 - composite.a)) / out,
+                    g: (composite.g * composite.a + g * a * (1 - composite.a)) / out,
+                    b: (composite.b * composite.a + b * a * (1 - composite.a)) / out,
+                    a: out,
+                };
+            }
+            if (composite.a >= 0.999) break;
+        }
+        current = current.parentElement;
+    }
+    if (composite === null) return 'rgb(0, 0, 0)';
+    const to255 = (v) => Math.round(Math.min(1, Math.max(0, v)) * 255);
+    return `rgb(${to255(composite.r)}, ${to255(composite.g)}, ${to255(composite.b)})`;
+}
+
+function describe(node) {
+    const name = node.getAttribute('aria-label')
+        || node.id
+        || (typeof node.className === 'string' ? node.className : '')
+        || node.tagName;
+    return `${node.tagName.toLowerCase()}[${String(name).slice(0, 48)}]`;
+}
+"""
+
+
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+@pytest.fixture(scope="module")
+def browser():
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as driver:
+        try:
+            launched = driver.chromium.launch()
+        except Exception as exc:  # noqa: BLE001 - any launch failure is a skip
+            pytest.skip(f"chromium is not available: {exc}")
+        yield launched
+        launched.close()
+
+
+@pytest.fixture(scope="module")
+def served() -> str:
+    cfg = WebUIConfig(
+        host="127.0.0.1", port=_free_port(), token="", mode=WebUIMode.STANDALONE,
+    )
+    server = WebUIServer(cfg)
+    server.start()
+    threading.Event().wait(0.5)
+    yield cfg.url
+    server.stop()
+
+
+@pytest.fixture
+def page(browser, served):
+    context = browser.new_context()
+    opened = context.new_page()
+    yield opened
+    context.close()
+
+
+def _themes(page, served) -> list[str]:
+    page.goto(served, wait_until="domcontentloaded")
+    found = page.evaluate(THEMES_FROM_SOURCE)
+    assert found, "no themes parsed out of theme.js"
+    return found
+
+
+# Every element that can hold focus, in the order the document offers them.
+FOCUS_SWEEP = COLOUR_JS + """
+() => {
+    const focusable = [...document.querySelectorAll(
+        'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    )].filter((node) => {
+        const box = node.getBoundingClientRect();
+        return box.width > 0 && box.height > 0 && !node.disabled;
+    });
+
+    return focusable.map((node) => {
+        node.focus();
+        const style = getComputedStyle(node);
+        const width = parseFloat(style.outlineWidth) || 0;
+        const visible = style.outlineStyle !== 'none' && width > 0;
+        // The ring is drawn outside the element, so it lands on whatever the
+        // element sits on as well as on the element itself. It has to be
+        // legible against both, so the weaker of the two is the reading.
+        const against = Math.min(
+            ratio(style.outlineColor, effectiveBackground(node)),
+            ratio(style.outlineColor, effectiveBackground(node.parentElement || node)),
+        );
+        return {
+            what: describe(node),
+            focusVisible: node.matches(':focus-visible'),
+            outlineStyle: style.outlineStyle,
+            outlineWidth: width,
+            visible,
+            ratio: Math.round(against * 100) / 100,
+        };
+    });
+}"""
+
+
+class TestEveryFocusableThingSaysWhereFocusIs:
+    """A keyboard user has to be able to see where they are.
+
+    The failure this catches is specific and quiet: a rule that sets
+    `outline: none` on fields outranks the global `:focus-visible` ring, so
+    the element still reports that it wants a visible ring and is not given
+    one. Nothing throws and nothing looks wrong until you put the mouse down.
+    """
+
+    @pytest.mark.parametrize("view", ["deck", "settings", "mcp", "llm-routes", "logs"])
+    def test_a_focused_control_is_visibly_ringed(self, page, served, view):
+        page.goto(f"{served}/#/{view}", wait_until="domcontentloaded")
+        page.wait_for_selector("main", state="visible", timeout=5000)
+        page.wait_for_timeout(600)
+
+        results = page.evaluate(FOCUS_SWEEP)
+        assert results, f"{view} offered nothing focusable"
+
+        unringed = [r for r in results if r["focusVisible"] and not r["visible"]]
+
+        assert not unringed, (
+            f"{view}: these ask for a focus ring and are not given one: "
+            f"{[r['what'] for r in unringed]}"
+        )
+
+    @pytest.mark.parametrize("view", ["deck", "settings", "mcp", "llm-routes", "logs"])
+    def test_the_ring_is_legible_against_what_it_sits_on(self, page, served, view):
+        page.goto(f"{served}/#/{view}", wait_until="domcontentloaded")
+        page.wait_for_selector("main", state="visible", timeout=5000)
+        page.wait_for_timeout(600)
+
+        results = page.evaluate(FOCUS_SWEEP)
+        faint = [
+            (r["what"], r["ratio"])
+            for r in results
+            if r["focusVisible"] and r["visible"] and r["ratio"] < 3.0
+        ]
+
+        assert not faint, f"{view}: focus rings under 3:1: {faint}"

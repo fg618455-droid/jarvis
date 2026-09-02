@@ -560,10 +560,14 @@ textarea {
   font-family: var(--font);
 }
 
+/* A field warms its border whenever it holds focus, including from a click,
+   because a bordered box is the one control whose focus a colour can carry.
+   The ring itself is left to `:focus-visible` above: an `outline: none` here
+   is more specific than that rule and would take the ring off every field in
+   the interface at once, leaving a keyboard with nothing to follow. */
 input:focus,
 select:focus,
 textarea:focus {
-  outline: none;
   border-color: var(--accent-line);
 }
 
