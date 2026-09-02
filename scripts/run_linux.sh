@@ -9,6 +9,7 @@ if [ ! -d .venv ]; then
 fi
 source .venv/bin/activate
 pip install -r requirements.txt
+python -m playwright install chromium
 
 export PYTHONPATH="$REPO_ROOT/src"
 # Allow override via JARVIS_CONFIG_PATH; otherwise use default search path in code

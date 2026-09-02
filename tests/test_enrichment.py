@@ -888,6 +888,24 @@ class TestMaybeDigestToolResult:
             mock_llm.assert_not_called()
             mock_digest.assert_not_called()
 
+    def test_memory_provenance_is_never_rewritten_by_a_digest_model(self):
+        cfg = self._cfg(
+            ollama_chat_model="gemma4:e2b",
+            tool_result_digest_enabled=True,
+        )
+        raw = '{"status":"recorded","records":[' + ("{}" * 500) + "]}"
+        with patch(
+            "jarvis.reply.enrichment.digest_tool_result_for_query",
+            return_value="rewritten provenance",
+        ):
+            out = _maybe_digest_tool_result(
+                cfg=cfg,
+                query="how do you know",
+                tool_name="memoryProvenance",
+                raw_tool_result=raw,
+            )
+        assert out == raw
+
 
 class TestDigestLoopForMaxTurns:
     """The max-turn digest turns a half-finished loop into a caveated reply."""

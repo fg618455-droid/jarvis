@@ -18,6 +18,8 @@ allow-list = <router's picks> + stop + toolSearchTool
 
 When the model invokes `toolSearchTool(query=...)`, the tool re-runs the same routing logic (`select_tools` from `src/jarvis/tools/selection.py`) against the new query, and the returned tool names are merged into the loop's allow-list for subsequent turns. `stop` and `toolSearchTool` itself always remain in the allow-list.
 
+The router and embedding-router sub-calls this re-run makes are bounded to `ToolContext.deadline` (see `reply.spec.md`, "Reply deadlines"), not just their own configured ceilings — a hung re-run cannot outlive the turn.
+
 ### Contract
 
 - **Name**: `toolSearchTool`
@@ -38,6 +40,10 @@ Tools surfaced by `toolSearchTool` take effect from the NEXT turn onwards; the c
 
 The engine caps invocations per reply via `tool_search_max_calls` (default 3). Beyond the cap, further calls get a tool-error result telling the model to decide with the tools already available.
 
+The reply engine also uses this escape hatch in its structural zero-tool grounding gate. A narrowed LLM-router selection containing a real tool says that external work is relevant. If the chat model instead produces prose before any grounding tool implementation runs, the engine withholds that prose for one turn and injects a grounding instruction: call a fitting current tool, or call `toolSearchTool` with a self-contained capability description when the current list cannot perform or verify the request. Tools surfaced by the search retain the ordinary next-turn merge behaviour described above. `toolSearchTool` itself is discovery, not evidence; if the model searches but does not run a surfaced real tool, its next prose claim remains ungrounded. The engine returns an explicit unverified-result failure rather than the model's unsupported claim.
+
+This gate does not classify prose or match language patterns. The LLM selection strategy, whether its result is narrowed rather than the full catalogue, selected real tool names, planner shape, and actual dispatch history are the complete decision inputs. Router `none`, non-LLM strategies, full-catalogue fallbacks, and memory-only plans do not activate it, so ordinary conversation, memory-backed answers, and pure reasoning remain direct reply paths.
+
 ### What toolSearchTool is NOT
 
 - Not a free-form tool discovery surface: it uses the same routing pipeline as the pre-loop call, not a raw "list every tool" dump. The router already applies allow/deny logic and MCP-awareness; reusing it keeps semantics consistent.
@@ -47,4 +53,5 @@ The engine caps invocations per reply via `tool_search_max_calls` (default 3). B
 ### Testing
 
 - Unit tests cover the merge-into-allow-list behaviour and the no-results branch.
+- Reply-engine tests cover a router miss followed by a fabricated zero-tool Calculator claim, the bounded honest fallback, ordinary zero-tool controls, speech buffering, discovery without action, and recovery through `toolSearchTool` followed by `desktopInteract`.
 - An eval scenario covers the "initial routing was too narrow" case: the user starts with a vague question that routes to one tool, then clarifies into a request that needs a different tool. The agent should invoke `toolSearchTool` and then the newly-surfaced tool.

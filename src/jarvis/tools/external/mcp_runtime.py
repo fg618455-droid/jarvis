@@ -423,8 +423,19 @@ class _ServerWorker:
                             if not fut.done():
                                 fut.set_result(res)
                         except BaseException as e:  # noqa: BLE001
+                            # MCP reports tool-level failures in a normal
+                            # CallToolResult with ``isError``. An exception
+                            # here therefore means the session transport is no
+                            # longer trustworthy. Signal the runtime's restart
+                            # path and end this worker instead of leaving a
+                            # poisoned session cached for later calls.
+                            session_error = _WorkerDeadError(
+                                f"MCP server '{self._server_name}' session "
+                                f"request failed ({type(e).__name__})"
+                            )
                             if not fut.done():
-                                fut.set_exception(e)
+                                fut.set_exception(session_error)
+                            raise session_error from e
         except BaseException as e:  # noqa: BLE001
             # Setup or session loop crashed. Surface to ``start()`` if
             # we never signalled readiness; otherwise log and let the

@@ -579,6 +579,101 @@ class TestDaemonShutdownMode:
 
 
 @pytest.mark.unit
+class TestSecurityConfirmStdinLine:
+    """``handle_security_confirm_stdin_line`` resolves a pending desktop
+    confirmation from a ``SECURITY_CONFIRM_RESPONSE:`` stdin line."""
+
+    def setup_method(self, _method):
+        _reset_daemon_globals()
+
+    def teardown_method(self, _method):
+        _reset_daemon_globals()
+
+    def test_non_confirm_line_returns_false(self):
+        assert daemon.handle_security_confirm_stdin_line("SHUTDOWN") is False
+
+    def test_valid_confirm_line_resolves_and_returns_true(self):
+        from jarvis.security import desktop_confirm
+
+        event = threading.Event()
+        result = {"approved": False}
+        with desktop_confirm._pending_lock:
+            desktop_confirm._pending["req-1"] = (event, result)
+        line = 'SECURITY_CONFIRM_RESPONSE:{"request_id": "req-1", "approved": true}'
+
+        try:
+            assert daemon.handle_security_confirm_stdin_line(line) is True
+            assert event.is_set()
+            assert result["approved"] is True
+        finally:
+            with desktop_confirm._pending_lock:
+                desktop_confirm._pending.pop("req-1", None)
+
+    def test_malformed_confirm_line_is_swallowed_and_returns_true(self):
+        # Must not raise, and still counts as "handled" so the caller
+        # doesn't also try to interpret it as a chat/SHUTDOWN line.
+        assert daemon.handle_security_confirm_stdin_line(
+            "SECURITY_CONFIRM_RESPONSE:not json"
+        ) is True
+
+    def test_confirm_line_for_unknown_request_id_is_swallowed(self):
+        line = 'SECURITY_CONFIRM_RESPONSE:{"request_id": "no-such-request"}'
+
+        assert daemon.handle_security_confirm_stdin_line(line) is True
+
+
+@pytest.mark.unit
+class TestStdinDispatchResilience:
+    """A single bad or unrecognised stdin line must never end the monitor
+    for every line after it - that's the whole point of the channel
+    (SHUTDOWN, chat IPC, security confirmations all share it)."""
+
+    def setup_method(self, _method):
+        _reset_daemon_globals()
+
+    def teardown_method(self, _method):
+        _reset_daemon_globals()
+
+    def test_unrecognised_line_is_ignored(self):
+        assert daemon._dispatch_stdin_line("not a recognised command") is False
+
+    def test_shutdown_line_requests_stop_and_signals_the_loop_to_end(self):
+        assert daemon._dispatch_stdin_line("SHUTDOWN") is True
+        assert daemon.is_stop_requested() is True
+
+    def test_a_raising_handler_does_not_propagate(self, monkeypatch):
+        def _boom(_line):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(daemon, "handle_chat_cancel_stdin_line", _boom)
+
+        # Must not raise.
+        assert daemon._dispatch_stdin_line("some line") is False
+
+    def test_monitor_loop_survives_a_raising_line_and_still_reaches_shutdown(
+        self, monkeypatch,
+    ):
+        import io
+
+        def _boom(_line):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(daemon, "handle_chat_cancel_stdin_line", _boom)
+        fake_stdin = io.StringIO("a bad line\nSHUTDOWN\n")
+
+        daemon.stdin_monitor(stream=fake_stdin)
+
+        assert daemon.is_stop_requested() is True
+
+    def test_monitor_loop_stops_on_eof(self):
+        import io
+
+        daemon.stdin_monitor(stream=io.StringIO(""))
+
+        assert daemon.is_stop_requested() is True
+
+
+@pytest.mark.unit
 class TestGetHotWindowMessages:
     """``get_hot_window_messages`` backs the chat window's first-show replay."""
 

@@ -144,7 +144,7 @@ class TestGetRequiredModels:
         mock_settings = MagicMock()
         mock_settings.ollama_chat_model = "llama2:7b"
         mock_settings.ollama_embed_model = "nomic-embed-text"
-        mock_settings.fast_model = "gemma4:e2b"
+        mock_settings.local_fast_model = "gemma4:e2b"
 
         with patch("desktop_app.setup_wizard.load_settings", return_value=mock_settings):
             models = get_required_models()
@@ -157,7 +157,7 @@ class TestGetRequiredModels:
         mock_settings = MagicMock()
         mock_settings.ollama_chat_model = "gpt-oss:20b"  # Different from fast model
         mock_settings.ollama_embed_model = "nomic-embed-text"
-        mock_settings.fast_model = "gemma4:e2b"
+        mock_settings.local_fast_model = "gemma4:e2b"
 
         with patch("desktop_app.setup_wizard.load_settings", return_value=mock_settings):
             models = get_required_models()
@@ -174,7 +174,7 @@ class TestGetRequiredModels:
         mock_settings = MagicMock()
         mock_settings.ollama_chat_model = "gemma4:e2b"
         mock_settings.ollama_embed_model = "nomic-embed-text"
-        mock_settings.fast_model = "gemma4:e2b"
+        mock_settings.local_fast_model = "gemma4:e2b"
 
         with patch("desktop_app.setup_wizard.load_settings", return_value=mock_settings):
             models = get_required_models()
@@ -197,7 +197,8 @@ class TestGetRequiredModels:
             embedding_provider="",
             ollama_chat_model="gemma4:e2b",
             ollama_embed_model="nomic-embed-text",
-            fast_model="gemma4:e2b",
+            fast_model="remote-fast-model",
+            local_fast_model="gemma4:e2b",
         )
         base.update(over)
         return SimpleNamespace(**base)
@@ -241,6 +242,17 @@ class TestGetRequiredModels:
         with patch("desktop_app.setup_wizard.load_settings", return_value=cfg):
             models = get_required_models()
         assert models == ["gpt-oss:20b", "gemma4:e2b"]
+
+    def test_never_pulls_the_effective_remote_fast_model(self):
+        cfg = self._cfg(
+            llm_provider="ollama",
+            fast_model="vendor/remote-fast",
+            local_fast_model="qwen3.5:0.8b",
+        )
+        with patch("desktop_app.setup_wizard.load_settings", return_value=cfg):
+            models = get_required_models()
+        assert "qwen3.5:0.8b" in models
+        assert "vendor/remote-fast" not in models
 
 
 class TestCheckInstalledModels:
@@ -1190,6 +1202,28 @@ class TestModelsPageUI:
         assert idx >= 0
         page._chat_combo.setCurrentIndex(idx)
         assert page._fast_model == "qwen3.5:0.8b"
+
+    def test_saves_fast_choice_as_local_fallback(self, qapp, tmp_path):
+        from desktop_app.setup_wizard import ModelsPage
+        page = ModelsPage()
+        page._chat_model = "gpt-oss:20b"
+        page._fast_model = "qwen3.5:0.8b"
+        saved = {}
+
+        def capture(_path, config):
+            saved.update(config)
+            return True
+
+        with (
+            patch("desktop_app.setup_wizard.default_config_path", return_value=tmp_path / "config.json"),
+            patch("jarvis.config._load_json", return_value={}),
+            patch("jarvis.config._save_json", side_effect=capture),
+        ):
+            assert page._save_model_to_config() is True
+
+        assert saved["ollama_chat_model"] == "gpt-oss:20b"
+        assert saved["local_fast_model"] == "qwen3.5:0.8b"
+        assert "fast_model" not in saved
 
     def test_fast_combo_uses_data_keys_for_fast_suitable_models(self, qapp):
         from desktop_app.setup_wizard import ModelsPage

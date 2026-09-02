@@ -28,6 +28,13 @@ Plugins = PyQt6/Qt6/plugins
 # Manual collection can conflict with hooks and cause crashes
 datas = [
     (str(src_path / 'desktop_app' / 'desktop_assets' / '*.png'), 'desktop_app/desktop_assets'),
+    # The control centre serves its interface from disk, and Flask resolves
+    # that folder relative to the module. Without it the bundled app answers
+    # every page with a 404 while the API works perfectly.
+    (str(src_path / 'jarvis' / 'webui' / 'static'), 'jarvis/webui/static'),
+    # The vendored, AGPL-3.0-licensed face/visualizer gallery, served from
+    # disk the same way. See THIRD_PARTY_NOTICES.md.
+    (str(src_path / 'jarvis' / 'webui' / 'visualizer' / 'vendor'), 'jarvis/webui/visualizer/vendor'),
 ]
 
 # Collect Piper TTS data files (espeak-ng-data is required for phonemization)
@@ -103,7 +110,9 @@ hiddenimports = [
     'desktop_app.themes',
     'desktop_app.face_widget',
     'desktop_app.diary_dialog',
-    'desktop_app.memory_viewer',
+    'jarvis.webui',
+    'jarvis.webui.server',
+    'jarvis.webui.api',
     # Listening modules
     'jarvis.listening',
     'jarvis.listening.echo_detection',
@@ -121,6 +130,10 @@ hiddenimports = [
     'jarvis.output',
     'jarvis.output.tts',
     'jarvis.output.tune_player',
+    # Kokoro's own client-side module (subprocess launch + stdio protocol
+    # only; the AGPL-licensed synthesis code and the kokoro package stay in
+    # the sidecar subprocess and are excluded below like Chatterbox).
+    'jarvis.output.kokoro_sidecar_client',
     # Piper TTS (local neural TTS)
     'piper',
     'piper.voice',
@@ -240,10 +253,11 @@ a = Analysis(
     excludes=[
         # Exclude heavy packages to keep bundle size reasonable
         'psycopg2',  # Not used and causes OpenSSL conflicts
-        'torch',  # PyTorch is 1.5-2GB - chatterbox TTS is optional
+        'torch',  # PyTorch is 1.5-2GB - chatterbox and kokoro TTS are optional
         'torchaudio',
         'torchvision',
         'chatterbox',  # Optional TTS engine (uses PyTorch)
+        'kokoro',  # Optional TTS engine (uses PyTorch)
         'transformers',  # Heavy ML library (not needed, faster_whisper uses ctranslate2)
         'safetensors',
         'accelerate',
@@ -273,6 +287,7 @@ excluded_binary_patterns = [
     'sklearn', 'scikit',  # scikit-learn
     'transformers',  # Heavy ML library
     'chatterbox',
+    'kokoro',
     'matplotlib',
     # Note: Keep huggingface_hub (needed by faster_whisper for model downloads)
     # Note: Keep libopenblas (needed by numpy) and libfreetype (needed by av/ffmpeg)

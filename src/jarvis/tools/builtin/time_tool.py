@@ -189,6 +189,10 @@ class TimeTool(Tool):
                         location_cache_minutes=getattr(
                             context.cfg, "location_cache_minutes", 60
                         ),
+                        manual_city=getattr(context.cfg, "location_manual_city", None),
+                        manual_region=getattr(context.cfg, "location_manual_region", None),
+                        manual_country=getattr(context.cfg, "location_manual_country", None),
+                        manual_timezone=getattr(context.cfg, "location_manual_timezone", None),
                     )
                 except Exception as e:
                     debug_log(f"getTime: local tz lookup failed: {e}", "tools")

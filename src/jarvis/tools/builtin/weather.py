@@ -17,7 +17,9 @@ _NO_PLACE_SENTINELS = frozenset({
 })
 
 
-def _extract_place_from_user_text(text: str, cfg) -> Optional[str]:
+def _extract_place_from_user_text(
+    text: str, cfg, deadline: Optional[Any] = None,
+) -> Optional[str]:
     """Ask a small LLM to pull a place name out of the user's utterance.
 
     Used as a last-ditch fallback when the tool-calling LLM didn't fill the
@@ -26,6 +28,12 @@ def _extract_place_from_user_text(text: str, cfg) -> Optional[str]:
     args even when the user literally just said one — pulling the place
     straight from the user's text sidesteps that weakness so the user
     doesn't have to keep repeating themselves.
+
+    ``deadline`` (the reply turn's ``RequestDeadline``, optional) bounds
+    this call to whatever remains of the turn rather than the full
+    ``llm_tools_timeout_sec`` ceiling (300s by default) — otherwise a hung
+    model here could outlive the turn by minutes. None (evals, unit tests,
+    standalone use) leaves the configured ceiling untouched.
 
     Returns ``None`` when no place is named, the call fails, or the
     extractor gives back something that doesn't look like a place.
@@ -48,10 +56,15 @@ def _extract_place_from_user_text(text: str, cfg) -> Optional[str]:
     )
     user_prompt = f"User utterance: {text}\n\nPlace:"
 
+    configured_timeout = float(getattr(cfg, "llm_tools_timeout_sec", 8.0))
+    timeout_sec = configured_timeout
+    if deadline is not None:
+        timeout_sec = max(0.05, min(configured_timeout, deadline.remaining()))
+
     try:
         resp = get_llm_backend(cfg).direct(
             model, sys_prompt, user_prompt,
-            timeout_sec=float(getattr(cfg, "llm_tools_timeout_sec", 8.0)),
+            timeout_sec=timeout_sec,
             max_tokens=50,
         )
     except Exception as e:
@@ -228,7 +241,9 @@ class WeatherTool(Tool):
                     # ping-pong loop.
                     user_text = getattr(context, "redacted_text", "") or ""
                     cfg = getattr(context, "cfg", None)
-                    extracted = _extract_place_from_user_text(user_text, cfg)
+                    extracted = _extract_place_from_user_text(
+                        user_text, cfg, getattr(context, "deadline", None),
+                    )
                     if extracted:
                         debug_log(
                             f"    📍 auto-detect unavailable; extracted place from user text: '{extracted}'",

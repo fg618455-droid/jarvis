@@ -100,6 +100,11 @@ def _create_listener(**kwargs):
     assert listener._intent_judge is not None, "Real intent judge should be created"
     assert listener._intent_judge.available, "Intent judge should be available"
 
+    # Accepted utterances dispatch immediately. Capture that user-visible
+    # boundary so these tests measure the judge rather than the reply engine.
+    listener._dispatched_queries = []
+    listener._dispatch_query = listener._dispatched_queries.append
+
     return listener, mock_tts
 
 
@@ -120,8 +125,15 @@ def _wait_for_hot_window_active(listener, timeout=0.5):
 
 
 def _accepted_query(listener) -> str:
-    """Return the accepted query text, or empty string if rejected."""
-    return listener.state_manager.get_pending_query() or ""
+    """Return the accepted query text, or empty string if rejected.
+
+    Read through the unit suite's helper rather than a second copy: what
+    counts as an accepted query is a property of the listener, and two
+    definitions drift apart silently the moment the listener changes.
+    """
+    from tests.test_hot_window_input import _accepted_query as _read
+
+    return _read(listener)
 
 
 def _add_buffer_segment(listener, text, start_time, end_time=None,
@@ -609,32 +621,3 @@ class TestMultiSegmentBufferIntegration:
         )
         listener.state_manager.stop()
 
-
-# ---------------------------------------------------------------------------
-# Gap 7: Stop command during active TTS (bypasses judge)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.eval
-class TestStopCommandBypassesJudge:
-    """Stop commands during active TTS use fast text matching (Priority 1),
-    bypassing the judge entirely. Verify this works end-to-end.
-    """
-
-    @patch("builtins.print")
-    def test_stop_during_tts_interrupts_immediately(self, _print):
-        """'stop' during TTS interrupts without calling the judge."""
-        # Use unit-test style creation — judge not needed for stop commands
-        from tests.test_hot_window_input import _create_listener as _create_unit_listener
-        listener, mock_tts = _create_unit_listener(tts_speaking=True)
-        mock_tts.is_speaking.return_value = True
-
-        listener._process_transcript(
-            "stop",
-            utterance_energy=0.01,
-        )
-
-        mock_tts.interrupt.assert_called_once()
-        assert _accepted_query(listener) == "", (
-            "Stop command should not produce a query"
-        )
-        listener.state_manager.stop()

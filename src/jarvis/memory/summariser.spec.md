@@ -41,6 +41,32 @@ Unrelated topics must never be welded into one grammatical clause. No shared "an
 
 All three rules apply in any language, not only English. The prompt states this explicitly because small models otherwise assume the rule is keyed to the English phrases it names.
 
+## Ambient Digest
+
+When passive capture is switched on (`../listening/passive_capture.spec.md`), overheard speech reaches memory through a second summariser: `ambient.py::generate_ambient_digest`. Its output is appended to the day's diary row as one chunk and then flows through the ordinary diary and graph consumers, so everything that poisons a diary summary poisons this one the same way. Rules 2 (attribution) and 3 (topic separation) apply unchanged. Rule 1 (deflection) is inert: there are no assistant turns in ambient speech. Three rules are specific to it.
+
+### 4. Overheard provenance
+Ambient speech was not addressed to the assistant and was not necessarily spoken by the user. The digest records who is not known, rather than guessing.
+
+- Write "someone in the room said X", "it was mentioned that X", never "the user said X" or a bare "X".
+- Where the speaker identifies themselves or is named by another speaker, the name may be recorded, still as reported speech.
+- Never promote overheard content into a user fact. A preference the assistant hears across the room is not a preference the user stated, and downstream enrichment reads unattributed lines as established fact. This holds at the graph-extraction step too (`graph_ops.py`, see `graph.spec.md`): a digest sentence attributed as overheard must route to the WORLD branch, never USER, even though the digest text itself already carries the correct attribution.
+
+### 5. Nothing is the ordinary answer
+Most speech in a room carries nothing worth a permanent record. The prompt states plainly that returning an empty digest is correct and common, with worked examples of small talk that produces nothing. Without this, a small model treats an empty answer as a failure to comply and invents significance for "have you seen my keys".
+
+- Keep only what bears on the user's world: plans, decisions, appointments, people, places, preferences stated as such, events that happened.
+- Drop pleasantries, logistics of the moment, half-sentences, and anything whose meaning depends on being in the room.
+
+### 6. Recited speech is not the household's
+A television, a podcast, a speakerphone, or a film carries speech that belongs to nobody present. Recorded as fact it produces a diary claiming the user planned a bank robbery.
+
+- Content that reads as broadcast, performed, recited, or read aloud is dropped rather than attributed.
+- When it is genuinely ambiguous, drop it. A missing line costs nothing; an invented one is retrieved for months.
+
+### Untrusted-input fence
+Ambient lines are wrapped in the same `<<<BEGIN UNTRUSTED WEB EXTRACT>>>` / `<<<END UNTRUSTED WEB EXTRACT>>>` markers the web-search and diary-rewrite paths use, and redacted with `utils/redact.py` first. Anything said aloud near the microphone by anyone at all reaches this prompt, which makes it the assistant's broadest injection surface. Echoed fence markers are stripped from the response.
+
 ## LLM Rewrite Sweep
 
 `rewrite_all_diary_summaries(db, ollama_base_url, ollama_chat_model, ...)` is a user-triggered bulk operation that walks every row in `conversation_summaries` and asks the chat model to remove deflection narration from each. It exists for cleaning **historical** poisoning from rows written before the summariser prompt was tightened. There is no equivalent on the write path — new writes rely on the prompt alone.
@@ -59,7 +85,7 @@ All three rules apply in any language, not only English. The prompt states this 
 
 **Empty-rewrite guard:** if the model returns an empty string (a row that was *entirely* deflection), the original is kept and a `would_empty: true` flag is surfaced. An empty diary entry is worse than a slightly-leaky one — downstream retrieval treats absence as "no record" and the user loses the topic entirely.
 
-**Privacy:** the sweep streams per-row events as `{date_utc, chars_before, chars_after, rewritten, would_empty, embedding_refreshed, error?}` — counts and booleans only, never raw summary text. The `error` value is the exception class name only (e.g. `"RuntimeError"`), never the stringified exception message, because Python exception messages can echo offending input back to the caller. The progress-event key set is locked behind a whitelist test so any future field addition forces deliberate review (`tests/test_memory_viewer_diary_scrub_api.py::test_progress_event_keys_are_a_known_whitelist`). The diary clean button must not become a data-exfiltration channel through the streaming progress UI.
+**Privacy:** the sweep streams per-row events as `{date_utc, chars_before, chars_after, rewritten, would_empty, embedding_refreshed, error?}` — counts and booleans only, never raw summary text. The `error` value is the exception class name only (e.g. `"RuntimeError"`), never the stringified exception message, because Python exception messages can echo offending input back to the caller. The progress-event key set is locked behind a whitelist test so any future field addition forces deliberate review (`tests/webui/test_memory_diary_scrub_api.py::test_progress_event_keys_are_a_known_whitelist`). The diary clean button must not become a data-exfiltration channel through the streaming progress UI.
 
 **Audit trail:** preserves each row's original `ts_utc` on rewrite. A maintenance pass that stomped `ts_utc` would make every cleaned row look as though it had been written today, destroying the only signal users have to verify when each diary entry was actually authored.
 
@@ -74,13 +100,28 @@ All three rules apply in any language, not only English. The prompt states this 
 
 **Read paths:** none. The rewrite only touches the bulk sweep. Read-time diary retrieval is untouched.
 
-## Bulk Sweep UI
+## Maintenance UI
 
-The memory viewer's diary tab carries a Maintenance section in the sidebar with two operations:
+The control centre's Memory view contains a Maintenance section with two diary
+operations. Both show incremental NDJSON progress and an action-specific final
+summary, and both require confirmation before stored rows are rewritten.
 
-**"🧹 Clean up deflection narration"** — asks the chat model to rewrite each old diary entry, removing only sentences that narrate assistant failures. The rest of each entry is preserved verbatim, no diary entries are deleted, and a summary that is *entirely* deflection narration is kept rather than emptied. Requires the chat model to be running. Backed by `POST /api/diary/scrub-deflections` (NDJSON-streaming) which calls `rewrite_all_diary_summaries`. The endpoint URL still says "scrub" for backwards compatibility; the implementation is now LLM-driven.
+**Clean deflection narration** asks the chat model to rewrite each diary entry,
+removing only sentences that narrate assistant failures. The rest of each entry
+is preserved verbatim, no diary entries are deleted, and a summary that is
+entirely deflection narration is kept rather than emptied. It requires the chat
+model to be running. `POST /api/diary/scrub-deflections` calls
+`rewrite_all_diary_summaries`.
 
-**"🏷️ Optimise tags"** — normalises topic tags across all diary entries using the configured chat model. Because each diary write generates topics independently, the same concept may accumulate multiple surface forms over time ("cook", "cooking", "meal prep"). The optimiser collects all unique tags, makes a single LLM call to propose a normalised taxonomy (merging synonyms, splitting compound tags), then applies the mapping to every row whose tags change. Backed by `POST /api/diary/optimise-topics` (NDJSON-streaming) which calls `optimise_diary_topics`. Requires the chat model to be running. Diary text is untouched; only the `topics` column is rewritten. Preserves `ts_utc` on every rewrite. Re-embeds updated rows best-effort. Fail-open: LLM failure or bad JSON leaves all rows unchanged.
+**Optimise topics** normalises topic tags across all diary entries using the
+configured chat model. Because each diary write generates topics independently,
+the same concept may accumulate multiple surface forms ("cook", "cooking",
+"meal prep"). The optimiser collects all unique tags, makes a single LLM call
+to propose a normalised taxonomy, then applies the mapping to every row whose
+tags change. `POST /api/diary/optimise-topics` calls `optimise_diary_topics`.
+Diary text is untouched; only the `topics` column is rewritten. Every rewrite
+preserves `ts_utc` and refreshes embeddings best-effort. LLM failure or bad JSON
+leaves all rows unchanged.
 
 ## Tag Optimisation
 
@@ -106,8 +147,13 @@ Idempotent once the mapping has been applied: a second run finds no tags to chan
 | `test_preserves_legitimate_user_preferences` | `evals/test_diary_summariser_hygiene.py` | Cross-rule: hygiene must not strip real content |
 | `TestSummariserForbidsDeflectionNarration` | `tests/test_diary_poisoning_defence.py` | Prompt-content regression (rules 1–3) |
 | `TestRewriteSweepBehaviour` | `tests/test_diary_rewrite_sweep.py` | LLM-rewrite bulk sweep DB integration, fail-open, audit trail |
-| `TestDiaryScrubEndpoint` | `tests/test_memory_viewer_diary_scrub_api.py` | Endpoint streaming + privacy contract |
+| `TestDiaryScrubEndpoint` | `tests/webui/test_memory_diary_scrub_api.py` | Endpoint streaming + privacy contract |
 | `TestOptimiseContract` / `TestOptimiseMerge` / `TestOptimiseSplit` / `TestOptimiseDeduplicate` / `TestOptimiseAuditTrail` / `TestOptimiseFailOpen` / `TestOptimiseIdempotence` | `tests/test_diary_topic_optimise.py` | Tag optimisation — generator contract, merge/split semantics, dedup, audit trail, fail-open, idempotence |
+| `test_digest_attributes_content_as_overheard` | `evals/test_ambient_digest_hygiene.py` | Rule 4 |
+| `test_digest_returns_nothing_for_small_talk` | `evals/test_ambient_digest_hygiene.py` | Rule 5 |
+| `test_digest_ignores_recited_and_broadcast_speech` | `evals/test_ambient_digest_hygiene.py` | Rule 6 |
+| `test_digest_keeps_a_real_plan_stated_aloud` | `evals/test_ambient_digest_hygiene.py` | Cross-rule: ambient hygiene must not strip real content |
+| `TestAmbientDigestForbidsUserAttribution` | `tests/test_diary_poisoning_defence.py` | Prompt-content regression (rules 4–6) |
 
 Live evals target the smallest supported model (gemma4:e2b) and `xfail` softly on weaker models rather than hard-failing, documenting residual risk instead of masking it.
 

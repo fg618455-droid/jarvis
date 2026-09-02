@@ -28,22 +28,58 @@ from typing import Any, Callable, Dict, List, Optional
 
 import requests  # noqa: F401  — re-exported for test patching, see module docstring
 
-from .backend import LLMBackend, ToolsNotSupportedError
+from .backend import (
+    AuthError,
+    LLMBackend,
+    ModelUnavailableError,
+    ProviderError,
+    QuotaExhaustedError,
+    RateLimitedError,
+    ToolsNotSupportedError,
+)
+from .claude_subscription import ClaudeSubscriptionBackend
+from .codex_subscription import CodexSubscriptionBackend
+from .crew_chat import CrewChatBackend
 from .ollama import OllamaBackend, check_version, extract_text_from_response
 from .openai_compatible import OpenAICompatibleBackend, ServerCapabilities
-from .factory import get_embedding_backend, get_llm_backend
+from .factory import (
+    LOW_POWER_OLLAMA_KEEP_ALIVE,
+    OLLAMA_KEEP_ALIVE,
+    describe_model_topology,
+    get_embedding_backend,
+    get_llm_backend,
+    is_low_power_mode,
+    ollama_keep_alive,
+)
+from .route import RequestDeadline, Route, RoutedBackend
 from .tiers import Tier, resolve_model
 
 __all__ = [
     "LLMBackend",
+    "ProviderError",
+    "RateLimitedError",
+    "QuotaExhaustedError",
+    "AuthError",
+    "ModelUnavailableError",
     "OllamaBackend",
     "OpenAICompatibleBackend",
+    "ClaudeSubscriptionBackend",
+    "CodexSubscriptionBackend",
+    "CrewChatBackend",
     "ServerCapabilities",
+    "Route",
+    "RequestDeadline",
+    "RoutedBackend",
     "Tier",
     "ToolsNotSupportedError",
     "check_version",
     "get_llm_backend",
+    "describe_model_topology",
     "get_embedding_backend",
+    "OLLAMA_KEEP_ALIVE",
+    "LOW_POWER_OLLAMA_KEEP_ALIVE",
+    "is_low_power_mode",
+    "ollama_keep_alive",
     "resolve_model",
     "extract_text_from_response",
     "call_llm_direct",
@@ -107,6 +143,7 @@ def chat_with_messages(
     extra_options: Optional[Dict[str, Any]] = None,
     tools: Optional[List[Dict[str, Any]]] = None,
     thinking: bool = False,
+    on_token: Optional[Callable[[str], None]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Arbitrary-messages chat call against an Ollama instance at ``base_url``."""
     return OllamaBackend(base_url).chat(
@@ -116,4 +153,5 @@ def chat_with_messages(
         extra_options=extra_options,
         tools=tools,
         thinking=thinking,
+        on_token=on_token,
     )

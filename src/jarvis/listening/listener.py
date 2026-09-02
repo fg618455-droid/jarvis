@@ -13,16 +13,26 @@ import queue
 import sys
 import platform
 from collections import deque
-from typing import Optional, TYPE_CHECKING, Any
+from typing import Any, Callable, Optional, TYPE_CHECKING
 from datetime import datetime
 
 from rapidfuzz import fuzz
 from contextlib import contextmanager
 
+from .audio_ingress import register_audio_sink
+from .conversation_mode import register_conversation_controller
+from .passive_capture import (
+    capture_evicted_segment,
+    register_passive_buffer,
+)
 from .echo_detection import EchoDetector
-from .state_manager import StateManager, ListeningState
+from .state_manager import StateManager
 from ..utils.audio_lock import portaudio_lock
-from .wake_detection import is_wake_word_detected, extract_query_after_wake, is_stop_command
+from .wake_detection import (
+    is_wake_word_detected,
+    extract_query_after_wake,
+    extract_query_from_edge_wake,
+)
 from .transcript_buffer import TranscriptBuffer
 from .intent_judge import (
     IntentJudge,
@@ -30,8 +40,11 @@ from .intent_judge import (
     create_intent_judge,
     warm_up_chat_model,
 )
+from ..config import resolve_transcription_language
 from ..debug import debug_log
 from ..llm import get_embedding_backend
+from ..reply.engine import warm_up_reply_prefix
+from ..runtime import Phase, get_recorder, get_runtime_state, set_phase, set_phase_if
 from ..utils.location import is_location_available
 
 if TYPE_CHECKING:
@@ -50,15 +63,49 @@ def is_whisper_hallucination(no_speech_prob: float, threshold: float) -> bool:
     """
     return no_speech_prob >= threshold
 
-# Audio processing imports (optional)
+
+def is_uncertain_language(language_probability, threshold: float) -> bool:
+    """Language-identification gate for whole utterances.
+
+    Whisper invents short filler phrases from room noise. Those carry a
+    `no_speech_prob` of zero and a healthy `avg_logprob`, so neither existing
+    filter sees them. Language identification does: Whisper is confident about
+    the language of real speech and hesitant about noise.
+
+    The gate compares only the reported probability, never the language itself,
+    so it stays valid for every language the assistant supports.
+
+    Fails open. A missing or malformed probability means "cannot judge", and
+    discarding what the user actually said is worse than passing noise through.
+    A threshold of 0.0 disables the gate.
+    """
+    if threshold <= 0.0:
+        return False
+    if not isinstance(language_probability, (int, float)) or isinstance(language_probability, bool):
+        return False
+    return language_probability < threshold
+
+
+# Audio processing imports (optional).
+#
+# Kept apart on purpose: only sounddevice needs PortAudio. A machine with no
+# working audio device still transcribes audio posted by the control centre,
+# so nulling numpy and the VAD alongside it would disable a path that has no
+# device to fail on.
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    import webrtcvad
+except ImportError:
+    webrtcvad = None
+
 try:
     import sounddevice as sd
-    import webrtcvad
-    import numpy as np
 except ImportError as e:
     sd = None
-    webrtcvad = None
-    np = None
     # Log import error for debugging
     print(f"  ⚠️  Audio import error: {e}", flush=True)
     print("     This may indicate PortAudio is not found", flush=True)
@@ -69,8 +116,6 @@ except ImportError as e:
 except OSError as e:
     # PortAudio loading errors appear as OSError
     sd = None
-    webrtcvad = None
-    np = None
     print(f"  ❌ PortAudio initialisation failed: {e}", flush=True)
     print("     Please reinstall the application or check audio drivers", flush=True)
     import sys as _sys
@@ -356,7 +401,13 @@ def _serialised_stream(stream):
     sounddevice's context manager calls start() on enter and stop()/close()
     on exit; those are the thread-unsafe PortAudio lifecycle operations that
     must be serialised process-wide (see jarvis.utils.audio_lock).
+
+    ``None`` means there is no local device to serialise, which is the normal
+    shape when the microphone lives in the browser. The block still runs.
     """
+    if stream is None:
+        yield None
+        return
     with portaudio_lock:
         stream.start()
     try:
@@ -371,6 +422,52 @@ def _serialised_stream(stream):
                 stream.close()
             except Exception:
                 pass
+
+
+class _SpeechSegmentSink:
+    """Speaks a reply sentence by sentence as the engine writes it.
+
+    A reply is written faster than it is spoken, so the engine hands over each
+    finished sentence instead of the whole answer at the end. Three things
+    only make sense once per reply rather than once per sentence, and this is
+    what keeps them that way:
+
+    - The felt wait ends when sound first leaves the speakers, so only the
+      first sentence carries the callback that says so.
+    - Echo suppression matches what the microphone hears against what was
+      said, so the detector is given the reply accumulated so far. Handing it
+      one sentence at a time would leave it able to recognise only the last.
+    - Whether anything was spoken at all decides how the caller closes the
+      reply, so the sink remembers.
+    """
+
+    def __init__(self, listener: "VoiceListener",
+                 on_audio_start: Optional[Callable[[], None]] = None) -> None:
+        self._listener = listener
+        self._pending_audio_start = on_audio_start
+        self._spoken: list[str] = []
+
+    @property
+    def anything_spoken(self) -> bool:
+        return bool(self._spoken)
+
+    @property
+    def spoken_text(self) -> str:
+        return " ".join(self._spoken)
+
+    def __call__(self, sentence: str) -> None:
+        tts = self._listener.tts
+        if not (tts and tts.enabled):
+            return
+        audio_start, self._pending_audio_start = self._pending_audio_start, None
+        self._spoken.append(sentence)
+        self._listener.track_tts_start(self.spoken_text)
+        debug_log(f"speaking streamed sentence ({len(sentence)} chars)", "tts")
+        tts.speak(
+            sentence,
+            completion_callback=None,
+            audio_start_callback=audio_start,
+        )
 
 
 class VoiceListener(threading.Thread):
@@ -395,6 +492,9 @@ class VoiceListener(threading.Thread):
         self.dialogue_memory = dialogue_memory
         self._should_stop = False
         self._dictation_active = False  # Pause flag set by dictation engine
+        # Whether the local microphone is being captured. Decided in run();
+        # False means every frame arrives from the control centre instead.
+        self._local_capture = False
         self._first_utterance = True  # Suppress turn separator before the very first transcription
         # ISO-639-1 code Whisper detected for the most recent utterance.
         # Updated at every successful transcription site (MLX + faster-
@@ -435,19 +535,16 @@ class VoiceListener(threading.Thread):
 
         # Initialise modular components
         self.echo_detector = EchoDetector(
-            echo_tolerance=float(getattr(self.cfg, "echo_tolerance", 0.3)),
-            energy_spike_threshold=float(getattr(self.cfg, "echo_energy_threshold", 2.0))
+            echo_tolerance=float(getattr(self.cfg, "echo_tolerance", 0.3))
         )
 
         self.state_manager = StateManager(
             hot_window_seconds=float(getattr(self.cfg, "hot_window_seconds", 3.0)),
             echo_tolerance=float(getattr(self.cfg, "echo_tolerance", 0.3)),
-            voice_collect_seconds=float(getattr(self.cfg, "voice_collect_seconds", 2.0)),
-            max_collect_seconds=float(getattr(self.cfg, "voice_max_collect_seconds", 60.0))
+            command_capture_seconds=float(
+                getattr(self.cfg, "wake_command_timeout_seconds", 12.0)
+            ),
         )
-
-        # Energy tracking for echo detection
-        self._recent_audio_energy: deque = deque(maxlen=50)
 
         # Audio-level wake word detection timestamp
         self._wake_timestamp: Optional[float] = None
@@ -456,6 +553,10 @@ class VoiceListener(threading.Thread):
         # Used for both retention and context passed to intent judge
         self._buffer_duration = float(getattr(self.cfg, "transcript_buffer_duration_sec", 120.0))
         self._transcript_buffer = TranscriptBuffer(max_duration_sec=self._buffer_duration)
+        self._transcript_buffer.set_eviction_sink(
+            lambda segment: capture_evicted_segment(self.db, self.cfg, segment)
+        )
+        register_passive_buffer(self._transcript_buffer)
         debug_log(f"transcript buffer initialised ({self._buffer_duration}s)", "voice")
 
         # Intent judge (full context, larger model) - always used when available
@@ -471,6 +572,11 @@ class VoiceListener(threading.Thread):
     def stop(self) -> None:
         """Stop the voice listener."""
         self._should_stop = True
+        register_conversation_controller(None)
+        register_audio_sink(None)
+        self._transcript_buffer.flush()
+        self._transcript_buffer.set_eviction_sink(None)
+        register_passive_buffer(None)
         self.state_manager.stop()
         self._stop_thinking_tune()
 
@@ -513,12 +619,12 @@ class VoiceListener(threading.Thread):
     def track_tts_start(self, tts_text: str) -> None:
         """Called when TTS starts speaking."""
         if self.tts and self.tts.enabled:
-            # Calculate baseline energy from recent audio samples
-            baseline_energy = 0.0045  # default
-            if self._recent_audio_energy:
-                baseline_energy = sum(self._recent_audio_energy) / len(self._recent_audio_energy)
+            # Playback is a closed listening interval. Drop anything captured
+            # before the output stream starts so speaker audio cannot be
+            # transcribed later as a delayed command.
+            self._clear_audio_buffers()
 
-            self.echo_detector.track_tts_start(tts_text, baseline_energy)
+            self.echo_detector.track_tts_start(tts_text)
 
     def activate_hot_window(self) -> None:
         """Activate hot window after TTS completion."""
@@ -544,12 +650,6 @@ class VoiceListener(threading.Thread):
             utterance_energy: Pre-calculated energy from the utterance frames
         """
         if not text or not text.strip():
-            # Check for timeouts
-            if self.state_manager.check_collection_timeout():
-                query = self.state_manager.clear_collection()
-                if query.strip():
-                    self._dispatch_query(query)
-
             # Check hot window expiry
             self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
             return
@@ -567,17 +667,25 @@ class VoiceListener(threading.Thread):
         end_time_str = datetime.fromtimestamp(utterance_end_time).strftime('%H:%M:%S.%f')[:-3] if utterance_end_time > 0 else "N/A"
         debug_log(f"heard: '{text}' (utterance from {start_time_str} to {end_time_str})", "voice")
 
-        # Track if this input was received during TTS (for logging purposes)
         received_during_tts = self.tts and self.tts.is_speaking()
+
+        # The microphone callback is suspended throughout playback. This
+        # defensive guard also discards a transcript that completed across the
+        # playback boundary. Follow-ups begin after TTS in the hot window.
+        if received_during_tts:
+            debug_log("discarding transcript captured during TTS playback", "voice")
+            self._transcript_buffer.mark_last_segment_echo()
+            return
+
+        in_hot_window = self.state_manager.was_speech_during_hot_window(
+            utterance_start_time, utterance_end_time
+        )
 
         # --- Early echo check + early beep ---
         # Check for echo BEFORE starting beep and BEFORE intent judge.
         # This prevents: false beeps on echo, intent judge blocking the audio
         # loop for seconds on echo, and hot window extending from echo resets.
-        if not received_during_tts and not self._is_thinking_tune_active():
-            in_hot_window = self.state_manager.was_speech_during_hot_window(
-                utterance_start_time, utterance_end_time
-            )
+        if not self._is_thinking_tune_active():
             if in_hot_window:
                 # Fuzzy echo check — instant, no intent judge needed.
                 # Only catches pure echo (transcript ≈ TTS text). Mixed
@@ -627,12 +735,14 @@ class VoiceListener(threading.Thread):
                                 flush=True,
                             )
                             self._transcript_buffer.update_last_segment_text(salvaged)
+                            self._transcript_buffer.mark_last_segment_echo()
                             # text_lower now carries the salvaged query — the rest
                             # of _process_transcript reads from this variable.
                             text_lower = salvaged
                         else:
                             debug_log(f"🔇 Early echo rejection (score={echo_score}): \"{text_lower}\"", "voice")
                             print(f"  🔇 Heard (echo): \"{text_lower[:50]}{'...' if len(text_lower) > 50 else ''}\"", flush=True)
+                            self._transcript_buffer.mark_last_segment_echo()
                             return
 
                 # Non-echo (or salvaged) in hot window — start beep
@@ -650,50 +760,37 @@ class VoiceListener(threading.Thread):
                     self._set_face_state_listening()
                     debug_log("early beep: wake word detected", "voice")
 
-        # Echo rejection & stop commands — only while TTS is actively playing.
-        # After TTS finishes, the intent judge handles everything (echo detection,
-        # hot window follow-ups, etc.) using full transcript context + last TTS text.
-        if self.tts and self.tts.enabled and self.tts.is_speaking():
-            # Stop command detection (fast, text-based)
-            stop_commands = getattr(self.cfg, "stop_commands", ["stop", "quiet", "shush", "silence", "enough", "shut up"])
-            if is_stop_command(text_lower, stop_commands):
-                debug_log(f"stop command detected during TTS: {text_lower} (energy: {utterance_energy:.4f})", "voice")
-                self.tts.interrupt()
-                try:
-                    while not self._audio_q.empty():
-                        self._audio_q.get_nowait()
-                except Exception:
-                    pass
+        # A wake name at either utterance edge is an unambiguous address. VAD
+        # has already established the utterance boundary, so dispatch it
+        # directly instead of paying for an intent-judge round trip and a
+        # second silence collection window. Interior occurrences remain with
+        # the contextual judge because the name may be the subject.
+        if not in_hot_window:
+            wake_word = getattr(self.cfg, "wake_word", "jarvis")
+            aliases = list(set(getattr(self.cfg, "wake_aliases", [])) | {wake_word})
+            direct_query = extract_query_from_edge_wake(
+                text_lower,
+                wake_word,
+                aliases,
+                float(getattr(self.cfg, "wake_fuzzy_ratio", 0.78)),
+            )
+            if direct_query:
+                debug_log("edge wake address accepted without intent judge", "voice")
+                self.state_manager.cancel_hot_window_activation()
+                self._transcript_buffer.mark_segment_processed(text_lower)
+                self._clear_audio_buffers()
+                self._begin_reply(direct_query)
+                return
+            if direct_query == "":
+                debug_log("standalone wake word accepted for one-request capture", "voice")
+                self._transcript_buffer.mark_segment_processed(text_lower)
+                self._clear_audio_buffers()
+                self._begin_command_capture()
                 return
 
-            # Echo rejection during active TTS
-            should_reject = self.echo_detector.should_reject_as_echo(
-                text_lower, utterance_energy, True,
-                getattr(self.cfg, 'tts_rate', 200), utterance_start_time
-            )
-            if should_reject:
-                # Try to salvage user speech appended after echo
-                salvaged = self.echo_detector.cleanup_leading_echo_during_tts(
-                    text_lower,
-                    getattr(self.cfg, 'tts_rate', 200),
-                    utterance_start_time,
-                )
-                min_words = self.echo_detector.min_salvage_words
-                if (salvaged and salvaged.strip() and salvaged != text_lower
-                        and len(salvaged.split()) >= min_words):
-                    debug_log(f"salvaged user speech from echo during TTS: '{salvaged}'", "voice")
-                    self._transcript_buffer.update_last_segment_text(salvaged)
-                    text_lower = salvaged
-                else:
-                    debug_log(f"echo rejected during TTS: '{text_lower[:50]}'", "echo")
-                    print(f"  🔇 Heard (echo): \"{text_lower[:50]}{'...' if len(text_lower) > 50 else ''}\"", flush=True)
-                    return
-
-        # Salvage user speech from merged echo+speech chunks.
-        # When Whisper delivers a single transcript containing TTS echo followed by
-        # user speech (e.g. "I can only provide... Well you can search for it"), the
-        # echo portion was captured during TTS but the transcript arrives after TTS
-        # finishes. Try to strip the leading echo and use just the user's speech.
+        # Salvage user speech from post-playback echo+speech chunks. Speaker
+        # tails can remain in the acoustic path during the short tolerance
+        # interval, so strip a matching prefix and keep the user's suffix.
         # Skip entirely if there's no prior TTS — nothing to match against.
         last_tts_text_for_salvage = self.echo_detector._last_tts_text or ""
         last_tts_finish = self.echo_detector._last_tts_finish_time or 0.0
@@ -723,17 +820,16 @@ class VoiceListener(threading.Thread):
                     and len(salvaged.split()) >= min_words):
                 debug_log(f"salvaged user speech from merged echo+speech chunk: '{salvaged}'", "voice")
                 self._transcript_buffer.update_last_segment_text(salvaged)
+                self._transcript_buffer.mark_last_segment_echo()
                 text_lower = salvaged
 
         # Check hot window expiry
         self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
 
-        # Intent judge — the single decision-maker for all post-TTS input.
+        # Intent judge — the decision-maker for contextual wake usage and
+        # post-TTS follow-ups. Explicit edge addresses have already dispatched.
         # Gets full transcript context, last TTS text, and hot window state.
         # Handles: echo detection, wake word queries, hot window follow-ups.
-        # During active TTS, skip short utterances (<=3 words) as those are
-        # handled by stop command detection above.
-        is_speaking_now = self.tts and self.tts.is_speaking()
         intent_judgment = None
 
         # Determine if this could be a hot window follow-up.
@@ -746,11 +842,6 @@ class VoiceListener(threading.Thread):
             utterance_start_time, utterance_end_time
         )
 
-        # Use the upgraded intent judge if available (with full transcript context)
-        # Allow during TTS for longer utterances (>3 words) that might be user responses
-        word_count = len(text_lower.split())
-        skip_intent_judge_during_tts = is_speaking_now and word_count <= 3
-
         # Gate the intent judge on an engagement signal. Without this check the
         # judge was called on every ambient utterance, blocking the audio loop
         # for up to `timeout_sec` on each background chatter — which could
@@ -758,12 +849,9 @@ class VoiceListener(threading.Thread):
         # or loaded Ollama. The judge adds value only when one of:
         #   1. A wake word was detected in the current utterance
         #   2. We are in (or pending) a hot window following TTS
-        #   3. TTS is currently speaking (intent judge can catch responses / stops
-        #      that the fast text-based stop command check missed)
         has_engagement_signal = (
             self._wake_timestamp is not None
             or could_be_hot_window
-            or is_speaking_now
         )
 
         if not has_engagement_signal:
@@ -774,8 +862,7 @@ class VoiceListener(threading.Thread):
             )
 
         if (
-            not skip_intent_judge_during_tts
-            and has_engagement_signal
+            has_engagement_signal
             and self._intent_judge is not None
             and self._intent_judge.available
         ):
@@ -795,9 +882,43 @@ class VoiceListener(threading.Thread):
                 current_text=text_lower,
             )
 
+            if (
+                intent_judgment is not None
+                and intent_judgment.stop
+                and self.state_manager.is_conversation_active
+            ):
+                # The judge decides what counts as asking Jarvis to stop, so
+                # ending a conversation works in any language without a list
+                # of stop words to maintain.
+                debug_log(
+                    f"conversation ended by request: \"{text_lower[:50]}\"", "voice"
+                )
+                self._stop_thinking_tune()
+                self._transcript_buffer.mark_segment_processed(text_lower)
+                self._clear_audio_buffers()
+                self.state_manager.end_conversation()
+                return
+
+            if (
+                intent_judgment is not None
+                and intent_judgment.conversation_mode
+                and self.state_manager.is_command_capture_active
+            ):
+                self._stop_thinking_tune()
+                self._transcript_buffer.mark_segment_processed(text_lower)
+                self._clear_audio_buffers()
+                self.state_manager.start_conversation()
+                self._announce_conversation_mode()
+                return
+
             if intent_judgment is not None:
                 # Log intent judge decision for user visibility
-                mode_str = "hot window" if could_be_hot_window else "wake word"
+                if self.state_manager.is_conversation_active:
+                    mode_str = "conversation"
+                elif could_be_hot_window:
+                    mode_str = "hot window"
+                else:
+                    mode_str = "wake word"
                 if intent_judgment.directed:
                     print(f"  🧠 Intent ({mode_str}): directed → \"{intent_judgment.query or text_lower}\"", flush=True)
                 else:
@@ -827,21 +948,10 @@ class VoiceListener(threading.Thread):
                         self.state_manager.cancel_hot_window_activation()
                         self._transcript_buffer.mark_segment_processed(text_lower)
                         self._clear_audio_buffers()
-                        self.state_manager.start_collection(text_lower)
-                        self._start_thinking_tune()
-                        try:
-                            print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                        except Exception:
-                            pass
+                        self._begin_reply(text_lower)
                         return
 
             if intent_judgment is not None:
-                # If judge says stop command, interrupt TTS
-                if intent_judgment.stop and self.tts and self.tts.is_speaking():
-                    debug_log(f"🛑 Intent judge detected stop command", "voice")
-                    self.tts.interrupt()
-                    return
-
                 # If directed with query, process it
                 if intent_judgment.directed and intent_judgment.query:
                     # In wake word mode, verify the wake word is actually present
@@ -865,12 +975,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(intent_judgment.query)
-                            self._start_thinking_tune()
-                            try:
-                                print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                            except Exception:
-                                pass
+                            self._begin_reply(intent_judgment.query)
                             return
                     else:
                         # Hot window mode - no wake word needed, but check for echo.
@@ -879,10 +984,24 @@ class VoiceListener(threading.Thread):
                         # Only reject PURE echo — if the heard text is significantly
                         # longer than TTS, it contains user speech mixed with echo
                         # and the intent judge's extraction should be used instead.
+                        judge_query = (intent_judgment.query or "").strip()
                         if last_tts_text:
                             echo_score = fuzz.partial_ratio(
                                 text_lower, last_tts_text.lower()
                             )
+                            query_echo_score = (
+                                fuzz.partial_ratio(
+                                    judge_query.lower(), last_tts_text.lower()
+                                )
+                                if judge_query else 0
+                            )
+                            if query_echo_score >= 70 and echo_score < 70:
+                                debug_log(
+                                    "intent judge query matched the previous TTS while "
+                                    "the heard text did not; using heard text",
+                                    "voice",
+                                )
+                                judge_query = ""
                             tts_words = len(last_tts_text.split())
                             text_words = len(text_lower.split())
                             is_pure_echo = (
@@ -893,14 +1012,11 @@ class VoiceListener(threading.Thread):
                                 # Also check judge's extracted query — if it matches
                                 # TTS too, it's genuinely pure echo. If the query is
                                 # different, the judge extracted real user speech.
-                                query_echo_score = fuzz.partial_ratio(
-                                    intent_judgment.query.lower(),
-                                    last_tts_text.lower()
-                                )
                                 if query_echo_score >= 70:
                                     debug_log(f"🔇 Echo in hot window (directed, score={echo_score}): \"{text_lower}\"", "voice")
                                     print(f"  🔇 Heard (echo): \"{text_lower[:50]}{'...' if len(text_lower) > 50 else ''}\"", flush=True)
                                     self._stop_thinking_tune()
+                                    self._transcript_buffer.mark_last_segment_echo()
                                     return
                                 else:
                                     debug_log(
@@ -915,7 +1031,6 @@ class VoiceListener(threading.Thread):
                         # calls (e.g. "…amount now? okay, what is his best
                         # song?" reaching webSearch verbatim). If the judge
                         # returns an empty query (rare), fall back to raw text.
-                        judge_query = (intent_judgment.query or "").strip()
                         hot_query = judge_query or text_lower
                         if judge_query and judge_query.lower() != text_lower:
                             debug_log(
@@ -928,14 +1043,7 @@ class VoiceListener(threading.Thread):
                         self._transcript_buffer.mark_segment_processed(text_lower)
                         self._clear_audio_buffers()
 
-                        self.state_manager.start_collection(hot_query)
-
-                        # Start thinking tune and show processing message
-                        self._start_thinking_tune()
-                        try:
-                            print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                        except Exception:
-                            pass
+                        self._begin_reply(hot_query)
                         return
 
                 # If directed with high confidence but no extracted query, use actual text
@@ -962,12 +1070,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
-                            self._start_thinking_tune()
-                            try:
-                                print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                            except Exception:
-                                pass
+                            self._begin_reply(text_lower)
                             return
                     else:
                         # Hot window — echo check before accepting
@@ -986,18 +1089,14 @@ class VoiceListener(threading.Thread):
                                 debug_log(f"🔇 Echo in hot window (directed/no-query, score={echo_score}): \"{text_lower}\"", "voice")
                                 print(f"  🔇 Heard (echo): \"{text_lower[:50]}{'...' if len(text_lower) > 50 else ''}\"", flush=True)
                                 self._stop_thinking_tune()
+                                self._transcript_buffer.mark_last_segment_echo()
                                 return
 
                         debug_log(f"✅ Intent judge accepted (directed, high confidence, using actual text): \"{text_lower}\"", "voice")
                         self.state_manager.cancel_hot_window_activation()
                         self._transcript_buffer.mark_segment_processed(text_lower)
                         self._clear_audio_buffers()
-                        self.state_manager.start_collection(text_lower)
-                        self._start_thinking_tune()
-                        try:
-                            print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                        except Exception:
-                            pass
+                        self._begin_reply(text_lower)
                         return
 
                 # If not directed with high confidence, check reasoning before rejecting
@@ -1034,18 +1133,11 @@ class VoiceListener(threading.Thread):
                             self._transcript_buffer.mark_segment_processed(text_lower)
 
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
-                            self._start_thinking_tune()
-                            try:
-                                print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                            except Exception:
-                                pass
+                            self._begin_reply(text_lower)
                             return
 
-                        # Check could_be_hot_window (handles overlap: utterance
-                        # started during TTS but extended into hot window span).
-                        # The grace period above only checks utterance_start_time
-                        # which is negative for overlapping utterances.
+                        # Check the recorded hot-window span as a second timing
+                        # source when the timer has expired before transcription.
                         if could_be_hot_window:
                             # Verify it's not pure echo before overriding
                             echo_score = 0
@@ -1063,6 +1155,7 @@ class VoiceListener(threading.Thread):
                             if is_pure_echo:
                                 debug_log(f"🔇 Echo in hot window (echo reasoning confirmed, score={echo_score}): \"{text_lower}\"", "voice")
                                 self._stop_thinking_tune()
+                                self._transcript_buffer.mark_last_segment_echo()
                                 return
                             # Mixed echo+speech — override the echo reasoning
                             print(f"  🧠 Intent override: accepting hot window speech (mixed echo+speech)", flush=True)
@@ -1075,12 +1168,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
-                            self._start_thinking_tune()
-                            try:
-                                print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                            except Exception:
-                                pass
+                            self._begin_reply(text_lower)
                             return
 
                         # Otherwise fall through to wake word detection
@@ -1106,6 +1194,7 @@ class VoiceListener(threading.Thread):
                             # this, but handle as safety net.
                             debug_log(f"🔇 Echo in hot window (score={echo_score}): \"{text_lower}\"", "voice")
                             self._stop_thinking_tune()
+                            self._transcript_buffer.mark_last_segment_echo()
                             return
 
                         if could_be_hot_window:
@@ -1123,12 +1212,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
-                            self._start_thinking_tune()
-                            try:
-                                print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-                            except Exception:
-                                pass
+                            self._begin_reply(text_lower)
                             return
 
                         # Outside hot window — check if wake word is actually present
@@ -1175,22 +1259,10 @@ class VoiceListener(threading.Thread):
             self._clear_audio_buffers()
 
             query_fragment = extract_query_after_wake(text_lower, wake_word, list(aliases))
-            self.state_manager.start_collection(query_fragment)
-
-            # Start thinking tune and show processing message
-            self._start_thinking_tune()
-            try:
-                print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
-            except Exception:
-                pass
+            self._begin_reply(query_fragment)
             return
 
-        # Priority 5: Collection mode handling
-        if self.state_manager.is_collecting():
-            self.state_manager.add_to_collection(text_lower)
-            return
-
-        # Priority 6: Non-wake input (ignore)
+        # Priority 5: Non-wake input (ignore)
         # Provide clear debug info about why input was ignored
         intent_info = ""
         if intent_judgment is not None:
@@ -1199,16 +1271,60 @@ class VoiceListener(threading.Thread):
         # Stop any early-started beep since we're not processing this input
         self._stop_thinking_tune()
 
-        if received_during_tts:
-            # User spoke during TTS but it wasn't a stop command - this is likely a response
-            # to a TTS question that arrived before hot window activated
-            debug_log(f"input ignored (during TTS, not a stop command{intent_info}): {text_lower}", "voice")
-            try:
-                print(f"  ⏳ Heard during TTS (waiting for hot window): \"{text_lower[:50]}{'...' if len(text_lower) > 50 else ''}\"", flush=True)
-            except Exception:
-                pass
+        debug_log(f"input ignored (no wake word{intent_info}): {text_lower}", "voice")
+
+    def _begin_reply(self, query: str) -> None:
+        """Acknowledge and synchronously dispatch one completed utterance."""
+        query = query.strip()
+        if not query:
+            return
+        self.state_manager.end_command_capture()
+        self._start_thinking_tune()
+        try:
+            print(f"\n✨ Working on it: {query}", flush=True)
+        except Exception:
+            pass
+        self._dispatch_query(query)
+
+    def _begin_command_capture(self) -> None:
+        """Acknowledge a standalone wake word and wait for one request."""
+        self._stop_thinking_tune()
+        self.state_manager.start_command_capture()
+        acknowledgement = str(getattr(self.cfg, "wake_acknowledgement", "") or "").strip()
+        if not acknowledgement:
+            debug_log("wake acknowledgement has no configured speech", "voice")
+            return
+        if self.tts and self.tts.enabled:
+            self.track_tts_start(acknowledgement)
+            self.tts.speak(
+                acknowledgement,
+                completion_callback=self.echo_detector.track_tts_finish,
+            )
         else:
-            debug_log(f"input ignored (no wake word{intent_info}): {text_lower}", "voice")
+            print(f"👂 {acknowledgement}", flush=True)
+
+    def _announce_conversation_mode(self) -> None:
+        """Confirm that wake-word-free conversation is active."""
+        acknowledgement = str(
+            getattr(self.cfg, "conversation_mode_acknowledgement", "") or ""
+        ).strip()
+        if not acknowledgement:
+            return
+        if self.tts and self.tts.enabled:
+            self.track_tts_start(acknowledgement)
+            self.tts.speak(
+                acknowledgement,
+                completion_callback=self.echo_detector.track_tts_finish,
+            )
+        else:
+            print(f"💬 {acknowledgement}", flush=True)
+
+    def _speech_segment_sink(
+        self,
+        on_audio_start: Optional[Callable[[], None]] = None,
+    ) -> "_SpeechSegmentSink":
+        """Return a sink that speaks each finished sentence as it arrives."""
+        return _SpeechSegmentSink(self, on_audio_start)
 
     def _dispatch_query(self, query: str) -> None:
         """
@@ -1221,6 +1337,16 @@ class VoiceListener(threading.Thread):
 
         # Clear audio buffers to prevent stale audio from next query
         self._clear_audio_buffers()
+
+        recorder = get_recorder()
+        trace = recorder.current()
+        if trace is None:
+            # Reached from a path that did not open a turn (a query assembled
+            # across several utterances). Time it from here rather than not
+            # at all.
+            trace = recorder.begin(source="voice")
+        trace.transcript = trace.transcript or query
+        set_phase(Phase.THINKING)
 
         # Set face state to THINKING
         try:
@@ -1235,6 +1361,61 @@ class VoiceListener(threading.Thread):
         from ..reply.engine import run_reply_engine
         from ..daemon import query_lock
 
+        def _memory_lookup_started() -> None:
+            phrase = str(
+                getattr(self.cfg, "memory_lookup_acknowledgement", "") or ""
+            ).strip()
+            if phrase and self.tts and self.tts.enabled:
+                try:
+                    self.tts.speak(phrase)
+                except Exception as exc:
+                    debug_log(
+                        f"memory acknowledgement TTS failed: {type(exc).__name__}",
+                        "voice",
+                    )
+
+        # The turn ends when sound starts, not when the reply text exists:
+        # synthesis is part of the wait. Runs on the TTS worker thread, so it
+        # holds the trace rather than looking it up. With a streamed reply the
+        # first sentence is spoken while the rest is still being written, so
+        # this fires before the engine has returned.
+        speech_begun = time.perf_counter()
+
+        # A turn is finished once its reply text is known *and* sound has
+        # started, because both are part of what the user waited for. Which
+        # of the two lands first depends on whether the reply was streamed,
+        # so neither side closes the turn alone: whichever arrives second
+        # does. `_on_audio_start` runs on the TTS worker thread, so the join
+        # is guarded.
+        turn_done = threading.Lock()
+        turn_state = {"reply": None, "audio_started": False, "finished": False}
+
+        def _finish_turn_if_ready():
+            with turn_done:
+                if turn_state["finished"]:
+                    return
+                if turn_state["reply"] is None or not turn_state["audio_started"]:
+                    return
+                turn_state["finished"] = True
+                reply_text = turn_state["reply"]
+            recorder.finish(reply=reply_text, trace=trace)
+
+        def _on_audio_start():
+            trace.mark(
+                "tts_synth",
+                (time.perf_counter() - speech_begun) * 1000.0,
+            )
+            set_phase(Phase.SPEAKING)
+            with turn_done:
+                turn_state["audio_started"] = True
+            _finish_turn_if_ready()
+
+        # Speak each sentence the engine finishes rather than waiting for the
+        # whole answer. This is the difference between a reply that starts
+        # after the model has stopped writing and one that starts while it is
+        # still going.
+        speak_segment = self._speech_segment_sink(on_audio_start=_on_audio_start)
+
         # Process the query (keep thinking tune playing during processing).
         # Hold the shared voice+text query lock so a voice query and a text
         # chat query cannot run the reply engine concurrently against the
@@ -1245,12 +1426,17 @@ class VoiceListener(threading.Thread):
                 reply = run_reply_engine(
                     self.db, self.cfg, None, query, self.dialogue_memory,
                     language=self._last_detected_language,
+                    on_memory_lookup_started=_memory_lookup_started,
+                    on_speech_segment=speak_segment,
                 )
         except Exception as e:
             # Log the error visibly - this should never happen silently
             print(f"\n  ❌ Reply engine error: {e}", flush=True)
             debug_log(f"reply engine exception: {e}", "voice")
+            get_runtime_state().record_error(f"reply engine failed: {e}")
+            recorder.finish(error=str(e))
             self._stop_thinking_tune()
+
             # Provide user feedback via TTS
             if self.tts and self.tts.enabled:
                 self.tts.speak("Sorry, I encountered an error processing your request.")
@@ -1273,16 +1459,127 @@ class VoiceListener(threading.Thread):
                 if self.echo_detector:
                     self.echo_detector._tts_exact_duration = duration
 
-            # Track TTS start for echo detection with actual text
-            self.track_tts_start(reply)
-            debug_log(f"starting TTS for reply ({len(reply)} chars)", "voice")
-
-            self.tts.speak(reply, completion_callback=_on_tts_complete,
-                          duration_callback=_on_duration_known)
+            if speak_segment.anything_spoken:
+                # The reply is already on its way out. All that is left is to
+                # mark where it ends, so the hot window opens after the last
+                # sentence rather than after the first.
+                debug_log(
+                    f"streamed reply spoken in {len(speak_segment.spoken_text)} chars",
+                    "voice",
+                )
+                self.tts.end_of_reply(completion_callback=_on_tts_complete)
+            else:
+                # Nothing was streamed: the backend could not stream, or the
+                # reply was withheld from the speech path. Speak it whole.
+                self.track_tts_start(reply)
+                debug_log(f"starting TTS for reply ({len(reply)} chars)", "voice")
+                self.tts.speak(reply, completion_callback=_on_tts_complete,
+                              duration_callback=_on_duration_known,
+                              audio_start_callback=_on_audio_start)
+            with turn_done:
+                turn_state["reply"] = reply
+            _finish_turn_if_ready()
         else:
             debug_log(f"no TTS output: reply={bool(reply)}, tts={bool(self.tts)}, enabled={getattr(self.tts, 'enabled', False) if self.tts else False}", "voice")
             # Stop thinking tune if no TTS response
             self._stop_thinking_tune()
+            recorder.finish(reply=reply)
+            set_phase_if(Phase.THINKING, Phase.IDLE)
+
+    def request_security_confirmation(
+        self,
+        action_name: str,
+        action_args: dict[str, Any],
+        challenge: str,
+        timeout_seconds: int,
+    ) -> str | None:
+        """Speak a numeric challenge and transcribe one bounded response."""
+        if np is None or self.tts is None or not self.tts.enabled:
+            raise RuntimeError("Voice confirmation output is unavailable")
+        if self._whisper_backend == "faster-whisper" and self.model is None:
+            raise RuntimeError("Voice confirmation transcription is unavailable")
+        if self._whisper_backend == "mlx" and not self._mlx_model_repo:
+            raise RuntimeError("Voice confirmation transcription is unavailable")
+
+        self._stop_thinking_tune()
+        deadline = time.monotonic() + timeout_seconds
+        spoken = threading.Event()
+        self.tts.speak(
+            f"{action_name}. {' '.join(challenge)}",
+            completion_callback=spoken.set,
+        )
+        while time.monotonic() < deadline and not spoken.wait(0.05):
+            if not self.tts.is_speaking():
+                break
+        if self.tts.is_speaking():
+            debug_log("voice security prompt exceeded confirmation timeout", "security")
+            return None
+
+        self._clear_audio_buffers()
+        energy_threshold = float(getattr(self.cfg, "voice_min_energy", 0.02))
+        endpoint_seconds = float(getattr(self.cfg, "endpoint_silence_ms", 800)) / 1000.0
+        captured: list[Any] = []
+        speech_started = False
+        silence_seconds = 0.0
+
+        debug_log(f"voice security capture started for {action_name}", "security")
+        while time.monotonic() < deadline:
+            try:
+                item = self._audio_q.get(timeout=min(0.2, max(0.01, deadline - time.monotonic())))
+            except queue.Empty:
+                continue
+            if item is None:
+                continue
+            try:
+                mono = item.reshape(-1, item.shape[-1])[:, 0] if item.ndim > 1 else item.flatten()
+                energy = float(np.sqrt(np.mean(np.square(mono)))) if mono.size else 0.0
+            except Exception:
+                continue
+
+            duration = mono.size / self._samplerate
+            if energy >= energy_threshold:
+                speech_started = True
+                silence_seconds = 0.0
+                captured.append(mono.copy())
+            elif speech_started:
+                captured.append(mono.copy())
+                silence_seconds += duration
+                if silence_seconds >= endpoint_seconds:
+                    break
+
+        if not captured:
+            debug_log("voice security capture timed out without speech", "security")
+            return None
+        audio = np.concatenate(captured).flatten()
+        transcript = self._transcribe_security_audio(audio)
+        debug_log("voice security capture transcribed", "security")
+        return transcript
+
+    def _transcribe_security_audio(self, audio) -> str:
+        """Transcribe confirmation audio with the listener's loaded backend."""
+        language = resolve_transcription_language(self.cfg)
+        if self._whisper_backend == "mlx":
+            with self.transcribe_lock:
+                result = mlx_whisper.transcribe(
+                    audio,
+                    path_or_hf_repo=self._mlx_model_repo,
+                    language=language,
+                )
+            return str(result.get("text") or "").strip()
+
+        vad_filter = bool(getattr(self.cfg, "whisper_vad", True))
+        with self.transcribe_lock:
+            try:
+                segments, _ = self.model.transcribe(
+                    audio, language=language, vad_filter=vad_filter
+                )
+            except TypeError:
+                segments, _ = self.model.transcribe(audio, language=language)
+            return " ".join(
+                str(getattr(segment, "text", "")).strip()
+                for segment in segments
+                if str(getattr(segment, "text", "")).strip()
+            )
 
     def _calculate_audio_energy(self, frames: list) -> float:
         """Calculate RMS energy from audio frames."""
@@ -1323,9 +1620,7 @@ class VoiceListener(threading.Thread):
         if np is None:
             return True
 
-        # Track energy for echo detection
         rms = float(np.sqrt(np.mean(np.square(frame))))
-        self._recent_audio_energy.append(rms)
 
         if self._vad is None:
             return rms >= float(getattr(self.cfg, "voice_min_energy", 0.0045))
@@ -1466,20 +1761,14 @@ class VoiceListener(threading.Thread):
         return False
 
     def _check_query_timeout(self) -> None:
-        """Check if there's a pending query that has timed out, and check hot window expiry."""
-        if self.state_manager.check_collection_timeout():
-            query = self.state_manager.clear_collection()
-            if query.strip():
-                self._dispatch_query(query)
-
-        # Also check hot window expiry - this ensures the timeout is enforced
+        """Check hot-window expiry when no audio is being processed."""
         # even when there's no audio being processed
         self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
 
     def _on_audio(self, indata, frames, time_info, status):
         """Audio callback from sounddevice."""
         try:
-            if self._should_stop or self._dictation_active:
+            if not self._accepting_audio():
                 return
             self._callback_count += 1
             chunk = (indata.copy() if hasattr(indata, "copy") else indata)
@@ -1489,6 +1778,41 @@ class VoiceListener(threading.Thread):
                 pass
         except Exception:
             return
+
+    def _accepting_audio(self) -> bool:
+        """Whether captured audio may enter the pipeline right now."""
+        return not (
+            self._should_stop
+            or self._dictation_active
+            or (self.tts is not None and self.tts.is_speaking())
+        )
+
+    def feed_external_audio(self, pcm16: bytes) -> bool:
+        """Accept 16-bit little-endian mono PCM captured outside this process.
+
+        The control centre records the microphone in the browser and posts the
+        frames here. They join the queue the local callback fills, so VAD,
+        transcription and the reply path treat them like any other audio.
+
+        Returns whether the frame entered the pipeline. A refusal is normal:
+        frames arriving while Jarvis speaks are echo, and a full queue means
+        the consumer is behind. Neither may block the socket thread.
+        """
+        if np is None or not self._accepting_audio():
+            return False
+        if not pcm16 or len(pcm16) % 2:
+            return False
+        try:
+            frame = np.frombuffer(pcm16, dtype="<i2").astype(np.float32) / 32768.0
+        except Exception:
+            return False
+        if frame.size == 0:
+            return False
+        try:
+            self._audio_q.put_nowait(frame)
+        except Exception:
+            return False
+        return True
 
     def _determine_whisper_backend(self) -> str:
         """Determine which Whisper backend to use based on config and availability."""
@@ -1595,6 +1919,17 @@ class VoiceListener(threading.Thread):
         if chat_model:
             def _warm_chat() -> None:
                 ok = warm_up_chat_model(self.cfg, chat_model, timeout=chat_timeout)
+                if ok:
+                    prefix_ok = warm_up_reply_prefix(
+                        self.cfg,
+                        chat_model,
+                        timeout_sec=chat_timeout,
+                    )
+                    if not prefix_ok:
+                        debug_log(
+                            "chat model resident but reply prefix prefill failed",
+                            "voice",
+                        )
                 self._llm_warmup_results["chat"] = (chat_model, ok)
                 # When chat and judge share a model, one warmup covers both.
                 if shared_judge:
@@ -1633,16 +1968,29 @@ class VoiceListener(threading.Thread):
             def _warm_embed() -> None:
                 try:
                     backend = get_embedding_backend(self.cfg)
-                    # Use embed() rather than warm_up() because embedding-only
-                    # models (e.g. nomic-embed-text, modernbert) are not served
-                    # on the chat endpoint — warm_up() sends a chat completion
-                    # which would fail for those models. A single-token embedding
-                    # request forces the runtime to load the model the same way.
-                    # Use the embed method's own default timeout (15s) rather than
-                    # the full chat_timeout (60s) since this probe is sub-second.
+                    # Embedding-only models are not served on the chat endpoint.
+                    # Warming the static tool catalogue both loads the model and
+                    # removes every description embedding from the first reply.
                     embed_timeout = min(chat_timeout, 15.0)
-                    result = backend.embed("ping", embed_model, timeout_sec=embed_timeout)
-                    ok = result is not None
+                    from ..tools.registry import BUILTIN_TOOLS, get_cached_mcp_tools
+                    from ..tools.selection import warm_tool_embedding_cache
+                    mcp_tools = get_cached_mcp_tools()
+                    expected = (
+                        len([name for name in BUILTIN_TOOLS if name != "stop"])
+                        + len(mcp_tools)
+                    )
+                    warmed = warm_tool_embedding_cache(
+                        BUILTIN_TOOLS,
+                        mcp_tools,
+                        backend,
+                        embed_model,
+                        timeout_sec=embed_timeout,
+                    )
+                    ok = warmed == expected
+                    debug_log(
+                        f"tool embedding cache warmed: {warmed}/{expected}",
+                        "planning",
+                    )
                 except Exception as exc:
                     debug_log(f"embed warmup failed: {exc}", "voice")
                     ok = False
@@ -1680,28 +2028,163 @@ class VoiceListener(threading.Thread):
             return f"\"How's the weather, {wake_title}?\""
         return f"\"How's the weather in [your city], {wake_title}?\""
 
+    def _open_local_stream(self):
+        """Open the local microphone, or return None when it cannot be had.
+
+        A device that is missing, blocked or busy is not fatal: the loop
+        still serves audio posted by the control centre. The reasons are
+        printed either way, because a silent downgrade to browser-only
+        capture would look like a broken microphone.
+        """
+        # Audio device setup
+        stream_kwargs = {}
+        device_env = (self.cfg.voice_device or '').strip().lower()
+
+        if self.cfg.voice_debug:
+            debug_log("available input devices:", "voice")
+            try:
+                for idx, dev in enumerate(sd.query_devices()):
+                    try:
+                        max_in = int(dev.get("max_input_channels", 0))
+                    except Exception:
+                        max_in = 0
+                    if max_in > 0:
+                        name = dev.get("name")
+                        rate = dev.get("default_samplerate")
+                        debug_log(f"  [{idx}] {name} (channels={max_in}, default_sr={rate})", "voice")
+            except Exception:
+                pass
+
+        # Configure audio device
+        if device_env and device_env not in ("default", "system"):
+            try:
+                device_index = int(self.cfg.voice_device)
+            except ValueError:
+                device_index = None
+                try:
+                    for idx, dev in enumerate(sd.query_devices()):
+                        if isinstance(dev.get("name"), str) and (self.cfg.voice_device or '').lower() in dev.get("name").lower():
+                            device_index = idx
+                            break
+                except Exception:
+                    device_index = None
+            if device_index is not None:
+                stream_kwargs["device"] = device_index
+
+        # Log which device will be used
+        try:
+            if "device" in stream_kwargs:
+                dev = sd.query_devices(stream_kwargs["device"])
+                device_name = dev.get('name', 'Unknown')
+                debug_log(f"using input device: {device_name} (index {stream_kwargs['device']})", "voice")
+                print(f"  🎤 Using audio device: {device_name}", flush=True)
+            else:
+                debug_log("using system default input device", "voice")
+                try:
+                    default_dev = sd.query_devices(sd.default.device[0])
+                    print(f"  🎤 Using default device: {default_dev.get('name', 'Unknown')}", flush=True)
+                except Exception:
+                    print("  🎤 Using system default input device", flush=True)
+        except Exception:
+            pass
+
+        # Open audio stream — try configured rate first, fall back to device
+        # native rate when the hardware rejects 16 kHz (common on Linux ALSA).
+        self._stream_samplerate = self._samplerate
+        open_error = None
+        try:
+            with portaudio_lock:
+                stream = sd.InputStream(
+                    samplerate=self._samplerate,
+                    channels=1,
+                    dtype="float32",
+                    blocksize=self._frame_samples,
+                    callback=self._on_audio,
+                    **stream_kwargs,
+                )
+        except Exception as e:
+            error_msg = str(e).lower()
+            is_rate_error = "sample rate" in error_msg or "9987" in error_msg
+            if is_rate_error:
+                debug_log(f"device rejected {self._samplerate} Hz, querying native rate", "voice")
+                try:
+                    if "device" in stream_kwargs:
+                        dev_info = sd.query_devices(stream_kwargs["device"])
+                    else:
+                        dev_info = sd.query_devices(kind="input")
+                    native_rate = int(dev_info.get("default_samplerate", self._samplerate))
+                    if native_rate != self._samplerate:
+                        self._stream_samplerate = native_rate
+                        native_frame_samples = max(1, int(native_rate * 30 / 1000))
+                        print(f"  ⚠️  Device doesn't support {self._samplerate} Hz — using {native_rate} Hz with resampling", flush=True)
+                        debug_log(f"retrying stream at native {native_rate} Hz", "voice")
+                        with portaudio_lock:
+                            stream = sd.InputStream(
+                                samplerate=native_rate,
+                                channels=1,
+                                dtype="float32",
+                                blocksize=native_frame_samples,
+                                callback=self._on_audio,
+                                **stream_kwargs,
+                            )
+                    else:
+                        open_error = e
+                except Exception:
+                    open_error = e
+            else:
+                open_error = e
+
+        if open_error is not None:
+            error_msg = str(open_error).lower()
+            debug_log(f"failed to open input stream: {open_error}", "voice")
+
+            # Provide helpful error messages for common issues
+            if "access" in error_msg or "permission" in error_msg:
+                print(f"  ❌ Microphone access denied. Please check: {_get_mic_permission_hint()}", flush=True)
+            elif "device" in error_msg and ("use" in error_msg or "busy" in error_msg):
+                print("  ❌ Microphone is being used by another application", flush=True)
+            elif "device" in error_msg:
+                print(f"  ❌ Failed to open microphone: {open_error}", flush=True)
+                print("     Try selecting a different audio device in settings", flush=True)
+            else:
+                print(f"  ❌ Failed to start audio recording: {open_error}", flush=True)
+            return None
+        return stream
+
     def run(self) -> None:
         """Main voice listening loop."""
-        if sd is None:
+        # Publish the conversation switch so interfaces outside the voice
+        # loop can turn it on without reaching into the listener.
+        register_conversation_controller(self.state_manager)
+        # Publish the audio ingress so the control centre can post the
+        # browser's microphone into this loop.
+        register_audio_sink(self)
+
+        # Capturing the local microphone is optional. Without it this loop
+        # still transcribes and answers audio posted by the control centre,
+        # so a missing or busy device downgrades the listener rather than
+        # ending it. Everything below that touches `sd` is gated on this.
+        self._local_capture = sd is not None
+        if not self._local_capture:
             debug_log("sounddevice not available", "voice")
-            print("  ❌ Audio system not available - sounddevice failed to load", flush=True)
-            return
+            print("  🔇 No local audio device - listening only to the control centre", flush=True)
 
         # Verify PortAudio is working by querying devices (catches Windows DLL issues)
-        try:
-            devices = sd.query_devices()
-            input_devices = [d for d in devices if d.get('max_input_channels', 0) > 0]
-            debug_log(f"PortAudio initialised: {len(input_devices)} input device(s) found", "voice")
-            if not input_devices:
-                print("  ❌ No microphone found. Please connect a microphone.", flush=True)
-                return
-        except Exception as e:
-            debug_log(f"PortAudio device query failed: {e}", "voice")
-            print(f"  ❌ Audio system error: {e}", flush=True)
-            print("     PortAudio may not be properly installed", flush=True)
-            if sys.platform == 'linux':
-                print("     On Linux, ensure PortAudio is installed: sudo apt install libportaudio2", flush=True)
-            return
+        if self._local_capture:
+            try:
+                devices = sd.query_devices()
+                input_devices = [d for d in devices if d.get('max_input_channels', 0) > 0]
+                debug_log(f"PortAudio initialised: {len(input_devices)} input device(s) found", "voice")
+                if not input_devices:
+                    print("  🔇 No microphone found - listening only to the control centre", flush=True)
+                    self._local_capture = False
+            except Exception as e:
+                debug_log(f"PortAudio device query failed: {e}", "voice")
+                print(f"  ⚠️  Audio system error: {e}", flush=True)
+                print("     PortAudio may not be properly installed", flush=True)
+                if sys.platform == 'linux':
+                    print("     On Linux, ensure PortAudio is installed: sudo apt install libportaudio2", flush=True)
+                self._local_capture = False
 
         # Windows 11: Test microphone permission by attempting a brief recording
         # This catches privacy settings that silently block audio access.
@@ -1709,7 +2192,7 @@ class VoiceListener(threading.Thread):
         # the audio device at the system level without raising an error.
         # Uses InputStream (not sd.rec) so the stream can be explicitly closed
         # on timeout, avoiding resource leaks that could block later audio init.
-        if sys.platform == 'win32':
+        if sys.platform == 'win32' and self._local_capture:
             try:
                 print("  🔐 Checking microphone permission...", flush=True)
                 mic_ok = threading.Event()
@@ -1837,7 +2320,7 @@ class VoiceListener(threading.Thread):
                         _ = mlx_whisper.transcribe(
                             warmup_audio,
                             path_or_hf_repo=self._mlx_model_repo,
-                            language=None,
+                            language=resolve_transcription_language(self.cfg),
                         )
                         debug_log(f"MLX Whisper model pre-loaded: repo={self._mlx_model_repo}", "voice")
 
@@ -2025,23 +2508,27 @@ class VoiceListener(threading.Thread):
             # the cold-decode cost. Use low-amplitude noise rather than pure
             # silence — silence trips faster-whisper's no-speech short-circuit
             # and the decoder never actually runs. Mirror the real transcribe
-            # parameters so beam search, language detection, and the timestamp
-            # path are all exercised here instead of on the user's first word.
+            # parameters, the configured language included, so beam search and
+            # the timestamp path are exercised here rather than on the user's
+            # first word. The VAD filter stays off regardless of the setting:
+            # it would discard the warmup noise and leave the decoder cold,
+            # which is the one thing this call exists to prevent.
             if np is not None and self.model is not None:
                 try:
                     cpu_mode = self._whisper_device == "cpu"
+                    language = resolve_transcription_language(self.cfg)
                     rng = np.random.default_rng(0)
                     warmup_audio = rng.standard_normal(self._samplerate).astype(np.float32) * 0.01
                     try:
                         segments_iter, _ = self.model.transcribe(
                             warmup_audio,
-                            language=None,
+                            language=language,
                             vad_filter=False,
                             condition_on_previous_text=not cpu_mode,
                             without_timestamps=cpu_mode,
                         )
                     except TypeError:
-                        segments_iter, _ = self.model.transcribe(warmup_audio, language=None)
+                        segments_iter, _ = self.model.transcribe(warmup_audio, language=language)
                     for _ in segments_iter:
                         pass
                     debug_log("faster-whisper warmup transcription complete", "voice")
@@ -2089,135 +2576,24 @@ class VoiceListener(threading.Thread):
         pre_roll_ms = int(getattr(self.cfg, "vad_pre_roll_ms", 240))
         endpoint_silence_ms = int(getattr(self.cfg, "endpoint_silence_ms", 800))
         max_utt_ms = int(getattr(self.cfg, "max_utterance_ms", 12000))
-        tts_max_utt_ms = int(getattr(self.cfg, "tts_max_utterance_ms", 3000))
 
         pre_roll_max_frames = max(1, int(pre_roll_ms / frame_ms))
         endpoint_silence_frames = max(1, int(endpoint_silence_ms / frame_ms))
-        # max_utt_frames will be calculated dynamically based on TTS state
         normal_max_utt_frames = max(1, int(max_utt_ms / frame_ms))
-        tts_max_utt_frames = max(1, int(tts_max_utt_ms / frame_ms))
 
         debug_log(f"audio params: sample_rate={self._samplerate}, frame_ms={frame_ms}, frame_samples={self._frame_samples}", "voice")
         debug_log(f"VAD: enabled={bool(self._vad is not None)}, aggressiveness={getattr(self.cfg, 'vad_aggressiveness', 2)}", "voice")
 
-        # Audio device setup
-        stream_kwargs = {}
-        device_env = (self.cfg.voice_device or '').strip().lower()
-
-        if self.cfg.voice_debug:
-            debug_log("available input devices:", "voice")
-            try:
-                for idx, dev in enumerate(sd.query_devices()):
-                    try:
-                        max_in = int(dev.get("max_input_channels", 0))
-                    except Exception:
-                        max_in = 0
-                    if max_in > 0:
-                        name = dev.get("name")
-                        rate = dev.get("default_samplerate")
-                        debug_log(f"  [{idx}] {name} (channels={max_in}, default_sr={rate})", "voice")
-            except Exception:
-                pass
-
-        # Configure audio device
-        if device_env and device_env not in ("default", "system"):
-            try:
-                device_index = int(self.cfg.voice_device)
-            except ValueError:
-                device_index = None
-                try:
-                    for idx, dev in enumerate(sd.query_devices()):
-                        if isinstance(dev.get("name"), str) and (self.cfg.voice_device or '').lower() in dev.get("name").lower():
-                            device_index = idx
-                            break
-                except Exception:
-                    device_index = None
-            if device_index is not None:
-                stream_kwargs["device"] = device_index
-
-        # Log which device will be used
-        try:
-            if "device" in stream_kwargs:
-                dev = sd.query_devices(stream_kwargs["device"])
-                device_name = dev.get('name', 'Unknown')
-                debug_log(f"using input device: {device_name} (index {stream_kwargs['device']})", "voice")
-                print(f"  🎤 Using audio device: {device_name}", flush=True)
-            else:
-                debug_log("using system default input device", "voice")
-                try:
-                    default_dev = sd.query_devices(sd.default.device[0])
-                    print(f"  🎤 Using default device: {default_dev.get('name', 'Unknown')}", flush=True)
-                except Exception:
-                    print("  🎤 Using system default input device", flush=True)
-        except Exception:
-            pass
-
-        # Open audio stream — try configured rate first, fall back to device
-        # native rate when the hardware rejects 16 kHz (common on Linux ALSA).
+        # Audio device setup. Browser-only capture leaves this None.
         self._stream_samplerate = self._samplerate
-        open_error = None
-        try:
-            with portaudio_lock:
-                stream = sd.InputStream(
-                    samplerate=self._samplerate,
-                    channels=1,
-                    dtype="float32",
-                    blocksize=self._frame_samples,
-                    callback=self._on_audio,
-                    **stream_kwargs,
-                )
-        except Exception as e:
-            error_msg = str(e).lower()
-            is_rate_error = "sample rate" in error_msg or "9987" in error_msg
-            if is_rate_error:
-                debug_log(f"device rejected {self._samplerate} Hz, querying native rate", "voice")
-                try:
-                    if "device" in stream_kwargs:
-                        dev_info = sd.query_devices(stream_kwargs["device"])
-                    else:
-                        dev_info = sd.query_devices(kind="input")
-                    native_rate = int(dev_info.get("default_samplerate", self._samplerate))
-                    if native_rate != self._samplerate:
-                        self._stream_samplerate = native_rate
-                        native_frame_samples = max(1, int(native_rate * 30 / 1000))
-                        print(f"  ⚠️  Device doesn't support {self._samplerate} Hz — using {native_rate} Hz with resampling", flush=True)
-                        debug_log(f"retrying stream at native {native_rate} Hz", "voice")
-                        with portaudio_lock:
-                            stream = sd.InputStream(
-                                samplerate=native_rate,
-                                channels=1,
-                                dtype="float32",
-                                blocksize=native_frame_samples,
-                                callback=self._on_audio,
-                                **stream_kwargs,
-                            )
-                    else:
-                        open_error = e
-                except Exception:
-                    open_error = e
-            else:
-                open_error = e
-
-        if open_error is not None:
-            error_msg = str(open_error).lower()
-            debug_log(f"failed to open input stream: {open_error}", "voice")
-
-            # Provide helpful error messages for common issues
-            if "access" in error_msg or "permission" in error_msg:
-                print(f"  ❌ Microphone access denied. Please check: {_get_mic_permission_hint()}", flush=True)
-            elif "device" in error_msg and ("use" in error_msg or "busy" in error_msg):
-                print("  ❌ Microphone is being used by another application", flush=True)
-            elif "device" in error_msg:
-                print(f"  ❌ Failed to open microphone: {open_error}", flush=True)
-                print("     Try selecting a different audio device in settings", flush=True)
-            else:
-                print(f"  ❌ Failed to start audio recording: {open_error}", flush=True)
-            return
+        stream = self._open_local_stream() if self._local_capture else None
+        if stream is None:
+            self._local_capture = False
 
         # Main audio processing loop
         with _serialised_stream(stream):
             # Verify stream is actually recording (helps catch permission issues)
-            if not stream.active:
+            if stream is not None and not stream.active:
                 try:
                     with portaudio_lock:
                         stream.start()
@@ -2290,7 +2666,7 @@ class VoiceListener(threading.Thread):
 
             while not self._should_stop:
                 # One-time audio health check after 5 seconds
-                if not _audio_health_logged and time.time() - _audio_start_time > 5:
+                if self._local_capture and not _audio_health_logged and time.time() - _audio_start_time > 5:
                     _audio_health_logged = True
                     if self._callback_count == 0:
                         print("  ⚠️  No audio received after 5 seconds!", flush=True)
@@ -2338,6 +2714,7 @@ class VoiceListener(threading.Thread):
                     if not self.is_speech_active:
                         if is_voice:
                             self.is_speech_active = True
+                            set_phase_if(Phase.IDLE, Phase.CAPTURING)
 
                             # Backdate start time by pre-roll duration — the
                             # actual speech onset was before VAD triggered.
@@ -2366,9 +2743,10 @@ class VoiceListener(threading.Thread):
                             self._silence_frames = 0
                         else:
                             self._silence_frames += 1
-                            # Use shorter timeout during TTS for quick stop command detection
-                            current_max_frames = tts_max_utt_frames if (self.tts and self.tts.is_speaking()) else normal_max_utt_frames
-                            if self._silence_frames >= endpoint_silence_frames or len(self._utterance_frames) >= current_max_frames:
+                            if (
+                                self._silence_frames >= endpoint_silence_frames
+                                or len(self._utterance_frames) >= normal_max_utt_frames
+                            ):
                                 self._finalize_utterance()
                                 self._pre_roll.clear()
 
@@ -2387,7 +2765,20 @@ class VoiceListener(threading.Thread):
                                 break
 
     def _finalize_utterance(self) -> None:
-        """Process completed utterance through speech recognition."""
+        """Process completed utterance through speech recognition.
+
+        Wraps the work so that an utterance which never became a reply, and
+        the phase it was measured in, are both cleared on the way out.
+        """
+        try:
+            self._transcribe_and_route()
+        finally:
+            get_recorder().abandon()
+            set_phase_if(Phase.CAPTURING, Phase.IDLE)
+            set_phase_if(Phase.TRANSCRIBING, Phase.IDLE)
+
+    def _transcribe_and_route(self) -> None:
+        """Transcribe the captured utterance and decide what to do with it."""
         if np is None or not self._utterance_frames:
             self.is_speech_active = False
             self._silence_frames = 0
@@ -2396,6 +2787,9 @@ class VoiceListener(threading.Thread):
 
         # Track when utterance ends - but don't overwrite global timing yet
         utterance_end_time = time.time()
+        # The turn's clock starts the moment speaking stopped: that is when
+        # the wait the user feels begins.
+        trace = get_recorder().begin(source="voice", started_at=utterance_end_time)
         utterance_start_time = self.echo_detector._utterance_start_time
 
         if self.cfg.voice_debug:
@@ -2431,10 +2825,14 @@ class VoiceListener(threading.Thread):
         min_duration = getattr(self.cfg, "whisper_min_audio_duration", 0.3)
         if audio_duration < min_duration:
             debug_log(f"audio too short ({audio_duration:.2f}s < {min_duration}s), ignoring", "voice")
+            get_runtime_state().count_discard("too_short")
             self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
             return
 
         # Speech recognition with appropriate backend
+        set_phase(Phase.TRANSCRIBING)
+        discard_reason = "no_speech"
+        transcription_begun = time.perf_counter()
         try:
             if self._whisper_backend == "mlx":
                 # MLX Whisper transcription
@@ -2442,11 +2840,12 @@ class VoiceListener(threading.Thread):
                     result = mlx_whisper.transcribe(
                         audio,
                         path_or_hf_repo=self._mlx_model_repo,
-                        language=None,
+                        language=resolve_transcription_language(self.cfg),
                     )
 
-                # Capture Whisper's auto-detected language (ISO-639-1) so
-                # downstream tools can pick locale-appropriate resources.
+                # Capture the language (ISO-639-1) so downstream tools can pick
+                # locale-appropriate resources. Whisper echoes back whichever
+                # language was pinned, so this holds either way.
                 detected = result.get("language")
                 if isinstance(detected, str) and detected:
                     self._last_detected_language = detected
@@ -2491,15 +2890,26 @@ class VoiceListener(threading.Thread):
                 # faster-whisper transcription
                 # CPU mode: skip timestamps and disable context carry-over for speed
                 cpu_mode = self._whisper_device == "cpu"
+                language = resolve_transcription_language(self.cfg)
+                # Whisper's own VAD is the only filter that catches the stock
+                # phrase it invents from room noise: that transcript arrives
+                # with a no_speech_prob of 0.000 and a confident language
+                # identification, so every later filter waves it through.
+                vad_filter = bool(getattr(self.cfg, "whisper_vad", True))
                 with self.transcribe_lock:
                     try:
                         segments, _info = self.model.transcribe(
-                            audio, language=None, vad_filter=False,
+                            audio, language=language, vad_filter=vad_filter,
                             condition_on_previous_text=not cpu_mode,
                             without_timestamps=cpu_mode,
+                            hotwords=" ".join(dict.fromkeys(filter(None, (
+                                str(getattr(self.cfg, "wake_word", "Jarvis") or "Jarvis")
+                                .strip().capitalize(),
+                                "Vault",
+                            )))),
                         )
                     except TypeError:
-                        segments, _info = self.model.transcribe(audio, language=None)
+                        segments, _info = self.model.transcribe(audio, language=language)
                     segments_list = list(segments)
                 # Capture the detected language (faster-whisper exposes it
                 # on the info object). Guard against older API variants
@@ -2507,17 +2917,40 @@ class VoiceListener(threading.Thread):
                 detected = getattr(_info, "language", None)
                 if isinstance(detected, str) and detected:
                     self._last_detected_language = detected
+                # Hesitant language identification marks the whole utterance as
+                # noise, so it is judged before the per-segment filters.
+                language_probability = getattr(_info, "language_probability", None)
+                min_language_probability = getattr(
+                    self.cfg, "whisper_min_language_probability", 0.0
+                )
+                trace.language = detected if isinstance(detected, str) else None
+                trace.language_probability = language_probability
+                if is_uncertain_language(language_probability, min_language_probability):
+                    debug_log(
+                        f"utterance filtered (language={detected} at "
+                        f"{language_probability:.2f} < {min_language_probability:.2f})",
+                        "voice",
+                    )
+                    discard_reason = "language_probability"
+                    segments_list = []
                 filtered_segments = self._filter_noisy_segments(segments_list)
                 text = " ".join(seg.text for seg in filtered_segments).strip()
         except Exception as e:
             debug_log(f"transcription error: {e}", "voice")
             if sys.platform == 'win32':
                 print(f"  ❌ Whisper error: {e}", flush=True)
+            discard_reason = "stt_error"
+            get_runtime_state().record_error(f"transcription failed: {e}")
             text = ""
+        finally:
+            trace.mark("stt", (time.perf_counter() - transcription_begun) * 1000.0)
 
         if not text or not text.strip():
+            get_runtime_state().count_discard(discard_reason)
             self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
             return
+
+        trace.transcript = text
 
         # Log successful transcription — separator omitted on the first utterance since
         # there is no prior turn to visually separate from.
@@ -2528,24 +2961,19 @@ class VoiceListener(threading.Thread):
         # Filter out repetitive hallucinations (e.g., "don't don't don't...")
         if self._is_repetitive_hallucination(text):
             debug_log(f"rejected repetitive hallucination: '{text[:80]}...'", "voice")
+            get_runtime_state().count_discard("repetitive")
             self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
             return
 
-        # Add to transcript buffer for context-aware processing
-        # Mark as "during TTS" if utterance STARTED during TTS (not just if TTS is still speaking now)
-        # This ensures mixed echo+user speech gets properly marked for intent judge
-        if self.tts is not None and self.tts.is_speaking():
-            is_during_tts = True
-        else:
-            tts_finish_time = self.echo_detector._last_tts_finish_time
-            echo_tolerance = self.echo_detector.echo_tolerance
-            is_during_tts = (tts_finish_time > 0 and utterance_start_time > 0 and utterance_start_time < tts_finish_time + echo_tolerance)
+        # Playback is a closed listening interval, so every completed microphone
+        # utterance presented to the intent judge is post-playback speech.
         self._transcript_buffer.add(
             text=text,
             start_time=utterance_start_time,
             end_time=utterance_end_time,
             energy=utterance_energy,
-            is_during_tts=is_during_tts,
+            is_during_tts=False,
+            language=self._last_detected_language,
         )
 
         # Process the transcript with pre-calculated energy and utterance timing

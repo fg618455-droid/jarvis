@@ -1,0 +1,799 @@
+/* Shell: header, sidebar, and the shared components every view builds from. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: var(--fs-base);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numbers never reflow: tabular figures keep a live reading from jittering. */
+.num,
+code,
+kbd,
+pre,
+table td.num,
+.stat-value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* ── Header ──────────────────────────────────────────────────────────── */
+
+.header {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: var(--header);
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  padding: 0 var(--s5);
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  z-index: 20;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.header-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s5);
+  color: var(--fg-dim);
+  font-size: var(--fs-sm);
+}
+
+.header-metric {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+}
+
+.header-metric .label {
+  color: var(--fg-mute);
+  font-size: var(--fs-xs);
+}
+
+.passive-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--bad);
+  font-weight: 600;
+}
+
+.passive-indicator[hidden] {
+  display: none;
+}
+
+.passive-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--bad);
+}
+
+.conversation-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.conversation-indicator[hidden] {
+  display: none;
+}
+
+.conversation-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* ── Phase dot ───────────────────────────────────────────────────────── */
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--fg-mute);
+  flex: none;
+}
+
+.dot[data-phase="capturing"],
+.dot[data-phase="transcribing"] {
+  background: var(--accent);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.dot[data-phase="thinking"],
+.dot[data-phase="tool"] {
+  background: var(--accent);
+}
+
+.dot[data-phase="speaking"] {
+  background: var(--fg);
+}
+
+.dot[data-phase="starting"] {
+  background: var(--warn);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* ── Settings button ─────────────────────────────────────────────────── */
+
+/* The only control in the frame that replaces the whole interface, so it is
+   the only one shaped like a destination rather than a reading. */
+.settings-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--fg-dim);
+  cursor: pointer;
+  flex: none;
+  transition: background var(--t-fast), color var(--t-fast),
+    border-color var(--t-fast);
+}
+
+.settings-button:hover {
+  background: var(--surface-2);
+  border-color: var(--accent-line);
+  color: var(--fg);
+}
+
+.settings-button[aria-current="page"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* ── Main ────────────────────────────────────────────────────────────── */
+
+/* The header's height is padding rather than a top margin. As body's first
+   in-flow child (the header is fixed) a top margin here collapses out
+   through html and adds its own height to the page, so every view scrolled
+   by the height of the header with nothing under it. */
+.main {
+  padding: calc(var(--header) + var(--main-pad)) var(--main-pad) var(--main-pad);
+}
+
+/* The deck is sized against the window rather than flowed down the page, so
+   it opts out of the gutter the scrolling views use. */
+.main.is-deck {
+  padding: var(--header) 0 0;
+}
+
+/* The box a view lays itself out in. The same module is a full-window page
+   at one address and a column inside a panel at another, so it is this box
+   rather than the window that decides how many columns a reading gets: a
+   view names `view` in a container query and gets the room it actually has.
+   The single column is `minmax(0, 1fr)` so one wide child, a table with five
+   columns of tool names, cannot drag every other card out past the edge with
+   it. */
+.view {
+  container: view / inline-size;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s4);
+  animation: appear var(--t-view);
+}
+
+@keyframes appear {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.view-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  flex-wrap: wrap;
+}
+
+.view-head h1 {
+  font-size: var(--fs-xl);
+  font-weight: 600;
+}
+
+.view-head p {
+  color: var(--fg-mute);
+  font-size: var(--fs-sm);
+}
+
+.view-head .actions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--s2);
+}
+
+/* ── Cards ───────────────────────────────────────────────────────────── */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: var(--s4);
+  display: grid;
+  gap: var(--s3);
+  align-content: start;
+}
+
+.card > header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+}
+
+.card > header h2 {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+
+.card > header .aside {
+  margin-left: auto;
+  color: var(--fg-mute);
+  font-size: var(--fs-xs);
+}
+
+.grid {
+  display: grid;
+  gap: var(--s4);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+/* A pair of cards that hold unrelated readings, so they size to what they
+   hold. Stretched to match, an empty one becomes a tall box of nothing
+   beside a full one. */
+.grid-2 {
+  display: grid;
+  gap: var(--s4);
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  align-items: start;
+}
+
+.split {
+  display: grid;
+  gap: var(--s4);
+  grid-template-columns: minmax(260px, 340px) 1fr;
+  align-items: start;
+}
+
+/* A list beside the thing it selects. Below the width that holds both, the
+   list would be too narrow to read a label in and the detail too narrow to
+   edit one, so they become one column. */
+@container view (max-width: 620px) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ── Stats ───────────────────────────────────────────────────────────── */
+
+.stat {
+  display: grid;
+  gap: var(--s1);
+}
+
+.stat-label {
+  font-size: var(--fs-xs);
+  color: var(--fg-mute);
+}
+
+.stat-value {
+  font-size: var(--fs-2xl);
+  line-height: 1.1;
+}
+
+.stat-value.small {
+  font-size: var(--fs-lg);
+}
+
+.stat-sub {
+  font-size: var(--fs-xs);
+  color: var(--fg-dim);
+}
+
+.meter {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.meter > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+}
+
+.meter.warn > span { background: var(--warn); }
+.meter.bad > span { background: var(--bad); }
+
+/* ── Stage bar ───────────────────────────────────────────────────────── */
+
+.stagebar {
+  display: flex;
+  height: 22px;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--surface-3);
+}
+
+.stagebar > span {
+  min-width: 2px;
+  transition: opacity var(--t-fast);
+}
+
+.stagebar > span:hover {
+  opacity: 0.7;
+}
+
+.stagelegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  font-size: var(--fs-xs);
+  color: var(--fg-dim);
+}
+
+.stagelegend .swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: var(--s1);
+}
+
+/* ── Tables ──────────────────────────────────────────────────────────── */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+/* The header stays put while the body scrolls under it. Without it a table
+   taller than its container ends in a row cut through the middle of its own
+   text, which reads as a rendering fault rather than as more below. */
+th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+  font-weight: 600;
+  padding: var(--s2) var(--s3);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+td {
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: top;
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+tbody tr:hover td {
+  background: var(--surface-2);
+}
+
+td.num,
+th.num {
+  text-align: right;
+}
+
+/* A table is a comparison down a page, and a container too narrow to hold
+   the columns is not offering one: the columns either squeeze every
+   description into a stack of single words or push the last of them off the
+   edge. Below that width each row reads as a record instead, one labelled
+   line per reading, so the whole table is still there and every value still
+   carries the question it answers. */
+@container view (max-width: 560px) {
+  table,
+  tbody,
+  tr,
+  td {
+    display: block;
+  }
+
+  /* The column names travel with their values, so the row of them at the
+     top would be the same words a second time with nothing under them. */
+  thead {
+    display: none;
+  }
+
+  tr {
+    padding: var(--s2) 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  tbody tr:last-child {
+    border-bottom: none;
+  }
+
+  td {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: var(--s3);
+    align-items: baseline;
+    padding: var(--s1) var(--s3);
+    border-bottom: none;
+    overflow-wrap: anywhere;
+  }
+
+  td::before {
+    content: attr(data-label);
+    font-size: var(--fs-micro);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-mute);
+  }
+
+  /* A figure is right-aligned so it can be compared with the one above it.
+     Stacked there is nothing above it, and the label is on the left. */
+  td.num {
+    text-align: left;
+  }
+
+  /* A chip is sized by its word. Stretched across the value column it reads
+     as a bar the length of the panel rather than as one short label. */
+  td > .chip {
+    justify-self: start;
+  }
+}
+
+/* ── Controls ────────────────────────────────────────────────────────── */
+
+button.btn,
+.btn {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: var(--s2) var(--s3);
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--accent-line);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn.primary {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.btn.danger:hover:not(:disabled) {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+input[type="text"],
+input[type="number"],
+input[type="password"],
+input[type="search"],
+select,
+textarea {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: var(--s2) var(--s3);
+  width: 100%;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 72px;
+  font-family: var(--font);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent-line);
+}
+
+label.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  cursor: pointer;
+  color: var(--fg-dim);
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+}
+
+/* ── State pill ──────────────────────────────────────────────────────── */
+
+/* A state and, beside it, whatever qualifies that state: how old the
+   reading is, how much of it is still to be processed. They are different
+   facts and neither is allowed to stand in for the other, so they share a
+   pill and a divider rather than a sentence.
+
+   Shared by every view that reports something continuously true, which is
+   why it lives here rather than beside the first view that needed one. */
+.state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s1) var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-size: var(--fs-xs);
+  color: var(--fg-dim);
+}
+
+.state-pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-mute);
+  flex: none;
+}
+
+.state-pill-note {
+  padding-left: var(--s2);
+  border-left: 1px solid var(--line);
+  color: var(--fg-mute);
+}
+
+.state-pill.live {
+  color: var(--ok);
+  border-color: var(--ok-line);
+}
+
+.state-pill.down {
+  color: var(--warn);
+  border-color: var(--warn-line);
+}
+
+/* Recording borrows the header indicator's tone, because a page open at
+   any depth has to read the same thing about the same microphone. */
+.state-pill.recording {
+  color: var(--bad);
+  border-color: var(--bad-line);
+}
+
+.state-pill.live .state-pill-dot { background: var(--ok); }
+.state-pill.recording .state-pill-dot { background: var(--bad); }
+
+/* Something that is still going on stays true between ticks, so it has to
+   say so between them. Nothing else on these views repeats. */
+.state-pill.live .state-pill-dot,
+.state-pill.recording .state-pill-dot {
+  animation: breathe 3.2s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* ── Chips and pills ─────────────────────────────────────────────────── */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: 2px var(--s2);
+  border-radius: var(--r-sm);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  font-size: var(--fs-xs);
+  color: var(--fg-dim);
+}
+
+.chip.accent {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.chip.ok { color: var(--ok); border-color: var(--ok-line); }
+.chip.warn { color: var(--warn); border-color: var(--warn-line); }
+.chip.bad { color: var(--bad); border-color: var(--bad-line); }
+
+/* ── Misc ────────────────────────────────────────────────────────────── */
+
+.muted {
+  color: var(--fg-mute);
+}
+
+/* Enough room to read as deliberate rather than as a rendering failure,
+   and no more. A card holding one sentence should not be the tallest thing
+   on the page. */
+.empty {
+  padding: var(--s5) var(--s4);
+  text-align: center;
+  color: var(--fg-mute);
+  font-size: var(--fs-sm);
+}
+
+.rows {
+  display: grid;
+  gap: var(--s2);
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+}
+
+.row .key {
+  color: var(--fg-mute);
+  font-size: var(--fs-xs);
+  min-width: 140px;
+}
+
+.row .val {
+  color: var(--fg);
+  word-break: break-word;
+}
+
+/* Sized against the window rather than a fixed count of pixels: 420px was
+   half a screen on the machine this runs on and two screens on a laptop. */
+.scroll {
+  max-height: min(58vh, 44rem);
+  overflow-y: auto;
+}
+
+/* A well: content that belongs inside a card but is not the card itself,
+   such as a feed or a table. Recessing it gives a view three depths to
+   work with rather than two. */
+.well {
+  background: var(--surface-inset);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--line);
+}
+
+/* ── Toast ───────────────────────────────────────────────────────────── */
+
+.toasts {
+  position: fixed;
+  right: var(--s5);
+  bottom: var(--s5);
+  display: grid;
+  gap: var(--s2);
+  z-index: 60;
+}
+
+.toast {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: var(--s3) var(--s4);
+  box-shadow: var(--shadow);
+  font-size: var(--fs-sm);
+  max-width: 380px;
+}
+
+.toast.bad {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+/* ── Narrow screens ──────────────────────────────────────────────────── */
+
+@media (max-width: 760px) {
+  :root {
+    --main-pad: var(--s3);
+  }
+
+  .main {
+    padding: calc(var(--header) + var(--s3)) var(--s3) var(--s3);
+  }
+
+  .header {
+    padding: 0 var(--s3);
+    gap: var(--s3);
+  }
+
+  /* The phase and the two recording indicators are the header's reason to
+     exist on a narrow screen. Uptime and last turn wrap into two lines
+     there and are on the Overview anyway. */
+  .header-metric {
+    display: none;
+  }
+
+  .header-right {
+    gap: var(--s3);
+  }
+}

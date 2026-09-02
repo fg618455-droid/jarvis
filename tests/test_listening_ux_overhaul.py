@@ -21,8 +21,6 @@ class TestStateManagerTimerHotWindow:
         return StateManager(
             hot_window_seconds=3.0,
             echo_tolerance=0.3,
-            voice_collect_seconds=2.0,
-            max_collect_seconds=60.0
         )
 
     def test_schedule_hot_window_creates_timer(self):
@@ -65,8 +63,6 @@ class TestStateManagerTimerHotWindow:
         manager = StateManager(
             hot_window_seconds=3.0,
             echo_tolerance=0.1,  # Short delay for testing
-            voice_collect_seconds=2.0,
-            max_collect_seconds=60.0
         )
 
         manager.schedule_hot_window_activation(voice_debug=True)
@@ -93,8 +89,6 @@ class TestStateManagerTimerHotWindow:
         manager = StateManager(
             hot_window_seconds=hot_window_seconds,
             echo_tolerance=echo_tolerance,
-            voice_collect_seconds=2.0,
-            max_collect_seconds=60.0
         )
 
         manager.schedule_hot_window_activation(voice_debug=True)
@@ -126,8 +120,6 @@ class TestStateManagerTimerHotWindow:
         manager = StateManager(
             hot_window_seconds=hot_window_seconds,
             echo_tolerance=echo_tolerance,
-            voice_collect_seconds=2.0,
-            max_collect_seconds=60.0
         )
 
         start_time = time.time()

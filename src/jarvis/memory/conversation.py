@@ -7,7 +7,9 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Iterator, Optional, List, Tuple, Union, Callable
 from .db import Database
-from ..llm import get_embedding_backend, get_llm_backend
+from .provenance import MemoryProvenance, RetrievedSnippet
+from .write_lock import MEMORY_WRITE_LOCK
+from ..llm import Tier, get_embedding_backend, get_llm_backend, resolve_model
 from ..debug import debug_log
 from ..utils.redact import redact, scrub_secrets
 
@@ -19,7 +21,7 @@ def _direct_llm(cfg, system_prompt: str, user_content: str, *,
     ``conversation._direct_llm`` to capture every diary/summary LLM round-trip
     without reaching through the backend ABC."""
     return get_llm_backend(cfg).direct(
-        cfg.llm_chat_model, system_prompt, user_content,
+        resolve_model(cfg, Tier.PRIVATE), system_prompt, user_content,
         timeout_sec=timeout_sec, thinking=thinking,
         max_tokens=max_tokens,
     )
@@ -30,7 +32,7 @@ def _stream_llm(cfg, system_prompt: str, user_content: str, *,
                 timeout_sec: float = 30.0, thinking: bool = False) -> Optional[str]:
     """Streaming counterpart to ``_direct_llm`` — same patch-point property."""
     return get_llm_backend(cfg).streaming(
-        cfg.llm_chat_model, system_prompt, user_content,
+        resolve_model(cfg, Tier.PRIVATE), system_prompt, user_content,
         on_token=on_token, timeout_sec=timeout_sec, thinking=thinking,
     )
 
@@ -960,6 +962,7 @@ class DialogueMemory:
     # Cache key for the warm-profile block. Centralised so the engine
     # and the graph-mutation invalidator agree on it.
     WARM_PROFILE_CACHE_KEY = "warm_profile_block"
+    MEMORY_PROVENANCE_CACHE_KEY = "memory_provenance_snippets"
 
     # LRU cap for the conversation-scoped scratch cache. The engine writes
     # at most three keys per turn (router, enrichment extractor, warm
@@ -1378,6 +1381,7 @@ def update_daily_conversation_summary(
     timeout_sec: float = 30.0,
     on_token: Optional[Callable[[str], None]] = None,
     thinking: bool = False,
+    date_utc: Optional[str] = None,
 ) -> Optional[int]:
     """
     Update the conversation summary for today with new chunks.
@@ -1390,7 +1394,7 @@ def update_daily_conversation_summary(
     if not new_chunks:
         return None
 
-    today = datetime.now(timezone.utc).date().isoformat()  # YYYY-MM-DD format
+    target_date = date_utc or datetime.now(timezone.utc).date().isoformat()
 
     try:
         # Redact sensitive information from chunks before processing
@@ -1403,51 +1407,58 @@ def update_daily_conversation_summary(
             chunk_preview = chunk[:100] + "..." if len(chunk) > 100 else chunk
             debug_log(f"  chunk {i+1}: {chunk_preview}", "memory")
 
-        # Get existing summary for today
-        existing = db.get_conversation_summary(today, source_app)
-        previous_summary = existing['summary'] if existing else None
+        # The read (existing summary), the LLM transform, and the write
+        # below must run as one unit: a second thread reading the same
+        # day's summary between our read and our write would generate
+        # its own update from the same stale previous_summary, and
+        # whichever thread wrote last would silently discard the other's
+        # chunks. See write_lock.MEMORY_WRITE_LOCK.
+        with MEMORY_WRITE_LOCK:
+            # Get existing summary for today
+            existing = db.get_conversation_summary(target_date, source_app)
+            previous_summary = existing['summary'] if existing else None
 
-        # Generate updated summary using redacted chunks
-        summary, topics = generate_conversation_summary(
-            redacted_chunks, previous_summary, cfg,
-            timeout_sec=timeout_sec, on_token=on_token, thinking=thinking,
-        )
+            # Generate updated summary using redacted chunks
+            summary, topics = generate_conversation_summary(
+                redacted_chunks, previous_summary, cfg,
+                timeout_sec=timeout_sec, on_token=on_token, thinking=thinking,
+            )
 
-        # Skip summarization if LLM failed
-        if summary is None or topics is None:
-            debug_log("conversation summary skipped - LLM failed to generate summary", "memory")
-            return  # Skip summarization entirely
+            # Skip summarization if LLM failed
+            if summary is None or topics is None:
+                debug_log("conversation summary skipped - LLM failed to generate summary", "memory")
+                return  # Skip summarization entirely
 
-        # Debug: Log the generated summary and topics
-        summary_preview = summary[:200] + "..." if len(summary) > 200 else summary
-        debug_log("conversation memory updated to:", "memory")
-        debug_log(f"  summary: {summary_preview}", "memory")
-        debug_log(f"  topics: {topics}", "memory")
-        if previous_summary:
-            prev_preview = previous_summary[:100] + "..." if len(previous_summary) > 100 else previous_summary
-            debug_log(f"  previous summary: {prev_preview}", "memory")
-        else:
-            debug_log("  previous summary: (none)", "memory")
+            # Debug: Log the generated summary and topics
+            summary_preview = summary[:200] + "..." if len(summary) > 200 else summary
+            debug_log("conversation memory updated to:", "memory")
+            debug_log(f"  summary: {summary_preview}", "memory")
+            debug_log(f"  topics: {topics}", "memory")
+            if previous_summary:
+                prev_preview = previous_summary[:100] + "..." if len(previous_summary) > 100 else previous_summary
+                debug_log(f"  previous summary: {prev_preview}", "memory")
+            else:
+                debug_log("  previous summary: (none)", "memory")
 
-        # Store the summary
-        summary_id = db.upsert_conversation_summary(
-            date_utc=today,
-            summary=summary,
-            topics=topics,
-            source_app=source_app,
-        )
+            # Store the summary
+            summary_id = db.upsert_conversation_summary(
+                date_utc=target_date,
+                summary=summary,
+                topics=topics,
+                source_app=source_app,
+            )
 
-        # Generate and store embedding for semantic search. Gate on a
-        # configured embedding model too (matching the search paths) so an
-        # empty model never burns a doomed embed round-trip.
-        if db.is_vss_enabled and cfg.embedding_model:
-            # Combine summary and topics for embedding
-            text_for_embedding = f"{summary} {topics}"
-            vec = _embed_text(text_for_embedding, cfg, timeout_sec=15.0)
-            if vec is not None:
-                db.upsert_summary_embedding(summary_id, vec)
+            # Generate and store embedding for semantic search. Gate on a
+            # configured embedding model too (matching the search paths) so an
+            # empty model never burns a doomed embed round-trip.
+            if db.is_vss_enabled and cfg.embedding_model:
+                # Combine summary and topics for embedding
+                text_for_embedding = f"{summary} {topics}"
+                vec = _embed_text(text_for_embedding, cfg, timeout_sec=15.0)
+                if vec is not None:
+                    db.upsert_summary_embedding(summary_id, vec)
 
-        return summary_id
+            return summary_id
 
     except Exception:
         return None
@@ -1463,7 +1474,7 @@ def search_conversation_memory_by_keywords(
     timeout_sec: float = 60.0,
     voice_debug: bool = False,
     max_results: int = 10,
-) -> List[str]:
+) -> List[RetrievedSnippet]:
     """
     Search conversation memory using multiple keywords with OR logic.
     This is optimised for memory enrichment where we have extracted topic keywords.
@@ -1479,7 +1490,7 @@ def search_conversation_memory_by_keywords(
         max_results: Maximum number of results to return (default: 10)
 
     Returns:
-        List of formatted context strings (limited to max_results)
+        Retrieved snippets with diary-date provenance (limited to max_results)
     """
     contexts = []
 
@@ -1541,7 +1552,11 @@ def search_conversation_memory_by_keywords(
         # preamble in the reply engine tells it to treat the newer entry as the
         # user's current understanding. Fall back to relevance score as tiebreak.
         scored_results.sort(key=lambda x: (x[1], x[0]), reverse=True)
-        contexts = [text for _, _, text in scored_results]
+        contexts = [
+            RetrievedSnippet(text, MemoryProvenance.diary(date_str))
+            if date_str else RetrievedSnippet(text)
+            for _, date_str, text in scored_results
+        ]
 
         debug_log(f"      ✅ found {len(contexts)} keyword search results", "memory")
         if contexts:
@@ -1721,6 +1736,87 @@ def get_relevant_conversation_context(
     )
 
 
+def update_graph_from_summary(
+    db: Database,
+    cfg,
+    *,
+    date_utc: str,
+    source_app: str = "jarvis",
+    timeout_sec: float = 30.0,
+    thinking: bool = False,
+    graph_picker_model: Optional[str] = None,
+) -> bool:
+    """Extract graph facts from one stored diary summary.
+
+    Diary and ambient-memory writes share this helper so graph placement,
+    deduplication, output, and failure behaviour stay identical.
+    """
+    graph_store = None
+    try:
+        from .graph import GraphMemoryStore
+        from .graph_ops import update_graph_from_dialogue
+
+        existing = db.get_conversation_summary(date_utc, source_app)
+        summary_text = existing["summary"] if existing else None
+        if not summary_text:
+            return False
+
+        graph_store = GraphMemoryStore(db.db_path)
+        graph_timeout = min(timeout_sec, 30.0)
+        result = update_graph_from_dialogue(
+            store=graph_store,
+            summary=summary_text,
+            cfg=cfg,
+            chat_model=resolve_model(cfg, Tier.PRIVATE),
+            timeout_sec=graph_timeout,
+            thinking=thinking,
+            date_utc=date_utc,
+            picker_model=graph_picker_model,
+        )
+        stored = result.stored
+        skipped = result.skipped
+        if stored or skipped:
+            duplicate_suffix = (
+                f"{skipped} duplicate{'' if skipped == 1 else 's'} skipped"
+            )
+            if stored:
+                fact_count = (
+                    f"{len(stored)} new fact{'' if len(stored) == 1 else 's'}"
+                )
+                tail = f" ({duplicate_suffix})" if skipped else ""
+                print(
+                    f"  🧠 Knowledge graph: learned {fact_count}{tail}",
+                    flush=True,
+                )
+                for fact, node_name in stored[:6]:
+                    preview = fact.replace("\n", " ").strip()
+                    if len(preview) > 90:
+                        preview = preview[:90].rstrip() + "…"
+                    print(f"     · {preview} → {node_name}", flush=True)
+                if len(stored) > 6:
+                    print(f"     · …and {len(stored) - 6} more", flush=True)
+            else:
+                print(
+                    f"  🧠 Knowledge graph: nothing new ({duplicate_suffix})",
+                    flush=True,
+                )
+        debug_log(
+            f"graph memory: stored {len(stored)} facts, "
+            f"{skipped} duplicates skipped",
+            "memory",
+        )
+        return True
+    except Exception as exc:
+        debug_log(f"graph memory update failed (non-fatal): {exc}", "memory")
+        return False
+    finally:
+        if graph_store is not None:
+            try:
+                graph_store.close()
+            except Exception:
+                pass
+
+
 def update_diary_from_dialogue_memory(
     db: Database,
     dialogue_memory: DialogueMemory,
@@ -1796,76 +1892,18 @@ def update_diary_from_dialogue_memory(
 
             # Graph memory (v2): extract facts and store in the node graph.
             # Non-blocking — if this fails, the diary update still succeeded.
-            # Uses a dedicated timeout (30s) rather than the diary chat timeout,
-            # so graph updates don't inflate the diary flush wall time.
-            try:
-                from .graph import GraphMemoryStore
-                from .graph_ops import update_graph_from_dialogue
-
-                graph_store = GraphMemoryStore(db.db_path)
-                # Retrieve the summary we just stored to use for extraction
-                today = datetime.now(timezone.utc).date().isoformat()
-                existing = db.get_conversation_summary(today, source_app)
-                summary_text = existing['summary'] if existing else None
-
-                if summary_text:
-                    # Use a shorter timeout for graph operations — extraction (30s),
-                    # placement (15s/fact), and split (45s) each have their own budgets
-                    # inside update_graph_from_dialogue.
-                    graph_timeout = min(timeout_sec, 30.0)
-                    result = update_graph_from_dialogue(
-                        store=graph_store,
-                        summary=summary_text,
-                        cfg=cfg,
-                        chat_model=cfg.llm_chat_model,
-                        timeout_sec=graph_timeout,
-                        thinking=thinking,
-                        date_utc=today,
-                        picker_model=graph_picker_model,
-                    )
-                    stored = result.stored
-                    skipped = result.skipped
-                    # Print whenever extraction produced anything — including
-                    # all-duplicate flushes. Without the skipped count this
-                    # line went silent after #282's dedupe (cumulative diary
-                    # re-extracts the same facts on every flush), making it
-                    # look like the memory pipeline had stopped working.
-                    if stored or skipped:
-                        dup_suffix = (
-                            f"{skipped} duplicate{'' if skipped == 1 else 's'} skipped"
-                        )
-                        if stored:
-                            fact_count = (
-                                f"{len(stored)} new fact"
-                                f"{'' if len(stored) == 1 else 's'}"
-                            )
-                            tail = f" ({dup_suffix})" if skipped else ""
-                            print(
-                                f"  🧠 Knowledge graph: learned {fact_count}{tail}",
-                                flush=True,
-                            )
-                            # Show each new fact with the node it landed in so
-                            # the user can eyeball extraction/placement. Cap
-                            # preview length per fact.
-                            for fact, node_name in stored[:6]:
-                                preview = fact.replace("\n", " ").strip()
-                                if len(preview) > 90:
-                                    preview = preview[:90].rstrip() + "…"
-                                print(f"     · {preview} → {node_name}", flush=True)
-                            if len(stored) > 6:
-                                print(f"     · …and {len(stored) - 6} more", flush=True)
-                        else:
-                            print(
-                                f"  🧠 Knowledge graph: nothing new ({dup_suffix})",
-                                flush=True,
-                            )
-                    debug_log(
-                        f"graph memory: stored {len(stored)} facts, "
-                        f"{skipped} duplicates skipped",
-                        "memory",
-                    )
-            except Exception as e:
-                debug_log(f"graph memory update failed (non-fatal): {e}", "memory")
+            # Shared with the ambient digest (see update_graph_from_summary)
+            # so graph placement, dedup, and failure behaviour stay identical
+            # across both write paths.
+            update_graph_from_summary(
+                db,
+                cfg,
+                date_utc=datetime.now(timezone.utc).date().isoformat(),
+                source_app=source_app,
+                timeout_sec=timeout_sec,
+                thinking=thinking,
+                graph_picker_model=graph_picker_model,
+            )
 
         return summary_id
 

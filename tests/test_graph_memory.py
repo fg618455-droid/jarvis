@@ -16,7 +16,7 @@ from src.jarvis.memory.graph import (
 )
 
 # Number of fixed top-level branches seeded under root on bootstrap
-# (User / Directives / World). See graph.py FIXED_BRANCHES.
+# See graph.py FIXED_BRANCHES.
 SEEDED = len(FIXED_BRANCHES)
 BOOTSTRAP_NODE_COUNT = SEEDED + 1  # seeded branches + root
 
@@ -88,7 +88,7 @@ class TestGraphMemoryStoreBootstrap:
         assert len(root_nodes) == 1
 
     def test_node_count_starts_with_seeded_branches(self, store):
-        # root + fixed branches (User / Directives / World)
+        # root + every fixed purpose branch
         assert store.get_node_count() == BOOTSTRAP_NODE_COUNT
 
     def test_total_tokens_zero_for_empty_graph(self, store):
@@ -132,6 +132,38 @@ class TestMigrateLegacyShape:
             n.name == "Identity" for n in store.get_all_nodes()
         )
 
+    def test_populated_three_branch_graph_gains_school_without_data_loss(self, tmp_path):
+        """Seeding a missing fixed branch preserves an existing populated graph."""
+        db_path = str(tmp_path / "populated_graph.db")
+        initial = GraphMemoryStore(db_path)
+        existing = initial.create_node(
+            name="Identity",
+            description="Who the user is",
+            data="Felix lives in Germany.",
+            parent_id="user",
+        )
+        initial.conn.execute("DELETE FROM memory_nodes WHERE id = 'school'")
+        initial.conn.commit()
+        assert {node.id for node in initial.get_children("root")} == {
+            "user",
+            "directives",
+            "world",
+        }
+        initial.close()
+
+        for _ in range(2):
+            reopened = GraphMemoryStore(db_path)
+            try:
+                assert reopened.migrate_legacy_shape() is False
+                assert reopened.get_node(existing.id).data == "Felix lives in Germany."
+                school_nodes = [
+                    node for node in reopened.get_children("root")
+                    if node.id == "school"
+                ]
+                assert len(school_nodes) == 1
+            finally:
+                reopened.close()
+
     def test_wipes_when_root_has_rogue_child(self, store):
         """Pre-taxonomy nodes sitting directly under root trigger a wipe."""
         store.create_node(
@@ -157,7 +189,7 @@ class TestMigrateLegacyShape:
         assert root.data == ""
 
     def test_reseeds_fixed_branches_after_wipe(self, store):
-        """After a wipe the three fixed branches are present again."""
+        """After a wipe every fixed branch is present again."""
         store.create_node(
             name="Rogue", description="x", data="y", parent_id="root",
         )
@@ -165,6 +197,18 @@ class TestMigrateLegacyShape:
         children = store.get_children("root")
         child_ids = {c.id for c in children}
         assert child_ids == {b[0] for b in FIXED_BRANCHES}
+
+    def test_destructive_wipe_clears_source_import_ledger(self, store):
+        store.mark_import_source("school", "05 - Schule/Biology.md", "hash")
+        store.create_node(
+            name="Rogue", description="x", data="y", parent_id="root",
+        )
+
+        assert store.migrate_legacy_shape() is True
+
+        assert not store.import_source_is_current(
+            "school", "05 - Schule/Biology.md", "hash",
+        )
 
 
 @pytest.mark.unit
