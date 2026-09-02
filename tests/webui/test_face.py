@@ -153,6 +153,60 @@ class TestTheFaceIsDrawnHere:
             context.close()
 
 
+class TestTheFaceFollowsTheTheme:
+    """Changing the palette repaints the face, motion or no motion.
+
+    With motion refused there is no animation loop, so nothing redraws the
+    canvas on its own and the face keeps the accent it was first painted in.
+    The page around it changes colour and the largest object on it does not.
+    """
+
+    ACCENT = """() => {
+        const probe = document.createElement('canvas');
+        probe.width = probe.height = 1;
+        const ctx = probe.getContext('2d');
+        ctx.fillStyle = getComputedStyle(document.documentElement)
+            .getPropertyValue('--accent').trim();
+        ctx.fillRect(0, 0, 1, 1);
+        return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3);
+    }"""
+
+    CENTRE = """() => {
+        const canvas = document.querySelector('.face-canvas');
+        const { data, width, height } = canvas.getContext('2d')
+            .getImageData(0, 0, canvas.width, canvas.height);
+        const at = ((height >> 1) * width + (width >> 1)) * 4;
+        return [data[at], data[at + 1], data[at + 2]];
+    }"""
+
+    @pytest.mark.parametrize("reduced", [False, True], ids=["motion", "no-motion"])
+    def test_switching_theme_repaints_the_face(self, browser, served, reduced):
+        context = browser.new_context(
+            viewport={"width": 1600, "height": 950},
+            reduced_motion="reduce" if reduced else "no-preference",
+        )
+        page = context.new_page()
+        try:
+            page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
+            page.wait_for_selector(".face-canvas", state="visible", timeout=8000)
+            page.wait_for_timeout(900)
+            before = page.evaluate(self.CENTRE)
+
+            page.evaluate("() => { document.documentElement.dataset.theme = 'ember'; }")
+            page.wait_for_timeout(900)
+
+            after = page.evaluate(self.CENTRE)
+            wanted = page.evaluate(self.ACCENT)
+
+            assert after != before, "the face kept the palette it was painted in"
+            for drawn, target in zip(after, wanted):
+                assert abs(drawn - target) <= 12, (
+                    f"the face paints {after} where the accent is {wanted}"
+                )
+        finally:
+            context.close()
+
+
 class TestEveryStateSurvivesMotionBeingOff:
     """The reason this face was chosen over a disc or a ring.
 

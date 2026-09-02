@@ -412,6 +412,16 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
   }
   document.addEventListener("visibilitychange", onVisibility);
 
+  /* A theme changes the accent the face is painted in, and with motion
+     refused there is no loop to notice: the page around the face would
+     change colour and the largest thing on it would keep the palette it was
+     first drawn in. The attribute that carries the theme is watched instead. */
+  const themeWatch = new MutationObserver(() => repaint());
+  themeWatch.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme"],
+  });
+
   paintPhase("idle");
   startPainting();
   takeReading();
@@ -431,6 +441,7 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
     destroy() {
       stopPainting();
       clearInterval(polling);
+      themeWatch.disconnect();
       document.removeEventListener("visibilitychange", onVisibility);
     },
   };
