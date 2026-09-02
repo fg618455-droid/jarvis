@@ -237,9 +237,11 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
     frame = window.requestAnimationFrame(loop);
   }
 
-  function repaint() {
-    // With motion refused there is no loop at all, so a new reading is the
-    // only thing that repaints and the picture is otherwise perfectly still.
+  /* Draw once, for the cases where nothing else will. With motion allowed
+     the loop is already redrawing sixty times a second and this is a no-op;
+     with motion refused there is no loop, so a new reading, a resize or a
+     change of theme is the only thing that ever repaints. */
+  function repaintIfStill() {
     if (motionAllowed()) return;
     draw(0);
   }
@@ -281,7 +283,7 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
       state.reading = named;
       state.wave = named === "speaking" ? reading.samples || [] : null;
       pollEvery(named === "speaking" ? POLL_SPEAKING_MS : POLL_IDLE_MS);
-      if (changed) repaint();
+      if (changed) repaintIfStill();
     } catch {
       /* A poll that failed says nothing about the assistant, so the face
          holds its last honest reading rather than dropping to idle. What
@@ -375,7 +377,7 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
     // preference about one face, not a retune of the interface. How much of
     // it survives a narrow column is the stylesheet's business.
     shell.style.setProperty("--face-size", `${state.size}px`);
-    repaint();
+    repaintIfStill();
   }
 
   setSize(state.size);
@@ -416,7 +418,7 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
      refused there is no loop to notice: the page around the face would
      change colour and the largest thing on it would keep the palette it was
      first drawn in. The attribute that carries the theme is watched instead. */
-  const themeWatch = new MutationObserver(() => repaint());
+  const themeWatch = new MutationObserver(() => repaintIfStill());
   themeWatch.observe(document.documentElement, {
     attributes: true,
     attributeFilter: ["data-theme"],
