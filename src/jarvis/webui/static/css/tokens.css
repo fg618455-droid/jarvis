@@ -92,7 +92,11 @@
 
   --fg: #e8eaed;
   --fg-dim: #9aa1ac;
-  --fg-mute: #6b7280;
+  /* The quietest of the three, and the one that carries the smallest text:
+     widget titles at 11px, units, and the log's time column. It is therefore
+     the token with the least room to be wrong, and it is measured against the
+     surfaces it actually lands on rather than chosen by eye. */
+  --fg-mute: #80899c;
 
   --accent: #7dd3fc;
   --accent-soft: rgba(125, 211, 252, 0.12);
@@ -151,7 +155,7 @@
 
   --fg: #eaf2ff;
   --fg-dim: #9db2d0;
-  --fg-mute: #677d9e;
+  --fg-mute: #738fad;
 
   --accent: #58d7ff;
   --accent-soft: rgba(88, 215, 255, 0.16);

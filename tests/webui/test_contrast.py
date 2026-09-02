@@ -222,6 +222,94 @@ FOCUS_SWEEP = COLOUR_JS + """
 }"""
 
 
+# Every element carrying text of its own, measured where it is painted.
+TEXT_SWEEP = COLOUR_JS + """
+(theme) => {
+    document.documentElement.dataset.theme = theme;
+    // A forced reflow, so the measurements below read the new paint rather
+    // than the one the attribute just replaced.
+    void document.body.offsetHeight;
+
+    const findings = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const seen = new Set();
+
+    while (walker.nextNode()) {
+        const text = walker.currentNode.textContent.trim();
+        if (!text) continue;
+        const node = walker.currentNode.parentElement;
+        if (!node || seen.has(node)) continue;
+        seen.add(node);
+
+        const box = node.getBoundingClientRect();
+        if (box.width < 1 || box.height < 1) continue;
+
+        const style = getComputedStyle(node);
+        if (style.visibility === 'hidden' || style.display === 'none') continue;
+        // A disabled control is exempt: it is telling you it cannot be used,
+        // and dimming is how it says so.
+        if (node.closest(':disabled, [aria-disabled="true"]')) continue;
+        if (parseFloat(style.opacity) < 0.999) continue;
+
+        const size = parseFloat(style.fontSize);
+        const weight = parseInt(style.fontWeight, 10) || 400;
+        const large = size >= 24 || (size >= 18.66 && weight >= 700);
+        const floor = large ? 3.0 : 4.5;
+
+        const behind = effectiveBackground(node);
+        const measured = ratio(style.color, behind);
+        if (measured + 0.005 < floor) {
+            findings.push({
+                what: describe(node),
+                text: text.slice(0, 40),
+                size,
+                colour: style.color,
+                behind,
+                ratio: Math.round(measured * 100) / 100,
+                floor,
+            });
+        }
+    }
+    return findings;
+}"""
+
+
+class TestTextClearsItsSurfaceInEveryTheme:
+    """The floor every reading is held to, wherever it is painted.
+
+    This is written against what the browser renders rather than against the
+    token file, because a token is legible or not only once something has
+    chosen a surface for it and a size to set it at. `--fg-mute` reads
+    perfectly well as a name in `tokens.css` and carries 11px widget titles
+    onto three different surfaces in practice.
+
+    Themes are read out of `theme.js`, so a palette added there is measured
+    here without anyone remembering to extend a list.
+    """
+
+    def test_every_theme_is_measured(self, page, served):
+        """A sweep that silently found no themes would pass forever."""
+        assert len(_themes(page, served)) >= 2
+
+    @pytest.mark.parametrize("view", VIEWS)
+    def test_no_reading_falls_under_its_floor(self, page, served, view):
+        page.goto(f"{served}/#/{view}", wait_until="domcontentloaded")
+        page.wait_for_selector("main", state="visible", timeout=5000)
+        page.wait_for_timeout(600)
+
+        failures = {}
+        for theme in page.evaluate(THEMES_FROM_SOURCE):
+            found = page.evaluate(TEXT_SWEEP, theme)
+            if found:
+                failures[theme] = [
+                    f"{f['what']} {f['ratio']}:1 needs {f['floor']} "
+                    f"({f['colour']} on {f['behind']}, {f['size']}px)"
+                    for f in found
+                ]
+
+        assert not failures, f"{view}: {failures}"
+
+
 class TestEveryFocusableThingSaysWhereFocusIs:
     """A keyboard user has to be able to see where they are.
 
