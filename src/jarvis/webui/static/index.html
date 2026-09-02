@@ -13,13 +13,17 @@
     <link rel="stylesheet" href="/static/css/views.css" />
     <!-- The theme is applied before the first paint rather than by the module
          below, which is deferred: a page that painted graphite and then
-         repainted arc would flash on every load for anyone who changed it.
+         repainted ember would flash on every load for anyone who changed it.
          The attribute above is the fallback for a browser that never runs
-         this, so the interface is never left with no palette at all. -->
+         this, so the interface is never left with no palette at all.
+
+         The list of names is a copy of `THEMES` in `theme.js`, because this
+         script runs before any module can be imported. `test_theme_tokens.py`
+         holds the two in step. -->
     <script>
       try {
         var stored = localStorage.getItem("jarvis.theme");
-        if (stored === "graphite" || stored === "arc") {
+        if (stored === "graphite" || stored === "arc" || stored === "ember") {
           document.documentElement.dataset.theme = stored;
         }
       } catch (error) {

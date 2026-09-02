@@ -31,7 +31,8 @@ one file and no view can drift from the rest.
 |---|---|
 | Surface | Four depths: the page, a card above it, a well recessed inside a card, and the raised controls within either |
 | Colour | One accent, for what is active, focused, selected, or newly arrived. Three status tones, each with a text, fill, and border value so a chip, a rail, and a meter read the same |
-| Type | An eight-step scale. Headings, labels, and readings are chosen from the ladder rather than per view |
+| Selected against status | What is selected or active is the accent as a rule: a border on one edge, accent text, at most `--accent-soft` behind it, never a filled chip. What carries a status is always a filled chip with its own fill, border, and glyph. The two are therefore different shapes before they are different colours, which is what makes them separable in a warm palette where accent and warning are neighbours, and for a reader who cannot tell those two hues apart at all |
+| Type | A seven-step scale. Headings, labels, and readings are chosen from the ladder rather than per view |
 | Motion | Transitions mark a change of state, never decorate one. `prefers-reduced-motion` disables every animation and transition outright, and anything painted from JavaScript, which that rule cannot reach, asks `motionAllowed()` for itself |
 | Focus | Anything that can hold focus shows a ring when a keyboard put it there, and the ring clears 3:1 against both the control and what the control sits on. A field may also warm its border on focus, but a border is an addition to the ring and never a replacement: a rule suppressing the outline on a field is more specific than the shared `:focus-visible` one and silently disarms the keyboard everywhere at once |
 | Overflow | A region that scrolls is sized against the window rather than a fixed count of pixels, and pins its heading above it, so a partly visible row reads as more below rather than as a rendering fault. Where the container is too narrow to hold the columns, the rows stack and each value carries its own column name instead, so a sliced record is still labelled |
@@ -51,6 +52,21 @@ because someone preferred a different palette.
 |---|---|
 | `graphite` | Near-black and one cool accent. The default, and what the interface has always looked like |
 | `arc` | The same instrument under a colder light: a blue-white filament on deep slate, with the circular motif carrying more of the accent |
+| `ember` | The same instrument in a warm light: a brown-black rather than a blue one, stepped surfaces, and one orange |
+
+`ember` is written in OKLCH, because its surfaces are a ramp rather than
+seven separate colours: stepped by lightness in OKLCH a surface stays the
+same colour getting lighter, where the same step in HSL turns muddy through
+the middle and has to be corrected by hand at every stop. A theme is free to
+be written in whatever notation suits it; nothing reads these values except
+the browser.
+
+Three places name the themes and all three have to agree: `tokens.css` paints
+them, `theme.js` offers them, and a small inline script in `index.html`
+applies the remembered one before the first paint. That script cannot import
+the module it is guarding against, so it carries its own copy of the list,
+and `tests/webui/test_theme_tokens.py` holds the two in step. Forgotten
+there, a theme is offered in the picker and refused on reload.
 
 Adding a theme is adding one block and one row in `theme.js`. No view knows a
 theme exists; every view reads `var(--accent)` and gets whatever the active

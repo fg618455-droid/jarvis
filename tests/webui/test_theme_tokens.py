@@ -18,7 +18,10 @@ import re
 from pathlib import Path
 
 
-TOKENS = Path(__file__).resolve().parents[2] / "src/jarvis/webui/static/css/tokens.css"
+STATIC = Path(__file__).resolve().parents[2] / "src/jarvis/webui/static"
+TOKENS = STATIC / "css/tokens.css"
+THEME_JS = STATIC / "js/theme.js"
+INDEX = STATIC / "index.html"
 
 # `--name: value;` at the start of a line inside a block.
 DECLARATION = re.compile(r"^\s*(--[a-z0-9-]+)\s*:", re.MULTILINE)
@@ -106,3 +109,36 @@ class TestThemesAreInterchangeable:
         assert "--fs-base" in root, "the type scale left :root"
         assert "--s4" in root, "the spacing scale left :root"
         assert "--t-fast" in root, "the motion scale left :root"
+
+
+class TestAThemeIsKnownEverywhereItHasToBe:
+    """Three places name the themes, and all three have to agree.
+
+    `tokens.css` paints them, `theme.js` offers them in the picker, and a
+    small inline script in `index.html` applies the remembered one before the
+    first paint, because the module that owns it is deferred and the page
+    would otherwise flash the default on every load.
+
+    That inline script cannot import the module it is guarding against, so it
+    carries its own copy of the list. A theme added to the other two and
+    forgotten here does not fail: it is simply refused before paint, the
+    default is applied instead, and the picker then quietly disagrees with the
+    page for as long as anyone is looking at it.
+    """
+
+    def _named_in_theme_js(self) -> set[str]:
+        source = THEME_JS.read_text(encoding="utf-8")
+        block = source[source.index("export const THEMES"):source.index("];", source.index("export const THEMES"))]
+        return set(re.findall(r'id:\s*"([a-z0-9-]+)"', block))
+
+    def _allowed_before_paint(self) -> set[str]:
+        return set(re.findall(r'stored === "([a-z0-9-]+)"', INDEX.read_text(encoding="utf-8")))
+
+    def test_the_picker_offers_exactly_what_the_stylesheet_paints(self):
+        assert self._named_in_theme_js() == set(_themes(_source()))
+
+    def test_a_remembered_theme_is_applied_before_the_first_paint(self):
+        assert self._allowed_before_paint() == self._named_in_theme_js(), (
+            "the pre-paint script in index.html and THEMES disagree, so a theme "
+            "is offered in the picker and refused on reload"
+        )

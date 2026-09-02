@@ -18,6 +18,7 @@ const STORAGE_KEY = "jarvis.theme";
 export const THEMES = [
   { id: "graphite", label: "Graphite" },
   { id: "arc", label: "Arc" },
+  { id: "ember", label: "Ember" },
 ];
 
 export const DEFAULT_THEME = "graphite";
