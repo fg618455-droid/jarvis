@@ -1,16 +1,13 @@
-"""🎭 Visualizer live state.
+"""🎭 Face live state.
 
-Bridges Jarvis's own runtime phase and TTS playback into the shape the
-vendored ai-visualizer face expects: ``idle``, ``listening``, ``thinking``,
-``speaking``, plus a waveform for a face to move to while speaking. This is
-the direct in-process replacement for the three ``.voice_*`` signal files the
-vendored code was originally written to poll from a second process — no
-files, no second server, one process reading its own live objects.
+Bridges Jarvis's own runtime phase and TTS playback into the reading the
+control centre's face is drawn from: ``idle``, ``listening``, ``thinking``,
+``speaking``, plus a waveform for the face to move to while speaking. No
+signal files and no second server: one process reading its own live objects.
 
-Jarvis has no equivalent of ai-visualizer's own attention signal or of a
-locally played thinking sound (Jarvis's TTS engines only ever play the
-reply itself), so ``alert`` and ``loading`` are always reported as off
-rather than invented.
+Jarvis has no attention-signal concept, and its TTS engines only ever play
+the reply itself rather than a thinking sound, so ``alert`` and ``loading``
+are always reported as off rather than invented.
 """
 
 from __future__ import annotations
@@ -24,7 +21,7 @@ from ...runtime.state import Phase, get_runtime_state
 
 # A waveform older than this belongs to a block of audio that has already
 # finished playing, so it is dropped rather than shown as though speech were
-# still happening. Mirrors ai-visualizer's own server.py staleness window.
+# still happening.
 WAVEFORM_STALE_SECONDS = 0.6
 SAMPLE_COUNT = 64
 
@@ -43,11 +40,9 @@ _PHASE_TO_VISUAL_STATE = {
 class VisualizerWaveform:
     """The most recent block of audio a TTS engine wrote to the speakers.
 
-    A TTS engine calls :meth:`feed` with each block it plays, the same
-    moment backtalk's ``mouth.py`` calls ``signals.feed_waveform``. The
-    difference is that this holds the samples in memory for the next poll
-    of ``/api/visualizer/state`` instead of writing them to a file for a
-    second process to read.
+    A TTS engine calls :meth:`feed` with each block it plays, and the samples
+    are held in memory for the next poll of ``/api/visualizer/state`` rather
+    than written to a file for a second process to read.
     """
 
     def __init__(self) -> None:
@@ -108,9 +103,8 @@ def visualizer_state() -> dict:
     level = 0.0
     out_samples = [0.0] * SAMPLE_COUNT
     if fresh:
-        # A fresh waveform IS speech, the same rule ai-visualizer's own
-        # server.py applies: trust what is actually leaving the speakers
-        # over a phase reading that has not caught up yet.
+        # A fresh waveform IS speech: trust what is actually leaving the
+        # speakers over a phase reading that has not caught up yet.
         state = "speaking"
         padded = samples[-SAMPLE_COUNT:]
         out_samples = [0.0] * (SAMPLE_COUNT - len(padded)) + padded

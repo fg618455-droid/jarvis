@@ -1,33 +1,9 @@
 # Third-Party Notices
 
-Jarvis's own code is licensed under the terms in `LICENSE`. The components
-listed below are vendored from other projects under their own licences,
-which continue to apply to those files regardless of the licence on the
-rest of this repository.
-
-## ai-visualizer (AGPL-3.0-or-later)
-
-- **Source:** https://github.com/jaredrhod/ai-visualizer
-- **Author:** Jared Rhodenizer, Copyright (C) 2026
-- **Licence:** GNU Affero General Public License, version 3 or later. Full
-  text: https://www.gnu.org/licenses/agpl-3.0.html
-- **Location in this repository:** `src/jarvis/webui/visualizer/vendor/`
-- **What is vendored:** the face gallery (`index.html`), the shared bus
-  polling and rendering runtime (`core.js`), the four bundled faces
-  (`faces/board`, `faces/radial`, `faces/rain`, `faces/neural`), and their
-  static assets (`assets/face.png`, `assets/thinking.wav`).
-- **What changed:** `core.js` and the gallery `index.html` poll
-  `/api/visualizer/state` and `/api/visualizer/config` instead of
-  ai-visualizer's own `/state` and `/config`, because the face is served by
-  Jarvis's own control centre process rather than ai-visualizer's stdlib
-  HTTP server. No other line was changed; the AGPL header is unmodified in
-  every file. The face is reached over Jarvis's control centre, which the
-  AGPL treats as conveying under section 13 (the network-use clause) — a
-  user who can browse to the Face view can request the corresponding source
-  from the URL above.
-- **Font:** the bundled `assets/VT323-Regular.ttf` typeface is Peter Hull's
-  VT323, under the SIL Open Font License 1.1 (`assets/VT323-OFL.txt`), not
-  the AGPL — a separate licence from the surrounding ai-visualizer code.
+Jarvis's own code is licensed under the terms in `LICENSE`. The component
+listed below is vendored from another project under its own licence, which
+continues to apply to those files regardless of the licence on the rest of
+this repository.
 
 ## backtalk (AGPL-3.0-or-later)
 
@@ -66,16 +42,10 @@ rest of this repository.
 
 ## Licence boundary
 
-Both vendored components are reached from the main daemon process only over
-a local, loopback interface, not by direct import, and each is a separable
-program the AGPL's own terms already anticipate this way:
+The vendored component is reached from the main daemon process only over a
+local interface, not by direct import, and is a separable program the AGPL's
+own terms already anticipate this way:
 
-- The **ai-visualizer face** is served as its own set of static files and
-  two small JSON endpoints (`src/jarvis/webui/api/visualizer.py`,
-  `src/jarvis/webui/visualizer/state.py`). Nothing under
-  `src/jarvis/webui/visualizer/vendor/` imports Jarvis's own modules; the
-  Jarvis-side code that touches it reads live state and forwards it over
-  HTTP, and never imports the AGPL files themselves.
 - The **Kokoro engine**'s AGPL code (`kokoro_backtalk.py`) and its PyTorch
   dependency (`kokoro`) run only inside the sidecar subprocess
   (`kokoro_sidecar.py`), talked to over a stdin/stdout pipe by
@@ -84,14 +54,11 @@ program the AGPL's own terms already anticipate this way:
   `kokoro` package; the two processes exchange only synthesis requests and
   PCM audio as newline-delimited JSON messages.
 
-Both are therefore separate programs communicating over a local interface
-rather than one linked combination, the shape the AGPL's own FAQ describes
-as separate works rather than a derivative combination. Reaching either over
-the daemon's own interfaces (the control centre's network port for the
-face, the sidecar's local pipe for Kokoro) is "conveying" under AGPL section
-13, and each carries its own AGPL obligations independently: a user who can
-reach the Face view can request `ai-visualizer`'s source from the URL above,
-and a user running the Kokoro sidecar can request `backtalk`'s. Neither
-requires, and neither triggers, relicensing any other file in this
-repository. Piper and Chatterbox remain unaffected, since they carry no
-AGPL code at all.
+These are therefore separate programs communicating over a local interface
+rather than one linked combination, the shape the AGPL's own FAQ describes as
+separate works rather than a derivative combination. Reaching the sidecar
+over its local pipe is "conveying" under AGPL section 13, so a user running
+the Kokoro sidecar can request `backtalk`'s source from the URL above. It
+does not require, and does not trigger, relicensing any other file in this
+repository. Piper and Chatterbox remain unaffected, since they carry no AGPL
+code at all.

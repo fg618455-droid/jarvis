@@ -23,7 +23,6 @@ const STRINGS = {
     "face.microphone": "Microphone",
     "face.send": "Send",
     "face.customise": "Customise the face",
-    "face.whichFace": "Face",
     "face.size": "Size",
 
     "memory.nodes": "nodes",
@@ -443,7 +442,6 @@ const STRINGS = {
     "face.microphone": "Mikrofon",
     "face.send": "Senden",
     "face.customise": "Gesicht anpassen",
-    "face.whichFace": "Gesicht",
     "face.size": "Gr\u00f6\u00dfe",
 
     "memory.nodes": "Knoten",

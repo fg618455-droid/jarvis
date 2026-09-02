@@ -113,7 +113,6 @@ export const api = {
   tools: () => request("/api/tools"),
   refreshTools: () => request("/api/tools/refresh", { method: "POST" }),
 
-  visualizerConfig: () => request("/api/visualizer/config"),
   visualizerState: () => request("/api/visualizer/state"),
 
   mcpServers: () => request("/api/mcp/servers"),

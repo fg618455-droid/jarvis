@@ -182,9 +182,7 @@ allowed; reading one back is not.
 | `PUT /api/llm/routes` | Validate and replace generic route configuration while preserving unchanged masked credentials |
 | `GET /api/crew` | One reading of the NAS-hosted agent crew: recent activity, the agent roster with its tallies, a 14-day daily activity count, and when the reading was taken |
 | `POST /api/crew/chat` | Relay one message to one crew agent and return its reply |
-| `GET /api/visualizer/state` | The face's `idle\|listening\|thinking\|speaking` reading, a waveform, and the two ai-visualizer signals Jarvis never sets (`alert`, `loading`) |
-| `GET /api/visualizer/config` | The assistant's display name and the installed face gallery |
-| `GET /visualizer/`, `/visualizer/<path>` | The vendored, AGPL-3.0-licensed face gallery and its static assets, served from disk |
+| `GET /api/visualizer/state` | The face's `idle\|listening\|thinking\|speaking` reading, a waveform, and the two signals Jarvis never sets (`alert`, `loading`) |
 
 There is deliberately no `/api/telemetry` alias: `/api/status` is live
 session state and `/api/turns` is turn history, and conflating them would make

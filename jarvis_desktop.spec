@@ -32,9 +32,6 @@ datas = [
     # that folder relative to the module. Without it the bundled app answers
     # every page with a 404 while the API works perfectly.
     (str(src_path / 'jarvis' / 'webui' / 'static'), 'jarvis/webui/static'),
-    # The vendored, AGPL-3.0-licensed face/visualizer gallery, served from
-    # disk the same way. See THIRD_PARTY_NOTICES.md.
-    (str(src_path / 'jarvis' / 'webui' / 'visualizer' / 'vendor'), 'jarvis/webui/visualizer/vendor'),
 ]
 
 # Collect Piper TTS data files (espeak-ng-data is required for phonemization)

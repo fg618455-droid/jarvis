@@ -101,7 +101,6 @@
   --accent: #7dd3fc;
   --accent-soft: rgba(125, 211, 252, 0.12);
   --accent-line: rgba(125, 211, 252, 0.35);
-  --accent-glow: rgba(125, 211, 252, 0.22);
 
   /* Status. Each tone carries a fill and a border alongside its text
      colour, because a chip, a rail, and a meter all need the same reading
@@ -118,18 +117,10 @@
   --bad-soft: rgba(248, 113, 113, 0.12);
   --bad-line: rgba(248, 113, 113, 0.3);
 
-  /* The face and the rings around it. Restrained on purpose: the reference
-     is the atmosphere of a heads-up display, not its clutter. */
-  --hud-ring: rgba(125, 211, 252, 0.16);
-  --hud-ring-soft: rgba(125, 211, 252, 0.06);
+  /* The light the centre of the page is lit by, behind the face. The face
+     itself is drawn from the accent, so this is the room around it rather
+     than the thing in it. */
   --face-aura: rgba(125, 211, 252, 0.10);
-  --face-bed: #0a0b0e;
-  /* The faces are third-party pages that paint in their own colours, and
-     they are never edited. Rotating the framed result onto the theme's own
-     hue is how a face joins the page it sits in rather than glowing a
-     different colour at the centre of it. Presentation only: the vendored
-     code is untouched and still renders exactly what its author wrote. */
-  --face-tint: hue-rotate(48deg) saturate(0.85);
 
   --scrim: rgba(8, 9, 11, 0.72);
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
@@ -160,7 +151,6 @@
   --accent: #58d7ff;
   --accent-soft: rgba(88, 215, 255, 0.16);
   --accent-line: rgba(88, 215, 255, 0.45);
-  --accent-glow: rgba(88, 215, 255, 0.34);
 
   --ok: #34d399;
   --ok-soft: rgba(52, 211, 153, 0.14);
@@ -174,11 +164,7 @@
   --bad-soft: rgba(251, 113, 133, 0.14);
   --bad-line: rgba(251, 113, 133, 0.34);
 
-  --hud-ring: rgba(88, 215, 255, 0.26);
-  --hud-ring-soft: rgba(88, 215, 255, 0.1);
   --face-aura: rgba(88, 215, 255, 0.2);
-  --face-bed: #040810;
-  --face-tint: hue-rotate(44deg) saturate(1.15) brightness(1.05);
 
   --scrim: rgba(2, 5, 12, 0.78);
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.65);
