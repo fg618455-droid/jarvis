@@ -227,10 +227,6 @@
   overflow: hidden;
 }
 
-/* The circular motif, taken from the reference displays and kept to three
-   quiet rings. Concentric borders rather than a drawn graphic: they cost
-   nothing, scale with the face, and carry the theme's accent at a weight
-   that reads as atmosphere rather than as a gauge showing a value. */
 .face-shell {
   position: relative;
   display: grid;
@@ -238,53 +234,14 @@
   flex: none;
 }
 
-.face-rings {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  pointer-events: none;
-}
-
-.face-rings > span {
-  position: absolute;
-  border-radius: 50%;
-  border: 1px solid var(--hud-ring-soft);
-}
-
-.face-rings > span:nth-child(1) {
-  width: 118%;
-  height: 118%;
-  border-color: var(--hud-ring);
-}
-
-.face-rings > span:nth-child(2) {
-  width: 136%;
-  height: 136%;
-}
-
-.face-rings > span:nth-child(3) {
-  width: 160%;
-  height: 160%;
-  border-style: dashed;
-}
-
-/* The face itself is a third-party page with its own canvas and its own
-   palette, so it is framed rather than restyled. What harmonises it with
-   the theme is everything this side of the frame: the bed it sits on, the
-   aura behind it, the rings around it, and its size. */
-.face-frame {
+/* The face is drawn here rather than framed from somewhere else, so the ring,
+   the aura and the disc are one drawing made in one place instead of a
+   stylesheet decorating a foreign rectangle. Everything the eye reads as the
+   face is painted in `face.js`; all this rule owns is how large it is. */
+.face-canvas {
   display: block;
-  border: none;
-  border-radius: 50%;
-  background: var(--face-bed);
   width: var(--face-size);
   height: var(--face-size);
-  /* A face drawn in its own colours still belongs to this page if the light
-     around it is the page's own, and if its own light is rotated onto the
-     theme's hue on the way out of the frame. */
-  filter: var(--face-tint);
-  box-shadow: 0 0 0 1px var(--line-soft), 0 0 60px var(--face-aura);
 }
 
 .face-name {

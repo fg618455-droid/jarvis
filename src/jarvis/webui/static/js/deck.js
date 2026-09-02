@@ -130,6 +130,12 @@ export function mountDeck(root, { onOpenPanel } = {}) {
   }
 
   function paint() {
+    // The assistant is called after its wake word, which `/api/status` already
+    // reports. The face therefore reads its own name from the reading every
+    // widget is painted from rather than from an endpoint of its own.
+    const wakeWord = snapshot.status?.audio?.wake_word;
+    if (wakeWord) face.setName(wakeWord.charAt(0).toUpperCase() + wakeWord.slice(1));
+
     for (const widget of built) {
       try {
         widget.update(snapshot);
@@ -248,6 +254,9 @@ export function mountDeck(root, { onOpenPanel } = {}) {
       offStatus();
       offTurn();
       offPassive();
+      // The face paints itself and polls for its own reading, so removing the
+      // node it drew into is not enough to stop either.
+      face.destroy();
       mic.stop();
     },
   };

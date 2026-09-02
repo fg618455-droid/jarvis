@@ -260,60 +260,6 @@ class TestTheThemeIsPicked:
         assert page.locator("#theme").input_value() == other
 
 
-class TestTheFaceIsEditableOnItsOwn:
-    def test_the_face_is_chosen_from_this_interface(self, page, served):
-        """Picking a face is a control here rather than a page inside the frame."""
-        page.goto(served, wait_until="domcontentloaded")
-        page.wait_for_selector(".face-stage", state="visible")
-
-        page.locator(".face-settings-open").click()
-        page.wait_for_selector(".face-settings", state="visible", timeout=5000)
-
-        faces = page.locator(".face-settings [name='face'] option").evaluate_all(
-            "options => options.map(option => option.value)"
-        )
-        assert "board" in faces and "neural" in faces
-
-    def test_choosing_a_face_loads_that_face(self, page, served):
-        page.goto(served, wait_until="domcontentloaded")
-        page.wait_for_selector(".face-stage", state="visible")
-        page.locator(".face-settings-open").click()
-        page.wait_for_selector(".face-settings", state="visible")
-
-        page.select_option(".face-settings [name='face']", "radial")
-        page.wait_for_timeout(400)
-
-        assert "faces/radial" in page.locator(".face-frame").get_attribute("src")
-        assert not page.console_errors
-
-    def test_the_chosen_face_survives_a_reload(self, page, served):
-        page.goto(served, wait_until="domcontentloaded")
-        page.wait_for_selector(".face-stage", state="visible")
-        page.locator(".face-settings-open").click()
-        page.wait_for_selector(".face-settings", state="visible")
-        page.select_option(".face-settings [name='face']", "neural")
-        page.wait_for_timeout(300)
-
-        page.reload(wait_until="domcontentloaded")
-        page.wait_for_selector(".face-frame", state="visible")
-
-        assert "faces/neural" in page.locator(".face-frame").get_attribute("src")
-
-    def test_the_face_takes_its_size_from_this_interface(self, page, served):
-        page.goto(served, wait_until="domcontentloaded")
-        page.wait_for_selector(".face-stage", state="visible")
-        page.locator(".face-settings-open").click()
-        page.wait_for_selector(".face-settings", state="visible")
-        before = page.locator(".face-frame").bounding_box()["width"]
-
-        page.fill(".face-settings [name='size']", "420")
-        page.dispatch_event(".face-settings [name='size']", "input")
-        page.wait_for_timeout(300)
-
-        assert page.locator(".face-frame").bounding_box()["width"] != before
-        assert not page.console_errors
-
-
 class TestMotionStaysOptional:
     def test_a_reader_who_asked_for_less_motion_gets_none(self, browser, served):
         context = browser.new_context(reduced_motion="reduce")

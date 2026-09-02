@@ -514,52 +514,82 @@ so instead of showing a mode that is not running anywhere.
 ## The face
 
 A face that idles, listens, thinks, and speaks in step with the real
-conversation: the AGPL-3.0-licensed [ai-visualizer](https://github.com/jaredrhod/ai-visualizer)
-face gallery, vendored under `src/jarvis/webui/visualizer/vendor/` and
-served by this process rather than ai-visualizer's own stdlib HTTP server —
-see `THIRD_PARTY_NOTICES.md` for the licence terms this carries.
+conversation. It is one circle inside one ring, drawn by `static/js/face.js`
+into a canvas in the page.
 
 The face is the centre of the deck and is mounted once for as long as the
 page is open. Opening a panel does not rebuild it: a face rebuilt on every
-navigation would reload its frame, restart its animation, and blink at the
-reader each time they looked at a different reading.
+navigation would restart its animation and blink at the reader each time they
+looked at a different reading.
 
-One face is framed directly, at `/visualizer/faces/<id>/index.html`. Which
-one is a control on the deck rather than a page inside the frame, because
-reaching the gallery's own picker meant loading its index into the frame and
-choosing there, which put a second, differently-styled navigation inside the
-page.
+### What it draws
+
+The disc inside the ring is the reading, and how much of the ring it fills is
+what the state is. That matters more than it sounds: it is a channel that
+survives a reader who has asked for no motion, and with every animation off
+the four states are still four different pictures. A face that separated
+`listening` from `thinking` by the speed of a rotation would have nothing
+left to say to that reader, and reporting the state is the only reason this
+drawing exists.
+
+| Reading | The face shows |
+|---|---|
+| `idle` | The disc at rest, at just over half the ring, breathing slowly |
+| `listening` | The disc open to four fifths of the ring: the largest step on the scale, and the one that has to read across a room |
+| `thinking` | The disc back at rest with one mark travelling round the ring. One moving part rather than an orbit of them, parked at the top when nothing may move |
+| `speaking` | The disc at two thirds, its edge pushed by the block of audio the TTS engine last wrote to the speakers |
+
+A waveform may move the edge of the disc by at most a fourteenth of its
+radius. Past roughly a tenth an outline stops reading as a circle that is
+speaking and starts reading as a shape that is not a circle, and the samples
+arrive raw from the speakers, so they are normalised against their own peak
+and smoothed against their neighbours before they are drawn.
+
+Everything is painted from `var(--accent)`, read off the stylesheet rather
+than held in the module, so a theme drives the face for free and there is no
+second palette to keep in step with the first. The custom property is
+resolved when the theme changes rather than on every frame.
+
+`motionAllowed()` decides whether there is an animation loop at all. When the
+answer is no there is no loop: a new reading is the only thing that repaints,
+so the picture is genuinely still rather than animating slowly.
 
 ### Dressing it
 
-The face's own controls sit beside the face rather than in Settings. How the
-assistant looks while it is talking to you is a different kind of decision
-from which port the daemon binds, and it is made while looking at the thing
-it changes. Which face and how large are this browser's, in `localStorage`,
-the same way the theme is.
+How large the face is drawn is a control beside it rather than in Settings.
+How the assistant looks while it is talking to you is a different kind of
+decision from which port the daemon binds, and it is made while looking at
+the thing it changes. The size is this browser's, in `localStorage`, the same
+way the theme is. There is nothing else to choose: there is one face, and it
+is ours.
 
-The vendored pages are never edited, so everything that makes a face belong
-to the interface is on this side of the frame: the bed it sits on, the aura
-behind it, three quiet concentric rings, its size, and `--face-tint`. That
-last one is a filter, named per theme, that rotates the framed result onto
-the theme's own hue on the way out of the frame. It is presentation only:
-the third-party code is untouched and still renders exactly what its author
-wrote. Without it a face painted in its own palette glows a different colour
-at the centre of a page built around one accent.
+### Where the reading comes from
 
-The face polls
-`/api/visualizer/state` roughly eight times a second and `/api/visualizer/config`
-once, both answered by `jarvis.webui.visualizer.state`, which derives the
-reading entirely from Jarvis's own live objects:
+The face polls `/api/visualizer/state` roughly eight times a second, answered
+by `jarvis.webui.visualizer.state`, which derives the reading entirely from
+Jarvis's own live objects:
 
 | Reading | Source |
 |---|---|
 | `state` | The runtime phase (`jarvis.runtime.state.Phase`), mapped to `idle`, `listening`, `thinking`, or `speaking`. `capturing` reads as listening; `transcribing`, `thinking`, and `tool` all read as thinking; `starting` and `dictating` read as idle |
-| `level`, `samples` | The most recent block of audio a TTS engine wrote to the speakers, fed in by `PiperTTS` and `KokoroTTS` as they play — the in-process replacement for ai-visualizer's own `.voice_waveform` signal file. A waveform older than 0.6 seconds is stale and is not shown; when the samples are fresh they are trusted as speech even if the phase reading has not caught up yet, the same rule ai-visualizer's own server.py applies to its signal files |
+| `level`, `samples` | The most recent block of audio a TTS engine wrote to the speakers, fed in by `PiperTTS` and `KokoroTTS` as they play. A waveform older than 0.6 seconds is stale and is not shown; when the samples are fresh they are trusted as speech even if the phase reading has not caught up yet |
 | `alert`, `loading` | Always `false`. Jarvis has no attention-signal concept and no TTS engine plays a thinking sound separate from the reply itself, so nothing here would ever set them |
 
 No signal files are read or written, and no second HTTP server runs: one
 process, the same principle every other view in this spec follows.
+
+A hidden page stops asking rather than merely stopping drawing. The server
+closes every connection it answers, so a poll is a new socket rather than a
+reuse of one and the operating system holds each closed socket for minutes
+afterwards. Eight a second is affordable while someone is watching the face
+and is not affordable for a tab left behind another window all day. Returning
+to the page takes a reading at once rather than waiting out the skipped tick.
+
+What the face draws is the assistant's own reading; the words beside it come
+from the event stream instead, because that is the only source that can say
+this page has lost the daemon. A poll that fails and an assistant that is
+idle look identical from here, so a failed poll holds the last honest reading
+rather than dropping the face to idle.
 
 ## Passive record
 
