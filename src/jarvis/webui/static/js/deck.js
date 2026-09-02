@@ -100,14 +100,19 @@ export function mountDeck(root, { onOpenPanel } = {}) {
   const snapshot = {};
 
   /* One source failing is not the deck failing. Every reading is fetched
-     independently and a rejection leaves that widget on its last honest
-     value rather than blanking the whole rail. */
+     independently, a rejection leaves that widget on its last honest value
+     rather than blanking the whole rail, and each one is painted the moment
+     it lands. Painting once at the end instead would let the slowest of the
+     nine decide when any of them is shown, and a source that never answers
+     at all — a machine on the network that is not at home — would mean none
+     of them ever were. */
   async function into(key, call) {
     try {
       snapshot[key] = await call();
     } catch {
       /* The widget keeps showing nothing rather than showing a guess. */
     }
+    paint();
   }
 
   async function takeReading() {
@@ -126,7 +131,6 @@ export function mountDeck(root, { onOpenPanel } = {}) {
       into("passive", () => api.passive("", 1)),
       into("briefing", () => api.briefing()),
     ]);
-    paint();
   }
 
   function paint() {
@@ -149,7 +153,7 @@ export function mountDeck(root, { onOpenPanel } = {}) {
      already takes one reading for everyone watching. The deck therefore
      asks once and then follows the event the daemon publishes, rather than
      adding its own timer against a NAS. */
-  into("crew", () => api.crew()).then(paint);
+  into("crew", () => api.crew());
 
   const offCrew = live.on("crew", (reading) => {
     snapshot.crew = reading;

@@ -228,6 +228,10 @@ class WebUIServer:
         if self._server is not None:
             try:
                 self._server.shutdown()
+                # Shutdown stops the accept loop; the listening socket is
+                # only given back by closing it, and a port still bound is a
+                # port the next start cannot have.
+                self._server.server_close()
             except Exception as exc:
                 debug_log(f"webui shutdown failed: {exc}", "webui")
         if self._thread is not None:

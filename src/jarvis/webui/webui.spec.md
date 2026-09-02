@@ -313,6 +313,13 @@ direction: it is read once and then follows the `crew` event, because the
 daemon already takes one reading for everyone watching and the machine it
 reaches is often asleep.
 
+Each of those readings is fetched independently and painted the moment it
+lands, rather than all of them together once the last one has. A source that
+never answers is not the same as one that fails: it never rejects, so a page
+that waits for all of them waits for ever and shows nothing at all. One
+machine on the network that is not at home is not allowed to be a blank
+interface.
+
 A widget never invents a reading. A source that failed or has not answered
 yet shows an em dash, because a zero meaning "no answer" and a zero meaning
 "none" are very different facts on the security widget.

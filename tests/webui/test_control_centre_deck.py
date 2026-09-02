@@ -188,6 +188,51 @@ class TestTheFaceIsThePage:
         assert not page.console_errors
 
 
+class TestOneSourceFailingIsNotTheDeckFailing:
+    """Nine readings are fetched for the widgets, independently.
+
+    A source that answers with an error already leaves its widget on nothing
+    rather than blanking the rail. A source that simply never answers is the
+    same fact and has to read the same way: a page whose widgets all wait for
+    the slowest of nine is a page that shows nothing at all whenever one of
+    them is a machine that is not at home.
+    """
+
+    def test_a_reading_that_never_answers_does_not_hold_up_the_others(
+        self, page, served,
+    ):
+        # One of the nine the deck asks for together. Held rather than
+        # refused, because a refusal is the case that already works.
+        page.route("**/api/briefing*", lambda route: None)
+
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
+        page.wait_for_selector(
+            ".widget[data-panel='memory'] .num:not(:text('—'))", timeout=20000,
+        )
+
+        answered = page.evaluate(
+            """() => ({
+                memory: document.querySelector(
+                    '.widget[data-panel="memory"] .num').textContent.trim(),
+                exchange: document.querySelector(
+                    '.widget[data-panel="conversation"]').dataset.empty,
+                briefing: document.querySelector(
+                    '.widget[data-panel="briefing"] .num').textContent.trim(),
+            })"""
+        )
+
+        assert answered["memory"] not in ("", "—"), (
+            "a widget whose own source answered is still empty"
+        )
+        assert answered["exchange"] in ("true", "false"), (
+            "the deck never painted, so it never worked out what it holds"
+        )
+        assert answered["briefing"] == "—", (
+            "the widget whose source said nothing invented a reading"
+        )
+        page.unroute_all(behavior="ignoreErrors")
+
+
 class TestAPanelSaysWhenItsViewIsIn:
     """A panel exists before the view it holds does.
 
