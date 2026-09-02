@@ -349,6 +349,17 @@ a:hover {
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 
+/* A row of single readings: a name and one number each. These are the
+   smallest card there is, and they pack far tighter than the general grid,
+   which is sized for cards holding a table or a routing chain. Left at that
+   minimum inside a panel a third of the window wide, four readings become
+   four stacked rows spending two hundred pixels on four integers. */
+.readings {
+  display: grid;
+  gap: var(--s3);
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+}
+
 /* A pair of cards that hold unrelated readings, so they size to what they
    hold. Stretched to match, an empty one becomes a tall box of nothing
    beside a full one. */

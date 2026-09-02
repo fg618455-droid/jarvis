@@ -42,7 +42,7 @@ export async function mount(root) {
     ]),
   ]);
 
-  const statsRow = el("div", { class: "grid" });
+  const statsRow = el("div", { class: "readings" });
   const treeCard = el("section", { class: "card" });
   const detailCard = el("section", { class: "card" });
   const diaryCard = el("section", { class: "card" });

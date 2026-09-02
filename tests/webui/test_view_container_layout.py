@@ -198,6 +198,41 @@ class TestTheContainerPicksTheLayout:
         assert wide["cells"] == narrow["cells"], "a stacked table dropped a reading"
 
 
+class TestSmallReadingsPackIntoAPanel:
+    """A card holding one integer is not the size of a card holding a table.
+
+    Given the general grid's minimum, the four memory readings each claimed a
+    row of their own inside a panel a third of the window wide, spending most
+    of the panel's first screen on four numbers before anything the view is
+    actually for. They are their own component now, sized for what they hold.
+    """
+
+    def test_four_single_readings_do_not_take_four_rows(self, browser, served):
+        context = browser.new_context(viewport={"width": 1600, "height": 950})
+        page = context.new_page()
+        try:
+            page.goto(f"{served}/#/memory", wait_until="domcontentloaded")
+            page.wait_for_selector(".panel-body .readings", state="visible", timeout=8000)
+            page.wait_for_timeout(700)
+
+            shape = page.evaluate(
+                """() => {
+                    const row = document.querySelector('.panel-body .readings');
+                    const tops = [...row.children].map(
+                        (card) => Math.round(card.getBoundingClientRect().top)
+                    );
+                    return { cards: tops.length, rows: new Set(tops).size };
+                }"""
+            )
+
+            assert shape["cards"] >= 4, "the memory readings did not render"
+            assert shape["rows"] < shape["cards"], (
+                f"{shape['cards']} single readings stacked into {shape['rows']} rows"
+            )
+        finally:
+            context.close()
+
+
 class TestViewLayoutIsAskedOfTheContainer:
     """The stylesheet rule behind it, so the direction survives the next edit.
 
