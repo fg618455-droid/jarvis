@@ -421,29 +421,29 @@ class TestARailReadsAsReadingsRatherThanAsAForm:
 
         assert clipped == [], f"widget names cut off by their own tile: {clipped}"
 
-    def test_an_odd_last_tile_takes_the_width_rather_than_leaving_a_gap(
-        self, page, served
-    ):
+    def test_no_tile_sits_beside_a_gap(self, page, served):
+        """A tile with empty space next to it reads as one that failed to
+        load rather than as the end of the list."""
         self._deck(page, served)
 
         shape = page.evaluate(
             """() => {
                 const tiles = document.querySelector('.widget-tiles');
+                const row = Math.round(tiles.getBoundingClientRect().width);
                 return {
+                    row,
+                    narrow: [...tiles.children]
+                        .map((tile) => Math.round(tile.getBoundingClientRect().width))
+                        .filter((width) => width < row - 2).length,
                     count: tiles.children.length,
-                    row: Math.round(tiles.getBoundingClientRect().width),
-                    last: Math.round(
-                        tiles.lastElementChild.getBoundingClientRect().width
-                    ),
                 };
             }"""
         )
 
-        if shape["count"] % 2 == 0:
-            pytest.skip("an even number of tiles leaves no gap to fill")
-        assert shape["last"] == pytest.approx(shape["row"], abs=2), (
-            f"the last of {shape['count']} tiles is {shape['last']}px in a "
-            f"{shape['row']}px row, so it sits beside a gap"
+        assert shape["count"], "the rail carries no tiles at all"
+        assert not shape["narrow"], (
+            f"{shape['narrow']} of {shape['count']} tiles are narrower than the "
+            f"{shape['row']}px rail they are in"
         )
 
 
@@ -527,8 +527,17 @@ class TestTheDeckFillsTheHeightItTakes:
         # The stage's own padding, and nothing more.
         assert below <= 32, f"{below}px of dead air under the dock"
 
-    def test_a_card_with_nothing_to_show_does_not_take_the_room(self, page, served):
-        """The failure this catches: an empty rail traded for an empty card."""
+    def test_the_exchange_takes_its_own_height_with_a_turn_or_without(
+        self, page, served,
+    ):
+        """The failure this catches: an empty rail traded for an empty card.
+
+        The exchange is three lines that do not wrap, so it is the same three
+        lines tall whether it is showing a turn or saying there has not been
+        one. Given a third of the rail either way it is a tall box holding a
+        line of text, which is the hole the rail was packed to close with a
+        border drawn round it.
+        """
         self._deck(page, served)
 
         measured = page.evaluate(
@@ -537,26 +546,27 @@ class TestTheDeckFillsTheHeightItTakes:
                 const rail = document.querySelector('.deck-rail-right');
                 const height = () => Math.round(card.getBoundingClientRect().height);
                 const was = card.dataset.empty;
+                const seen = {};
 
-                card.dataset.empty = 'true';
-                void rail.offsetHeight;
-                const empty = height();
-
-                card.dataset.empty = 'false';
-                void rail.offsetHeight;
-                const full = height();
+                for (const state of ['true', 'false']) {
+                    card.dataset.empty = state;
+                    void rail.offsetHeight;
+                    seen[state] = height();
+                }
 
                 card.dataset.empty = was;
-                return { empty, full, rail: Math.round(rail.getBoundingClientRect().height) };
+                return { ...seen, rail: Math.round(rail.getBoundingClientRect().height) };
             }"""
         )
 
-        assert measured["empty"] < measured["rail"] / 3, (
-            f"an empty card takes {measured['empty']}px of a "
-            f"{measured['rail']}px rail"
-        )
-        assert measured["full"] > measured["empty"], (
-            "the card does not grow even when it has a turn to show"
+        for state, taken in (("with no turn", measured["true"]), ("with one", measured["false"])):
+            assert taken < measured["rail"] / 3, (
+                f"the exchange {state} takes {taken}px of a "
+                f"{measured['rail']}px rail"
+            )
+        assert measured["true"] == measured["false"], (
+            "the rail is laid out differently for a card that is the same height, "
+            "so the readings under it move the first time anyone speaks"
         )
 
     def test_a_tile_is_never_taller_than_a_card(self, page, served):

@@ -39,51 +39,31 @@
   padding-right: var(--s1);
 }
 
-/* The right rail is the last exchange over a block of compact tiles, and
-   which of the two grows depends on which has something to show. With a turn
-   in it the exchange is the reading worth the room and the tiles stay
-   compact underneath. */
+/* The right rail is the last exchange over the readings underneath it, and
+   the exchange takes its own height whether or not there has been a turn.
+   It is three lines that do not wrap, so it is the same three lines tall
+   either way: given a share of the rail it would be a tall box holding one
+   line of text, which is the hole this rail was packed to close with a
+   border drawn round it. The readings take the whole slack instead, and
+   because the exchange never changes size the rail never rearranges itself
+   the first time anyone speaks. */
 .deck-rail-right {
-  grid-template-rows: minmax(0, 1fr) auto;
-}
-
-/* With no turn to show, the card refuses the room: told to stretch anyway it
-   becomes a third of a rail of empty box, which is the hole it was meant to
-   close wearing a border. The room does not become page, though. It goes to
-   the five readings underneath, which each have a number to show and are
-   given an equal share of the rail exactly as the cards opposite are. In one
-   column, because five shares of a rail is a card's worth of height each and
-   two columns of that is a grid of boxes rather than a rail of readings. */
-.deck-rail-right:has(.widget[data-panel="conversation"][data-empty="true"]) {
   grid-template-rows: auto minmax(0, 1fr);
 }
 
-.deck-rail-right:has(.widget[data-panel="conversation"][data-empty="true"])
-  .widget-tiles {
-  grid-template-columns: 1fr;
-  grid-auto-rows: 1fr;
-  align-content: stretch;
-}
-
-/* The compact readings at the foot of a rail: too small to deserve a card
-   each, too different to merge into one. A pair of columns keeps five of
-   them under an exchange that is using the rest of the rail, without any of
-   them shrinking to a number with no name on it. Nothing is stretched here:
-   the exchange above has the room, and a tile given the height of two is an
-   empty box rather than a generous one. */
+/* The readings at the foot of the rail: too small to deserve a card each,
+   too different to merge into one. They take the room the exchange does not,
+   in an equal share each, exactly as the cards opposite do — and in one
+   column, because five shares of a rail is a card's worth of height apiece
+   and two columns of that is a grid of boxes rather than a rail of
+   readings. */
 .widget-tiles {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
+  grid-auto-rows: 1fr;
   gap: var(--s2);
-  align-content: start;
+  align-content: stretch;
   min-height: 0;
-}
-
-/* An odd number of tiles leaves the last one beside a gap, which reads as a
-   tile that failed to load rather than as the end of the list. It takes the
-   width instead. */
-.widget-tiles > :last-child:nth-child(odd) {
-  grid-column: 1 / -1;
 }
 
 /* ── Widgets ─────────────────────────────────────────────────────────── */
@@ -589,14 +569,14 @@
     overflow: visible;
   }
 
-  /* Two columns is the right answer in a 320px rail and the wrong one across
-     a whole window, where it makes five readings into five half-page boxes. */
+  /* One column is the right answer in a 320px rail, where it is a rail of
+     readings, and the wrong one across a whole window, where it makes five
+     readings into five full-width bands. Folded out here they are a row and
+     take their own height: there is no rail left for them to share. */
   .widget-tiles {
     grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  }
-
-  .widget-tiles > :last-child:nth-child(odd) {
-    grid-column: auto;
+    grid-auto-rows: auto;
+    align-content: start;
   }
 }
 

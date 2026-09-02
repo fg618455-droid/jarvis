@@ -269,7 +269,7 @@ assistant work.
 |---|---|
 | Left rail | Today, System, Memory, Security, and the passive record. What the assistant knows and what state it is in |
 | Centre | The face, the assistant's name, what it is doing in words, and the dock that speaks or types to it |
-| Right rail | The last exchange, then Tools, MCP servers, LLM routes, Mission Control, and Logs as tiles: two compact columns under an exchange that has the room, one column sharing the rail when it has not. How the machine is wired |
+| Right rail | The last exchange, then Tools, MCP servers, LLM routes, Mission Control, and Logs as tiles under it, one to a row. How the machine is wired |
 | Panel | Whichever detail is open, over the right rail |
 
 The deck is sized against the window rather than flowed down it. Only a rail
@@ -280,15 +280,24 @@ one thing this layout exists to prevent.
 Being sized against the window, a rail has to fill it. Every card in a rail
 takes an equal share of its height, so the scale of a card is the rail
 divided by what is in it rather than a gap someone left underneath. Two
-things are exempt. A card with nothing to show refuses the room: the last
-exchange before there has been one takes its own height, because an empty
-card stretched over a third of a rail is the same hole with a border drawn
-round it, and what it refuses goes to the readings under it rather than back
-to the page. And a tile is never given more room than a card beside it: it
-carries one number where a card carries a number and a line about it, so it
-comes out shorter at every window the deck is used at. Below 1240px the
-right rail stops being a rail and folds into a row under the deck, where
-none of this applies.
+things are exempt.
+
+The last exchange takes its own height rather than a share. It is three
+lines that do not wrap, so it is the same three lines tall whether it is
+showing a turn or saying there has not been one; given a share of the rail
+it would be a tall box holding one line of text, which is the hole the rail
+was packed to close with a border drawn round it. What it does not take goes
+to the readings under it rather than back to the page, and because its
+height never changes the rail never rearranges itself the first time anyone
+speaks.
+
+And a tile is never given more room than a card beside it: it carries one
+number where a card carries a number and a line about it, so it comes out
+shorter at every window the deck is used at.
+
+Below 1240px the right rail stops being a rail and folds into a row under
+the deck. There is no height there to share, so the tiles lay out across the
+width and take their own.
 
 ### Widgets
 
