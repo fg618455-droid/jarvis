@@ -445,7 +445,19 @@ class TestAWidgetReadsTheSameSourceAsItsPanel:
     def test_the_memory_widget_counts_the_nodes_its_panel_counts(self, page, served):
         page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
         page.wait_for_selector(".deck-rail-left .widget", state="visible", timeout=5000)
-        page.wait_for_timeout(900)
+        # Wait for the reading rather than for a length of time. A widget that
+        # has not been painted yet still shows the em dash it starts with, and
+        # stripping the non-digits out of that leaves an empty string that
+        # reads as a confident zero: the exact failure this test exists to
+        # catch, arriving as a false one under load.
+        page.wait_for_function(
+            """() => {
+                const widget = document.querySelector('.widget[data-panel="memory"]');
+                const num = widget && widget.querySelector('.num');
+                return num && /\\d/.test(num.textContent);
+            }""",
+            timeout=8000,
+        )
 
         graphed = page.evaluate(
             """async () => {

@@ -36,12 +36,15 @@
     />
   </head>
   <body>
+    <!-- Three kinds of thing, and they are grouped as three rather than run
+         together into one strip: what the assistant is doing right now, two
+         readings about it, and the controls that change this page. -->
     <header class="header">
-      <div class="brand">
-        <span class="dot" id="phase-dot" data-phase="starting"></span>
-        <span id="brand-name">Jarvis</span>
-      </div>
-      <div class="header-right">
+      <div class="header-group header-live">
+        <span class="brand">
+          <span class="dot" id="phase-dot" data-phase="starting"></span>
+          <span id="brand-name">Jarvis</span>
+        </span>
         <span id="phase-text" class="muted"></span>
         <span id="passive-indicator" class="passive-indicator" hidden>
           <span class="passive-dot"></span>
@@ -51,6 +54,8 @@
           <span class="conversation-dot"></span>
           <span id="conversation-indicator-text"></span>
         </span>
+      </div>
+      <div class="header-group header-readings">
         <span class="header-metric">
           <span class="label" id="uptime-label"></span>
           <span class="num" id="uptime-value">—</span>
@@ -59,8 +64,10 @@
           <span class="label" id="last-turn-label"></span>
           <span class="num" id="last-turn-value">—</span>
         </span>
-        <select id="theme" aria-label="Theme" style="width: auto"></select>
-        <select id="language" aria-label="Language" style="width: auto"></select>
+      </div>
+      <div class="header-group header-controls">
+        <select id="theme" aria-label="Theme"></select>
+        <select id="language" aria-label="Language"></select>
         <button
           type="button"
           class="settings-button"

@@ -181,6 +181,27 @@ def page(browser, served):
     context.close()
 
 
+def _painted(page) -> None:
+    """Wait until the stylesheet has actually applied.
+
+    Measuring before it has is the one way this whole file can lie: every
+    element reports no focus ring and no colour, and the sweep reads that as
+    an interface with no contrast anywhere rather than as a page that has not
+    finished loading. A token resolving is the cheapest proof that the
+    cascade is in place.
+    """
+    page.wait_for_selector("main", state="visible", timeout=5000)
+    page.wait_for_function(
+        """() => {
+            const accent = getComputedStyle(document.documentElement)
+                .getPropertyValue('--accent').trim();
+            return accent.length > 0;
+        }""",
+        timeout=5000,
+    )
+    page.wait_for_timeout(600)
+
+
 def _themes(page, served) -> list[str]:
     page.goto(served, wait_until="domcontentloaded")
     found = page.evaluate(THEMES_FROM_SOURCE)
@@ -294,8 +315,7 @@ class TestTextClearsItsSurfaceInEveryTheme:
     @pytest.mark.parametrize("view", VIEWS)
     def test_no_reading_falls_under_its_floor(self, page, served, view):
         page.goto(f"{served}/#/{view}", wait_until="domcontentloaded")
-        page.wait_for_selector("main", state="visible", timeout=5000)
-        page.wait_for_timeout(600)
+        _painted(page)
 
         failures = {}
         for theme in page.evaluate(THEMES_FROM_SOURCE):
@@ -322,8 +342,7 @@ class TestEveryFocusableThingSaysWhereFocusIs:
     @pytest.mark.parametrize("view", ["deck", "settings", "mcp", "llm-routes", "logs"])
     def test_a_focused_control_is_visibly_ringed(self, page, served, view):
         page.goto(f"{served}/#/{view}", wait_until="domcontentloaded")
-        page.wait_for_selector("main", state="visible", timeout=5000)
-        page.wait_for_timeout(600)
+        _painted(page)
 
         results = page.evaluate(FOCUS_SWEEP)
         assert results, f"{view} offered nothing focusable"
@@ -338,8 +357,7 @@ class TestEveryFocusableThingSaysWhereFocusIs:
     @pytest.mark.parametrize("view", ["deck", "settings", "mcp", "llm-routes", "logs"])
     def test_the_ring_is_legible_against_what_it_sits_on(self, page, served, view):
         page.goto(f"{served}/#/{view}", wait_until="domcontentloaded")
-        page.wait_for_selector("main", state="visible", timeout=5000)
-        page.wait_for_timeout(600)
+        _painted(page)
 
         results = page.evaluate(FOCUS_SWEEP)
         faint = [
