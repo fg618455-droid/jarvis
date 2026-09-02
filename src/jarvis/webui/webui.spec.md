@@ -269,13 +269,26 @@ assistant work.
 |---|---|
 | Left rail | Today, System, Memory, Security, and the passive record. What the assistant knows and what state it is in |
 | Centre | The face, the assistant's name, what it is doing in words, and the dock that speaks or types to it |
-| Right rail | The last exchange, then Tools, MCP servers, LLM routes, Mission Control, and Logs as compact tiles. How the machine is wired |
+| Right rail | The last exchange, then Tools, MCP servers, LLM routes, Mission Control, and Logs as tiles: two compact columns under an exchange that has the room, one column sharing the rail when it has not. How the machine is wired |
 | Panel | Whichever detail is open, over the right rail |
 
 The deck is sized against the window rather than flowed down it. Only a rail
 and an open panel's body scroll: a deck that grew past the bottom of the
 screen would put the face somewhere you have to scroll back to, which is the
 one thing this layout exists to prevent.
+
+Being sized against the window, a rail has to fill it. Every card in a rail
+takes an equal share of its height, so the scale of a card is the rail
+divided by what is in it rather than a gap someone left underneath. Two
+things are exempt. A card with nothing to show refuses the room: the last
+exchange before there has been one takes its own height, because an empty
+card stretched over a third of a rail is the same hole with a border drawn
+round it, and what it refuses goes to the readings under it rather than back
+to the page. And a tile is never given more room than a card beside it: it
+carries one number where a card carries a number and a line about it, so it
+comes out shorter at every window the deck is used at. Below 1240px the
+right rail stops being a rail and folds into a row under the deck, where
+none of this applies.
 
 ### Widgets
 

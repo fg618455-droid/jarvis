@@ -40,32 +40,37 @@
 }
 
 /* The right rail is the last exchange over a block of compact tiles, and
-   which of the two grows depends on which has something to show. A card with
-   no turn in it yet has nothing to distribute, so it takes its own height and
-   the tiles take the slack: otherwise an empty rail is traded for an empty
-   card, which is the same hole with a border around it. */
+   which of the two grows depends on which has something to show. With a turn
+   in it the exchange is the reading worth the room and the tiles stay
+   compact underneath. */
 .deck-rail-right {
   grid-template-rows: minmax(0, 1fr) auto;
 }
 
-/* With no turn to show, nothing in this rail has anything to grow into: the
-   card would become a tall empty box and the tiles would become five of them,
-   which is the same hole with borders drawn round it. Both take their own
-   height instead, and what is left over is simply the page. The two rails
-   being different lengths is asymmetry, which this deck is built on; a card
-   claiming room it cannot fill is a defect. */
+/* With no turn to show, the card refuses the room: told to stretch anyway it
+   becomes a third of a rail of empty box, which is the hole it was meant to
+   close wearing a border. The room does not become page, though. It goes to
+   the five readings underneath, which each have a number to show and are
+   given an equal share of the rail exactly as the cards opposite are. In one
+   column, because five shares of a rail is a card's worth of height each and
+   two columns of that is a grid of boxes rather than a rail of readings. */
 .deck-rail-right:has(.widget[data-panel="conversation"][data-empty="true"]) {
-  grid-template-rows: auto auto;
-  align-content: start;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.deck-rail-right:has(.widget[data-panel="conversation"][data-empty="true"])
+  .widget-tiles {
+  grid-template-columns: 1fr;
+  grid-auto-rows: 1fr;
+  align-content: stretch;
 }
 
 /* The compact readings at the foot of a rail: too small to deserve a card
    each, too different to merge into one. A pair of columns keeps five of
-   them inside one screen without any of them shrinking to a number with no
-   name on it. */
-/* Tiles are never stretched. A tile is one number and its name, and a tile
-   given three times the height it needs is an empty box rather than a
-   generous one. */
+   them under an exchange that is using the rest of the rail, without any of
+   them shrinking to a number with no name on it. Nothing is stretched here:
+   the exchange above has the room, and a tile given the height of two is an
+   empty box rather than a generous one. */
 .widget-tiles {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -384,6 +384,10 @@ class TestTheDeckFillsTheHeightItTakes:
     that, but only if a card that has nothing to show refuses the room rather
     than growing into a tall empty box, which is the same hole with a border
     drawn round it.
+
+    Both rails, at the widths where both are rails. Below 1240px the right one
+    folds into a row under the deck and is a different component, so a
+    measurement taken there says nothing about the one taken here.
     """
 
     def _deck(self, page, served):
@@ -391,19 +395,54 @@ class TestTheDeckFillsTheHeightItTakes:
         page.wait_for_selector(".widget-tiles", state="visible", timeout=5000)
         page.wait_for_timeout(500)
 
-    def test_a_rail_of_readings_reaches_the_bottom_of_the_deck(self, page, served):
+    @pytest.mark.parametrize("rail", [".deck-rail-left", ".deck-rail-right"])
+    def test_a_rail_of_readings_reaches_the_bottom_of_the_deck(
+        self, page, served, rail,
+    ):
         self._deck(page, served)
 
-        left = page.evaluate(
-            """() => {
-                const rail = document.querySelector('.deck-rail-left');
-                const cards = [...rail.querySelectorAll(':scope > .widget')];
-                const last = cards[cards.length - 1].getBoundingClientRect();
-                return Math.round(rail.getBoundingClientRect().bottom - last.bottom);
-            }"""
+        empty = page.evaluate(
+            """(selector) => {
+                const rail = document.querySelector(selector);
+                const kids = [...rail.children];
+                const box = rail.getBoundingClientRect();
+                const last = kids[kids.length - 1].getBoundingClientRect();
+                return Math.round(box.bottom - last.bottom);
+            }""",
+            rail,
         )
 
-        assert left <= 4, f"{left}px of the left rail is left empty under its last card"
+        assert empty <= 4, f"{empty}px of {rail} is left empty under its last card"
+
+    @pytest.mark.parametrize("rail", [".deck-rail-left", ".deck-rail-right"])
+    def test_a_rail_leaves_no_hole_between_its_cards_either(
+        self, page, served, rail,
+    ):
+        """Slack moved into the middle of a rail is the same slack.
+
+        A rail that spaces its cards apart to reach the bottom passes the
+        measurement above while reading exactly as it did: one block at the
+        top, one at the foot, and the hole between them.
+        """
+        self._deck(page, served)
+
+        biggest = page.evaluate(
+            """(selector) => {
+                const kids = [...document.querySelector(selector).children];
+                let widest = 0;
+                for (let n = 1; n < kids.length; n += 1) {
+                    widest = Math.max(widest, Math.round(
+                        kids[n].getBoundingClientRect().top
+                        - kids[n - 1].getBoundingClientRect().bottom,
+                    ));
+                }
+                return widest;
+            }""",
+            rail,
+        )
+
+        # The rail's own gap, and nothing more.
+        assert biggest <= 24, f"a {biggest}px hole between two cards of {rail}"
 
     def test_the_dock_stands_on_the_floor_of_the_stage(self, page, served):
         self._deck(page, served)
@@ -451,16 +490,30 @@ class TestTheDeckFillsTheHeightItTakes:
             "the card does not grow even when it has a turn to show"
         )
 
-    def test_the_tiles_are_never_stretched(self, page, served):
-        """A tile is one number and its name; three times that height is a box."""
+    def test_a_tile_is_never_taller_than_a_card(self, page, served):
+        """A tile carries less than a card, so it is never given more room.
+
+        Measured against the cards beside it rather than against a number:
+        both are a share of the same rail, so the one carrying one reading has
+        to come out under the one carrying a reading and a line about it at
+        every window this deck is used at.
+        """
         self._deck(page, served)
 
-        tallest = page.evaluate(
-            """() => Math.max(...[...document.querySelectorAll('.widget-tile')]
-                .map(tile => tile.getBoundingClientRect().height))"""
+        measured = page.evaluate(
+            """() => ({
+                tile: Math.max(...[...document.querySelectorAll('.widget-tile')]
+                    .map((tile) => tile.getBoundingClientRect().height)),
+                card: Math.min(...[...document.querySelectorAll(
+                    '.deck-rail-left > .widget')]
+                    .map((card) => card.getBoundingClientRect().height)),
+            })"""
         )
 
-        assert tallest < 120, f"a tile grew to {round(tallest)}px"
+        assert measured["tile"] <= measured["card"], (
+            f"a tile grew to {round(measured['tile'])}px beside a "
+            f"{round(measured['card'])}px card"
+        )
 
 
 class TestAStatusChipIsTonedByWhatItSays:
