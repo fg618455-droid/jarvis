@@ -217,11 +217,15 @@ class TestTheFaceIsSizedFromThisInterface:
             page.wait_for_selector(".face-settings", state="visible")
             before = page.locator(".face-canvas").bounding_box()["width"]
 
-            page.fill(".face-settings [name='size']", "460")
+            # Downwards, so the assertion holds in a window too narrow to
+            # grant a larger face: the cap can refuse to grow it and can never
+            # refuse to shrink it.
+            page.fill(".face-settings [name='size']", "200")
             page.dispatch_event(".face-settings [name='size']", "input")
             page.wait_for_timeout(300)
 
-            assert page.locator(".face-canvas").bounding_box()["width"] != before
+            after = page.locator(".face-canvas").bounding_box()["width"]
+            assert after < before, f"the face stayed at {before}px"
         finally:
             context.close()
 

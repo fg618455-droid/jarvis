@@ -344,6 +344,93 @@ class TestARailReadsAsReadingsRatherThanAsAForm:
         )
 
 
+class TestTheDeckFillsTheHeightItTakes:
+    """The deck is sized against the window, so it has to fill it.
+
+    Packed from the top, the rails left the bottom of the deck empty and the
+    whole page read as top-weighted with a hole underneath. Distributing fixes
+    that, but only if a card that has nothing to show refuses the room rather
+    than growing into a tall empty box, which is the same hole with a border
+    drawn round it.
+    """
+
+    def _deck(self, page, served):
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
+        page.wait_for_selector(".widget-tiles", state="visible", timeout=5000)
+        page.wait_for_timeout(500)
+
+    def test_a_rail_of_readings_reaches_the_bottom_of_the_deck(self, page, served):
+        self._deck(page, served)
+
+        left = page.evaluate(
+            """() => {
+                const rail = document.querySelector('.deck-rail-left');
+                const cards = [...rail.querySelectorAll(':scope > .widget')];
+                const last = cards[cards.length - 1].getBoundingClientRect();
+                return Math.round(rail.getBoundingClientRect().bottom - last.bottom);
+            }"""
+        )
+
+        assert left <= 4, f"{left}px of the left rail is left empty under its last card"
+
+    def test_the_dock_stands_on_the_floor_of_the_stage(self, page, served):
+        self._deck(page, served)
+
+        below = page.evaluate(
+            """() => {
+                const stage = document.querySelector('.face-stage').getBoundingClientRect();
+                const dock = document.querySelector('.face-dock').getBoundingClientRect();
+                return Math.round(stage.bottom - dock.bottom);
+            }"""
+        )
+
+        # The stage's own padding, and nothing more.
+        assert below <= 32, f"{below}px of dead air under the dock"
+
+    def test_a_card_with_nothing_to_show_does_not_take_the_room(self, page, served):
+        """The failure this catches: an empty rail traded for an empty card."""
+        self._deck(page, served)
+
+        measured = page.evaluate(
+            """() => {
+                const card = document.querySelector('.widget[data-panel="conversation"]');
+                const rail = document.querySelector('.deck-rail-right');
+                const height = () => Math.round(card.getBoundingClientRect().height);
+                const was = card.dataset.empty;
+
+                card.dataset.empty = 'true';
+                void rail.offsetHeight;
+                const empty = height();
+
+                card.dataset.empty = 'false';
+                void rail.offsetHeight;
+                const full = height();
+
+                card.dataset.empty = was;
+                return { empty, full, rail: Math.round(rail.getBoundingClientRect().height) };
+            }"""
+        )
+
+        assert measured["empty"] < measured["rail"] / 3, (
+            f"an empty card takes {measured['empty']}px of a "
+            f"{measured['rail']}px rail"
+        )
+        assert measured["full"] > measured["empty"], (
+            "the card does not grow even when it has a turn to show"
+        )
+
+    def test_the_tiles_are_never_stretched(self, page, served):
+        """A tile is one number and its name; three times that height is a box."""
+        self._deck(page, served)
+
+        tallest = page.evaluate(
+            """() => Math.max(...[...document.querySelectorAll('.widget-tile')]
+                .map(tile => tile.getBoundingClientRect().height))"""
+        )
+
+        assert tallest < 120, f"a tile grew to {round(tallest)}px"
+
+
 class TestAStatusChipIsTonedByWhatItSays:
     """A chip's colour is part of its text, not decoration beside it.
 

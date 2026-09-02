@@ -23,9 +23,9 @@ import { el, icon, ICONS, motionAllowed } from "./ui.js";
 
 const SIZE_KEY = "jarvis.faceSize";
 
-export const MIN_SIZE = 180;
+const MIN_SIZE = 180;
 export const MAX_SIZE = 560;
-const DEFAULT_SIZE = 320;
+const DEFAULT_SIZE = 400;
 
 /* Eight times a second: fast enough that speech and the mouth agree, slow
    enough that an idle assistant is not being asked constantly. */
@@ -98,6 +98,10 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
   const nameNode = el("div", { class: "face-name", text: state.name });
   const stateNode = el("div", { class: "face-state" });
 
+  /* The face, its name, and what it is doing: one block, so the stage can
+     hold it in the middle and stand the dock on the floor underneath. */
+  const portrait = el("div", { class: "face-portrait" }, [shell, nameNode, stateNode]);
+
   /* ── The drawing ─────────────────────────────────────────────────── */
 
   /* Reading a custom property is a style resolution, which is too expensive
@@ -125,7 +129,11 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
   }
 
   function draw(seconds) {
-    const size = state.size;
+    // The size the browser settled on, not the one that was asked for. In a
+    // column too narrow for the preference the stylesheet caps it, and a
+    // drawing made at the requested size would be cut off by the difference.
+    const size = canvas.clientWidth || state.size;
+    if (!size) return;
     const dpr = window.devicePixelRatio || 1;
     if (canvas.width !== Math.round(size * dpr)) {
       canvas.width = Math.round(size * dpr);
@@ -346,15 +354,15 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
     state.size = clampSize(value);
     remember(SIZE_KEY, state.size);
     // Written on the element rather than the stylesheet: this is one reader's
-    // preference about one face, not a retune of the interface.
-    canvas.style.width = `${state.size}px`;
-    canvas.style.height = `${state.size}px`;
+    // preference about one face, not a retune of the interface. How much of
+    // it survives a narrow column is the stylesheet's business.
+    shell.style.setProperty("--face-size", `${state.size}px`);
     repaint();
   }
 
   setSize(state.size);
 
-  stage.append(shell, nameNode, stateNode, dock, settingsToggle, settings);
+  stage.append(portrait, dock, settingsToggle, settings);
 
   /* ── What it is doing, in words ─────────────────────────────────── */
 

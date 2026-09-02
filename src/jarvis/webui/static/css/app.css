@@ -84,6 +84,20 @@ a:hover {
   color: var(--fg-dim);
   font-size: var(--fs-sm);
   min-width: 0;
+  /* The strip is one fixed row tall, so nothing in it may take two. */
+  white-space: nowrap;
+}
+
+/* The one group that may be asked to give way: what the assistant is doing
+   is the longest text here and the least damaged by being cut short, because
+   it is also drawn under the face in full. */
+.header-live {
+  overflow: hidden;
+}
+
+#phase-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .header-readings {
@@ -817,7 +831,9 @@ input[type="checkbox"] {
 
 /* ── Narrow screens ──────────────────────────────────────────────────── */
 
-@media (max-width: 760px) {
+/* The same width the deck stops being a deck at, so the shell and the layout
+   under it fold together rather than 140px apart. */
+@media (max-width: 900px) {
   :root {
     --main-pad: var(--s3);
   }

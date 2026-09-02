@@ -190,6 +190,11 @@ export const WIDGETS = [
       const when = note("");
       return {
         body: [said, replied, when],
+        // A card with no turn in it has nothing to grow into, and the rail
+        // needs to know that: told to stretch anyway it becomes a third of a
+        // rail of empty box, which is the hole it was meant to close wearing
+        // a border.
+        empty: ({ status }) => !status?.last_turn,
         update({ status }) {
           const turn = status?.last_turn;
           if (!turn) {
@@ -331,5 +336,13 @@ export function buildWidget(definition, onOpen) {
     ],
   );
 
-  return { node, update: built.update };
+  return {
+    node,
+    update(snapshot) {
+      built.update(snapshot);
+      // Whether a card has anything to show is a layout fact as well as a
+      // reading, so it is written where a stylesheet can see it.
+      if (built.empty) node.dataset.empty = built.empty(snapshot) ? "true" : "false";
+    },
+  };
 }

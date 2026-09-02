@@ -22,24 +22,56 @@
 
 /* ── Rails ───────────────────────────────────────────────────────────── */
 
+/* A rail distributes into the height it is given rather than stacking at the
+   top of it. Sized against the window and packed from the top, the rails left
+   the bottom two thirds of the deck empty and the whole page read as
+   top-weighted with a hole underneath. Every card taking an equal share is a
+   scale rather than a gap someone left, and it gives the readings inside them
+   room to be set at a size worth reading. */
 .deck-rail {
   display: grid;
   gap: var(--s3);
-  align-content: start;
+  align-content: stretch;
+  grid-auto-rows: 1fr;
   overflow-y: auto;
   min-height: 0;
   /* The scrollbar sits outside the cards rather than over them. */
   padding-right: var(--s1);
 }
 
+/* The right rail is the last exchange over a block of compact tiles, and
+   which of the two grows depends on which has something to show. A card with
+   no turn in it yet has nothing to distribute, so it takes its own height and
+   the tiles take the slack: otherwise an empty rail is traded for an empty
+   card, which is the same hole with a border around it. */
+.deck-rail-right {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+/* With no turn to show, nothing in this rail has anything to grow into: the
+   card would become a tall empty box and the tiles would become five of them,
+   which is the same hole with borders drawn round it. Both take their own
+   height instead, and what is left over is simply the page. The two rails
+   being different lengths is asymmetry, which this deck is built on; a card
+   claiming room it cannot fill is a defect. */
+.deck-rail-right:has(.widget[data-panel="conversation"][data-empty="true"]) {
+  grid-template-rows: auto auto;
+  align-content: start;
+}
+
 /* The compact readings at the foot of a rail: too small to deserve a card
    each, too different to merge into one. A pair of columns keeps five of
    them inside one screen without any of them shrinking to a number with no
    name on it. */
+/* Tiles are never stretched. A tile is one number and its name, and a tile
+   given three times the height it needs is an empty box rather than a
+   generous one. */
 .widget-tiles {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--s2);
+  align-content: start;
+  min-height: 0;
 }
 
 /* An odd number of tiles leaves the last one beside a gap, which reads as a
@@ -51,15 +83,20 @@
 
 /* ── Widgets ─────────────────────────────────────────────────────────── */
 
+/* A card is a step up off the page rather than a box drawn on it. Elevation
+   in a dark interface comes from a lighter surface; the hairline is there to
+   stop two adjacent cards merging, which is a smaller job than the one a
+   full-contrast border was doing. */
 .widget {
   background: var(--surface);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-soft);
   border-radius: var(--r);
-  padding: var(--s3);
+  padding: var(--s3) var(--s4);
   display: grid;
   gap: var(--s2);
-  align-content: start;
+  align-content: center;
   min-width: 0;
+  min-height: 0;
   transition: border-color var(--t-fast);
 }
 
@@ -208,29 +245,45 @@
 
 /* ── The face ────────────────────────────────────────────────────────── */
 
+/* Two bands: the face in the room above, the dock standing on the floor. The
+   stage used to centre everything together and leave two hundred pixels of
+   dead air under the dock, which read as the page having stopped early. */
 .face-stage {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--s3);
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
   position: relative;
+  padding: var(--s5);
   border-radius: var(--r);
   /* The page falls away behind the face, so the centre reads as depth
-     rather than as another card. */
+     rather than as another card. No border: this is the room the deck is in
+     rather than a fourth card sitting between two rails. */
   background:
     radial-gradient(circle at 50% 42%, var(--face-aura) 0%, transparent 62%),
     var(--bg-deep);
-  border: 1px solid var(--line-soft);
   overflow: hidden;
 }
 
+.face-portrait {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: var(--s4);
+  min-height: 0;
+}
+
+/* The shell owns how large the face is, and the canvas simply fills it. The
+   geometry has to live on something other than the canvas: `face.js` sets the
+   canvas's width and height attributes to match the device pixels, and an
+   attribute change on an element whose CSS height is derived from its own
+   aspect ratio feeds straight back into layout. */
 .face-shell {
   position: relative;
-  display: grid;
-  place-items: center;
+  /* The preference, capped by the room there actually is, so a narrow centre
+     column shrinks the face rather than clipping it. */
+  width: min(var(--face-size), 100%);
+  aspect-ratio: 1;
   flex: none;
 }
 
@@ -238,10 +291,12 @@
    the aura and the disc are one drawing made in one place instead of a
    stylesheet decorating a foreign rectangle. Everything the eye reads as the
    face is painted in `face.js`; all this rule owns is how large it is. */
+/* `face.js` draws at whatever width this settles on rather than at the number
+   it was asked for, so the drawing is never made larger than the room it has. */
 .face-canvas {
   display: block;
-  width: var(--face-size);
-  height: var(--face-size);
+  width: 100%;
+  height: 100%;
 }
 
 .face-name {
@@ -262,13 +317,18 @@
 
 /* The dock sits under the face the way a composer sits under a
    conversation: the thing you type into is beneath the thing you are
-   talking to. */
+   talking to. A rule separates it from the face rather than a fourth
+   bordered box: the two belong to the same stage, and the line says where
+   one ends without proposing that the other is a card. */
 .face-dock {
   display: flex;
   align-items: center;
   gap: var(--s2);
-  width: min(520px, 100%);
-  padding: 0 var(--s4);
+  width: min(560px, 100%);
+  justify-self: center;
+  margin-top: var(--s4);
+  padding-top: var(--s4);
+  border-top: 1px solid var(--line-soft);
 }
 
 .face-dock input[type="text"] {
@@ -513,11 +573,25 @@
     grid-template-columns: var(--rail) minmax(0, 1fr);
   }
 
+  /* Folded under the deck and laid out across it, rather than scrolled
+     sideways. A horizontal scroller puts readings behind a gesture nobody
+     makes on a desktop, and there is enough width here to show all of them
+     at once. */
   .deck-rail-right {
     grid-column: 1 / -1;
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(180px, 1fr);
-    overflow-x: auto;
+    grid-template-rows: auto auto;
+    align-content: start;
+    overflow: visible;
+  }
+
+  /* Two columns is the right answer in a 320px rail and the wrong one across
+     a whole window, where it makes five readings into five half-page boxes. */
+  .widget-tiles {
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  }
+
+  .widget-tiles > :last-child:nth-child(odd) {
+    grid-column: auto;
   }
 }
 
