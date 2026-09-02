@@ -30,6 +30,7 @@ const STRINGS = {
     "memory.tokensNote": "{n} tokens stored",
 
     "security.waitingCount": "{n} waiting for a decision",
+    "security.waitingShort": "{n} waiting",
     "security.nothingWaiting": "Nothing is waiting.",
 
     "passive.undigested": "{n} waiting to be digested",
@@ -449,6 +450,7 @@ const STRINGS = {
     "memory.tokensNote": "{n} Token gespeichert",
 
     "security.waitingCount": "{n} warten auf Entscheidung",
+    "security.waitingShort": "{n} wartend",
     "security.nothingWaiting": "Es wartet nichts.",
 
     "passive.undigested": "{n} warten auf Verarbeitung",

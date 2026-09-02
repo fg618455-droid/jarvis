@@ -12,6 +12,7 @@ invisible to an API test and returns 200 all the same.
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 
@@ -394,6 +395,93 @@ class TestARailReadsAsReadingsRatherThanAsAForm:
         assert shape["last"] == pytest.approx(shape["row"], abs=2), (
             f"the last of {shape['count']} tiles is {shape['last']}px in a "
             f"{shape['row']}px row, so it sits beside a gap"
+        )
+
+
+class TestAStatusChipIsTonedByWhatItSays:
+    """A chip's colour is part of its text, not decoration beside it.
+
+    The security widget carries two facts that are true at different times:
+    which level is in force, and whether anything is waiting for an answer.
+    Toning the level by the waiting count merges them, so a gate that is
+    switched off reads in the reassuring tone whenever nothing happens to be
+    queued, which is exactly when nobody is looking closely.
+    """
+
+    def _with_security(self, page, served, payload):
+        page.route(
+            "**/api/security",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(payload),
+            ),
+        )
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
+        page.wait_for_selector(".deck-rail-left .widget", state="visible", timeout=5000)
+        page.wait_for_function(
+            """() => [...document.querySelectorAll('.deck-rail-left .widget')].some(
+                (node) => node.dataset.panel === 'security'
+                    && node.querySelector('.chip')
+            )""",
+            timeout=5000,
+        )
+        return page.evaluate(
+            """() => {
+                const widget = document.querySelector('.widget[data-panel="security"]');
+                return [...widget.querySelectorAll('.chip')].map((chip) => ({
+                    text: chip.textContent.trim(),
+                    tone: [...chip.classList].filter((name) => name !== 'chip'),
+                }));
+            }"""
+        )
+
+    @pytest.mark.parametrize(
+        "level,expected",
+        [("critical", "ok"), ("paranoid", "ok"), ("off", "warn")],
+    )
+    def test_the_level_chip_is_toned_by_the_level(self, page, served, level, expected):
+        chips = self._with_security(
+            page, served, {"level": level, "levels": [], "pending": [], "log": []},
+        )
+
+        named = [chip for chip in chips if chip["text"] == level]
+        assert named, f"no chip carries the level {level!r}: {chips}"
+        assert named[0]["tone"] == [expected], (
+            f"level {level!r} is painted {named[0]['tone']} rather than {expected!r}"
+        )
+
+    def test_a_gate_that_is_off_says_so_even_with_nothing_queued(self, page, served):
+        """The failure this catches: `off` with an empty queue reading as `ok`."""
+        chips = self._with_security(
+            page, served, {"level": "off", "levels": [], "pending": [], "log": []},
+        )
+
+        assert "ok" not in [tone for chip in chips for tone in chip["tone"]], (
+            f"a disabled security gate is painted as healthy: {chips}"
+        )
+
+    def test_something_waiting_keeps_its_own_chip(self, page, served):
+        """The waiting count is a second fact and needs a second object.
+
+        Toning the level chip by it was the only thing carrying it in colour,
+        so moving the level onto its own meaning must not drop the signal.
+        """
+        chips = self._with_security(
+            page,
+            served,
+            {
+                "level": "critical",
+                "levels": [],
+                "pending": [{"id": "a"}, {"id": "b"}],
+                "log": [],
+            },
+        )
+
+        waiting = [chip for chip in chips if "2" in chip["text"]]
+        assert waiting, f"nothing on the widget says two decisions are waiting: {chips}"
+        assert waiting[0]["tone"] == ["warn"], (
+            f"a queued decision is painted {waiting[0]['tone']} rather than 'warn'"
         )
 
 

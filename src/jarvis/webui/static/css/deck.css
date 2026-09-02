@@ -81,6 +81,18 @@
   justify-self: start;
 }
 
+/* Where a widget carries more than one status: two facts that are true at
+   different times, side by side rather than merged into one colour. They wrap
+   rather than shrink, because a chip narrower than its word is a chip that
+   says something else. */
+.widget-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+}
+
 .widget-title {
   font-size: var(--fs-micro);
   font-weight: 600;

@@ -281,6 +281,15 @@ A widget never invents a reading. A source that failed or has not answered
 yet shows an em dash, because a zero meaning "no answer" and a zero meaning
 "none" are very different facts on the security widget.
 
+A status chip is toned by what it says rather than by something beside it,
+and two facts that are true at different times get a chip each. The security
+widget carries both rules: the level in force is toned by the level, so a
+gate switched `off` reads as a warning whether or not anything happens to be
+queued, and what is waiting for an answer is its own chip rather than a
+colour borrowed by the level's. Merged, the reassuring tone would be showing
+at exactly the moment nobody looks: an empty queue in front of a gate that
+stops nothing.
+
 ### Panels
 
 A panel mounts a view module into its body, and that module is the same one
