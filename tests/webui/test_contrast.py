@@ -206,6 +206,18 @@ def _painted(page, view: str) -> None:
         }""",
         timeout=20000,
     )
+    # And until the interface has stopped moving. A colour read while a view
+    # is still fading in is a colour part of the way to the one a reader
+    # ends up looking at, which is neither the value under test nor a stable
+    # one. The two endless animations in the interface, the phase dot and the
+    # face's breath, are excluded because they never finish by design.
+    page.wait_for_function(
+        """() => document.getAnimations().every(
+            (animation) => animation.playState !== 'running'
+                || (animation.effect?.getTiming().iterations === Infinity),
+        )""",
+        timeout=20000,
+    )
 
 
 def _themes(page, served) -> list[str]:

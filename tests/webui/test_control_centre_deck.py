@@ -188,6 +188,50 @@ class TestTheFaceIsThePage:
         assert not page.console_errors
 
 
+class TestTheDeckNeverGrowsThePage:
+    """The deck is sized against the window, so nothing in it may grow it.
+
+    A page that scrolls puts the face somewhere you have to scroll back to,
+    which is the one thing this layout exists to prevent, and it is the rails
+    that would do it: a card is as tall as the words in it, and the words
+    depend on the reading, the language and the fonts the machine happens to
+    have. A rail scrolls itself when what is in it does not fit. It is never
+    allowed to make the deck taller instead.
+    """
+
+    def test_a_rail_of_tall_cards_scrolls_itself_rather_than_the_page(
+        self, page, served,
+    ):
+        painted_deck(page, served)
+        assert not page.evaluate(
+            "() => document.documentElement.scrollHeight > innerHeight + 1"
+        ), "the page scrolled before anything was even made tall"
+
+        # Twice the room every card in both rails could ask for, which is the
+        # shape of a longer reading, a longer language, or a taller font.
+        page.evaluate(
+            """() => {
+                for (const card of document.querySelectorAll('.deck-rail .widget')) {
+                    card.style.minHeight = '200px';
+                }
+            }"""
+        )
+        page.wait_for_timeout(200)
+
+        measured = page.evaluate(
+            """() => ({
+                pageScrolls: document.documentElement.scrollHeight > innerHeight + 1,
+                railScrolls: [...document.querySelectorAll('.deck-rail')]
+                    .some((rail) => rail.scrollHeight > rail.clientHeight + 1),
+            })"""
+        )
+
+        assert not measured["pageScrolls"], (
+            "cards taller than the rail grew the page instead of scrolling the rail"
+        )
+        assert measured["railScrolls"], "the rail swallowed them without scrolling"
+
+
 class TestOneSourceFailingIsNotTheDeckFailing:
     """Nine readings are fetched for the widgets, independently.
 
