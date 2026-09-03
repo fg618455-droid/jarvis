@@ -145,6 +145,7 @@ class RoutedBackend(LLMBackend):
         backend_factory: Callable[[Route], LLMBackend] = _build_backend,
         clock: Callable[[], float] = time.monotonic,
         local_progress_sec: float = 1.2,
+        chain_budget_sec: float | None = None,
     ) -> None:
         self._routes = tuple(routes)
         self._state = state_store or RouteStateStore()
@@ -152,6 +153,13 @@ class RoutedBackend(LLMBackend):
         self._backends: dict[Route, LLMBackend] = {}
         self._clock = clock
         self.local_progress_sec = max(0.0, float(local_progress_sec))
+        # The ceiling on one walk of a chain, whatever its routes are
+        # individually allowed. Without it, a caller timeout measured in
+        # minutes lets several individually reasonable routes add up to
+        # longer than anyone waiting for an answer will sit through.
+        self.chain_budget_sec = (
+            float(chain_budget_sec) if chain_budget_sec else None
+        )
 
     @property
     def routes(self) -> tuple[Route, ...]:
@@ -215,6 +223,16 @@ class RoutedBackend(LLMBackend):
     def _timeout(caller_timeout: float, route: Route) -> float:
         return min(float(caller_timeout), float(route.timeout_sec))
 
+    def _walk_budget(self, timeout_sec: float) -> float:
+        """How long this whole chain walk may take.
+
+        The configured budget is a ceiling, never a floor: a caller asking
+        for less keeps its own tighter deadline.
+        """
+        if self.chain_budget_sec is None:
+            return float(timeout_sec)
+        return min(float(timeout_sec), self.chain_budget_sec)
+
     def _failed(self, route: Route, error: BaseException | str) -> None:
         if isinstance(error, AuthError):
             self._state.mark_invalid_for_run(route)
@@ -264,7 +282,9 @@ class RoutedBackend(LLMBackend):
     def streaming(self, chat_model, system_prompt, user_content, on_token=None,
                   timeout_sec=30.0, thinking=False,
                   deadline: RequestDeadline | None = None):
-        deadline = deadline or RequestDeadline.after(timeout_sec, clock=self._clock)
+        deadline = deadline or RequestDeadline.after(
+            self._walk_budget(timeout_sec), clock=self._clock
+        )
         available = list(self._available(self._tier(chat_model), "stream"))
         stream_routes = (
             [route for route in available if self._is_local(route)]
@@ -382,7 +402,9 @@ class RoutedBackend(LLMBackend):
         # ``_ordered_for_preference``); it never removes the rest of the
         # chain, so a promoted route that is missing or fails still falls
         # through exactly as it would with no preference at all.
-        deadline = deadline or RequestDeadline.after(timeout_sec, clock=self._clock)
+        deadline = deadline or RequestDeadline.after(
+            self._walk_budget(timeout_sec), clock=self._clock
+        )
 
         def invoke(backend, route):
             listener = on_token if "stream" in route.capabilities else None

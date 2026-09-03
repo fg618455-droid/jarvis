@@ -101,6 +101,10 @@ An empty response is not only a `None` return. Text, a tool call, and reasoning 
 
 Configured `codex_subscription` routes are accepted only for CHAT. They are tried after the other configured CHAT candidates and before the appended local fallback because starting the CLI and running a reasoning model has higher latency than an already warm endpoint. FAST and PRIVATE entries for this provider are dropped before a backend is built.
 
+### The chain budget
+
+`llm_chat_chain_budget_sec` (30 s) is the ceiling on one walk of a chain, across every route it tries. A route's own timeout bounds one attempt, and the caller's timeout bounds the request, but neither bounds the walk: with `llm_chat_timeout_sec` at three minutes, a chain of individually reasonable routes adds up to far longer than anyone waiting to hear an answer will sit through, and it does so without any single route exceeding what it was allowed. `RoutedBackend` derives the walk's `RequestDeadline` from the smaller of the caller timeout and this budget, so the budget is a ceiling and never a floor: a caller asking for less keeps its own tighter deadline. An unset or unusable value leaves the walk to the caller timeout alone. The budget applies to `chat()` and `streaming()`, the two calls that walk a chain on behalf of someone waiting.
+
 Configured FAST and CHAT chains always end with loopback Ollama. The appended local FAST route has a 60-second route limit and the local CHAT route has a 180-second route limit, matching the local-only candidates; each caller can still impose a smaller timeout. Disabled configured entries remain visible in route status but cannot reduce those active local limits. A configuration with no routes has one effective local candidate per lane. `resolve_model()` returns a string-compatible value carrying its `Tier`, so existing backend method signatures remain ordinary model-string APIs while the router can select a chain.
 
 A route the user switched off is inert. It stays in the chain so the control centre can still show it, but it takes no part in deciding how the local candidates are built: a configuration whose only route is disabled yields the same local chain as a configuration with no routes at all. The local candidates always run the configured `local_fast_model` and `ollama_chat_model`, never a remote route model, and their timeouts leave room for a cold model load, because the local candidate is last in its chain and has nothing to fall forward to. A ceiling shorter than a page-in would not buy speed; it would guarantee the candidate can never answer.
@@ -170,6 +174,7 @@ With `llm_routes` configured, `get_embedding_backend(cfg)` returns an `OllamaBac
 | Key | Default | Meaning |
 |---|---|---|
 | `llm_routes` | `[]` | Ordered generic endpoint entries for FAST and CHAT |
+| `llm_chat_chain_budget_sec` | `30.0` | Ceiling on one chain walk, across every route it tries; see "The chain budget" |
 | `chat_backend_override` | `"auto"` | `"auto"` or a route provider name to force for every Tier.CHAT reply; see "Chat backend selection" |
 | `llm_provider` | `"ollama"` | Single-endpoint protocol used when `llm_routes` is empty |
 | `llm_base_url` | `""` | Single-endpoint URL used when `llm_routes` is empty |

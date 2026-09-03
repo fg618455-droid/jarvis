@@ -229,6 +229,10 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("llm_chat_timeout_sec", "Chat Timeout", "Max seconds for chat responses",
       "providers", "float", min_val=10, max_val=600, step=10, suffix="s",
       section="Timeouts")
+    f("llm_chat_chain_budget_sec", "Chat Chain Budget",
+      "Max seconds one reply may spend walking the whole chat route chain",
+      "providers", "float", min_val=5, max_val=600, step=5, suffix="s",
+      section="Timeouts")
     f("llm_tools_timeout_sec", "Tools Timeout", "Max seconds for tool calls",
       "providers", "float", min_val=10, max_val=600, step=10, suffix="s",
       section="Timeouts")

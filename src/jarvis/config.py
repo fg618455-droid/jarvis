@@ -129,6 +129,12 @@ class Settings:
     ollama_embed_model: str
     ollama_chat_model: str
     llm_chat_timeout_sec: float
+    # Ceiling on one Tier.CHAT chain walk, across every route it tries.
+    # Each route already gets the smaller of its own limit and the caller
+    # budget, but with a caller budget of minutes that arithmetic stops
+    # nothing: a chain of several individually reasonable routes can spend
+    # far longer than a spoken turn can wait before anyone says a word.
+    llm_chat_chain_budget_sec: float
     llm_tools_timeout_sec: float
     # Tight deadline for the cheap distil passes used by memory_digest and
     # tool_result_digest. Separate from `llm_tools_timeout_sec` because
@@ -790,6 +796,7 @@ def get_default_config() -> Dict[str, Any]:
         "ollama_embed_model": "nomic-embed-text",
         "ollama_chat_model": DEFAULT_CHAT_MODEL,
         "llm_chat_timeout_sec": 180.0,
+        "llm_chat_chain_budget_sec": 30.0,
         "llm_tools_timeout_sec": 300.0,
         # Cheap distil passes should fail fast — a hung digest call would
         # block the reply loop per tool call, amplified by agentic turns.
@@ -1492,6 +1499,15 @@ def load_settings() -> Settings:
     whisper_min_audio_duration = float(merged.get("whisper_min_audio_duration", 0.3))
     whisper_min_word_length = int(merged.get("whisper_min_word_length", 2))
     llm_chat_timeout_sec = float(merged.get("llm_chat_timeout_sec", 180.0))
+    try:
+        llm_chat_chain_budget_sec = float(
+            merged.get("llm_chat_chain_budget_sec", 30.0)
+        )
+    except (TypeError, ValueError):
+        llm_chat_chain_budget_sec = 30.0
+    if llm_chat_chain_budget_sec <= 0:
+        # A ceiling of zero would end every walk before its first route.
+        llm_chat_chain_budget_sec = 30.0
     llm_tools_timeout_sec = float(merged.get("llm_tools_timeout_sec", 300.0))
     llm_digest_timeout_sec = float(merged.get("llm_digest_timeout_sec", 8.0))
     llm_embedding_timeout_sec = float(merged.get("llm_embedding_timeout_sec", 60.0))
@@ -1587,6 +1603,7 @@ def load_settings() -> Settings:
         ollama_embed_model=ollama_embed_model,
         ollama_chat_model=ollama_chat_model,
         llm_chat_timeout_sec=llm_chat_timeout_sec,
+        llm_chat_chain_budget_sec=llm_chat_chain_budget_sec,
         llm_tools_timeout_sec=llm_tools_timeout_sec,
         llm_digest_timeout_sec=llm_digest_timeout_sec,
         llm_embedding_timeout_sec=llm_embedding_timeout_sec,

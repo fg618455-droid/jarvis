@@ -256,7 +256,9 @@ def get_llm_backend(settings: Any) -> LLMBackend:
     # into the backend factory closure RoutedBackend uses to build each
     # route's backend on first use.
     backend = RoutedBackend(
-        routes, backend_factory=lambda route: _build_backend(route, settings),
+        routes,
+        backend_factory=lambda route: _build_backend(route, settings),
+        chain_budget_sec=getattr(settings, "llm_chat_chain_budget_sec", None),
     )
     try:
         reference = weakref.ref(
