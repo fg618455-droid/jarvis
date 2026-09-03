@@ -17,6 +17,7 @@ const STRINGS = {
     "deck.backToDeck": "Back to the deck",
 
     "unsaved.leaveConfirm": "You have changes here that have not been saved. Leave and lose them?",
+    "unsaved.discardConfirm": "This reloads the editor over changes you have not saved. Discard them?",
 
     "face.askLabel": "Ask Jarvis",
     "face.askPlaceholder": "Type a message\u2026",
@@ -420,6 +421,7 @@ const STRINGS = {
     "deck.backToDeck": "Zur\u00fcck zum Deck",
 
     "unsaved.leaveConfirm": "Hier gibt es \u00c4nderungen, die nicht gespeichert sind. Verlassen und verwerfen?",
+    "unsaved.discardConfirm": "Das l\u00e4dt den Editor neu \u00fcber \u00c4nderungen, die nicht gespeichert sind. Verwerfen?",
 
     "face.askLabel": "Jarvis fragen",
     "face.askPlaceholder": "Nachricht eingeben\u2026",

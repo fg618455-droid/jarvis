@@ -36,14 +36,22 @@ export async function mount(root) {
   async function refresh() {
     payload = await api.llmRoutes();
     edited = false;
-    paintBackendSelectors(backendCard, payload, refresh);
+    paintBackendSelectors(backendCard, payload, refresh, mayDiscard);
     paintChains(chains, payload.effective_chains || payload.chains || {});
     paintEditor(editorCard, payload, refresh, () => { edited = true; });
+  }
+
+  /* Reloading replaces the editor's copy with what is stored, so anything
+     that reloads throws away what is typed into it. Every control that does
+     asks first, for the same reason leaving the view does. */
+  function mayDiscard() {
+    return !edited || window.confirm(t("unsaved.discardConfirm"));
   }
 
   const probe = el("button", {
     class: "btn", type: "button", text: t("llm.probe"),
     onclick: async () => {
+      if (!mayDiscard()) return;
       probe.disabled = true;
       try {
         const result = await api.probeLlmRoutes();
@@ -60,6 +68,7 @@ export async function mount(root) {
   const reset = el("button", {
     class: "btn", type: "button", text: t("llm.reset"),
     onclick: async () => {
+      if (!mayDiscard()) return;
       await api.resetLlmRoutes();
       toast(t("llm.resetDone"));
       await refresh();
@@ -262,7 +271,7 @@ function routeControl(field, route, placeholders, changed) {
   return input;
 }
 
-function paintBackendSelectors(container, currentPayload, refresh) {
+function paintBackendSelectors(container, currentPayload, refresh, mayDiscard) {
   clear(container);
   const overrideSelect = el(
     "select", { class: "input", "aria-label": t("llm.backendOverride") },
@@ -271,6 +280,11 @@ function paintBackendSelectors(container, currentPayload, refresh) {
   );
   overrideSelect.value = currentPayload.chat_backend_override || "auto";
   overrideSelect.addEventListener("change", async () => {
+    // Saving this reloads the whole view, editor included.
+    if (!mayDiscard()) {
+      overrideSelect.value = currentPayload.chat_backend_override || "auto";
+      return;
+    }
     try {
       await api.setChatBackendOverride(overrideSelect.value);
       toast(t("llm.backendSaved"));
@@ -287,6 +301,10 @@ function paintBackendSelectors(container, currentPayload, refresh) {
   );
   agentSelect.value = currentPayload.crew_chat_agent || "";
   agentSelect.addEventListener("change", async () => {
+    if (!mayDiscard()) {
+      agentSelect.value = currentPayload.crew_chat_agent || "";
+      return;
+    }
     try {
       await api.setCrewChatAgent(agentSelect.value);
       toast(t("llm.backendSaved"));

@@ -373,6 +373,12 @@ Refusing puts the address back and leaves what was typed exactly where it
 was. Reloading or closing the tab is the browser's own door, so the browser
 raises its own warning.
 
+Reloading an editor in place is discarding it by another name, so it is
+asked the same way. The route editor is the one with controls that do it:
+probing the models, resetting the cooldowns, and either of the chat-backend
+selectors all replace its copy of the routes with what is stored. Refusing
+leaves the copy alone and puts a selector that has already moved back.
+
 The ask is silent unless a view says it is holding something, and a view
 holds something only when what is in the page differs from what is stored: a
 field typed and typed back again is not a change. A warning on every panel

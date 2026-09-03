@@ -284,6 +284,34 @@ class TestSettingsAndTheRouteEditorAreAskedTheSameWay:
         assert page.locator(".panel").count() == 1
         assert page.evaluate("location.hash") == "#/llm-routes"
 
+    def test_reloading_the_route_editor_in_place_asks_too(self, page, served):
+        """Reloading is discarding, whichever button asked for it.
+
+        Probing the models and resetting the cooldowns both replace the
+        editor's copy with what is stored, which throws away anything typed
+        into it just as surely as leaving the view does.
+        """
+        _open_panel(page, served, "llm-routes")
+        page.evaluate(
+            """async () => {
+                const { api } = await import('/static/js/api.js');
+                window.__reset = 0;
+                api.resetLlmRoutes = async () => { window.__reset += 1; return {}; };
+            }"""
+        )
+        page.get_by_role("button", name="Add route").click()
+        before = page.locator(".route-config").count()
+        _answer(page, leave=False)
+
+        page.get_by_role("button", name="Reset cooldowns").click()
+        page.wait_for_timeout(600)
+
+        assert page.asked, "the editor was reloaded over what was typed into it"
+        assert page.evaluate("window.__reset") == 0, "it reset anyway"
+        assert page.locator(".route-config").count() == before, (
+            "the route that was added is gone"
+        )
+
     def test_the_route_editor_is_quiet_until_something_is_changed(self, page, served):
         _open_panel(page, served, "llm-routes")
         _answer(page, leave=False)
