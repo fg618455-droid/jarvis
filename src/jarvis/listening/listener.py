@@ -2784,6 +2784,23 @@ class VoiceListener(threading.Thread):
             set_phase_if(Phase.CAPTURING, Phase.IDLE)
             set_phase_if(Phase.TRANSCRIBING, Phase.IDLE)
 
+    def _transcription_hotwords(self) -> str:
+        """Names Whisper should expect, as a single space-joined string.
+
+        The wake word is always included because it opens every utterance.
+        Everything else comes from `whisper_hotwords`, so a user whose
+        vocabulary a general model has no reason to predict can name those
+        words instead of having them transcribed as the nearest ordinary one.
+        """
+        wake = str(getattr(self.cfg, "wake_word", "Jarvis") or "Jarvis").strip()
+        configured = getattr(self.cfg, "whisper_hotwords", None) or []
+        if isinstance(configured, str):
+            configured = [configured]
+        words = [wake.capitalize()] + [
+            str(w).strip() for w in configured if str(w).strip()
+        ]
+        return " ".join(dict.fromkeys(filter(None, words)))
+
     def _transcribe_and_route(self) -> None:
         """Transcribe the captured utterance and decide what to do with it."""
         if np is None or not self._utterance_frames:
@@ -2909,11 +2926,7 @@ class VoiceListener(threading.Thread):
                             audio, language=language, vad_filter=vad_filter,
                             condition_on_previous_text=not cpu_mode,
                             without_timestamps=cpu_mode,
-                            hotwords=" ".join(dict.fromkeys(filter(None, (
-                                str(getattr(self.cfg, "wake_word", "Jarvis") or "Jarvis")
-                                .strip().capitalize(),
-                                "Vault",
-                            )))),
+                            hotwords=self._transcription_hotwords(),
                         )
                     except TypeError:
                         segments, _info = self.model.transcribe(audio, language=language)

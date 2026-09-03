@@ -221,6 +221,11 @@ class Settings:
     whisper_no_speech_threshold: float
     whisper_min_language_probability: float
     whisper_language: str
+    # Names Whisper is biased towards, beyond the wake word. Proper nouns a
+    # German-language model has no reason to expect ("Vault", "Obsidian") are
+    # otherwise transcribed as the nearest ordinary word, and the tool router
+    # then never sees the term the user actually said.
+    whisper_hotwords: list[str]
     whisper_min_audio_duration: float
     whisper_min_word_length: int
 
@@ -916,6 +921,7 @@ def get_default_config() -> Dict[str, Any]:
         # skips that pass and keeps Whisper from drifting into another language
         # on noisy input; loanwords inside the named language still transcribe.
         "whisper_language": "",
+        "whisper_hotwords": ["Vault", "Obsidian"],
         "whisper_min_audio_duration": 0.15,
         "whisper_min_word_length": 1,
 
@@ -1477,6 +1483,12 @@ def load_settings() -> Settings:
     whisper_no_speech_threshold = float(merged.get("whisper_no_speech_threshold", 0.5))
     whisper_min_language_probability = float(merged.get("whisper_min_language_probability", 0.0))
     whisper_language = _normalise_language_code(merged.get("whisper_language"))
+    _raw_hotwords = merged.get("whisper_hotwords", ["Vault", "Obsidian"])
+    if isinstance(_raw_hotwords, str):
+        _raw_hotwords = [_raw_hotwords]
+    whisper_hotwords = [
+        w.strip() for w in (_raw_hotwords or []) if isinstance(w, str) and w.strip()
+    ]
     whisper_min_audio_duration = float(merged.get("whisper_min_audio_duration", 0.3))
     whisper_min_word_length = int(merged.get("whisper_min_word_length", 2))
     llm_chat_timeout_sec = float(merged.get("llm_chat_timeout_sec", 180.0))
@@ -1659,6 +1671,7 @@ def load_settings() -> Settings:
         whisper_no_speech_threshold=whisper_no_speech_threshold,
         whisper_min_language_probability=whisper_min_language_probability,
         whisper_language=whisper_language,
+        whisper_hotwords=whisper_hotwords,
         whisper_min_audio_duration=whisper_min_audio_duration,
         whisper_min_word_length=whisper_min_word_length,
 

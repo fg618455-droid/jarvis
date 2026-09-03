@@ -738,12 +738,25 @@ class TestCpuOptimisations:
         listener, mock_model = self._create_listener_for_transcribe_test("cuda")
         listener.cfg.wake_word = "jarvis"
         listener.cfg.wake_aliases = []
+        listener.cfg.whisper_hotwords = ["Vault", "Obsidian"]
 
         listener._finalize_utterance()
 
         hotwords = mock_model.transcribe.call_args[1]["hotwords"].split()
         assert "Jarvis" in hotwords
         assert "Vault" in hotwords
+
+    def test_transcription_carries_the_user_s_own_names(self):
+        """The bias list is the user's vocabulary, not a fixed product list."""
+        listener, mock_model = self._create_listener_for_transcribe_test("cuda")
+        listener.cfg.wake_word = "jarvis"
+        listener.cfg.wake_aliases = []
+        listener.cfg.whisper_hotwords = ["SchulOS", "Marquartstein"]
+
+        listener._finalize_utterance()
+
+        hotwords = mock_model.transcribe.call_args[1]["hotwords"].split()
+        assert hotwords == ["Jarvis", "SchulOS", "Marquartstein"]
 
 
 class TestRepetitiveHallucinationDetectionExtended:

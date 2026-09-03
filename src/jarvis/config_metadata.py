@@ -388,6 +388,11 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("whisper_language", "Spoken Language",
       "ISO-639-1 code of the language you speak, e.g. de or ja. Empty identifies the language per utterance",
       "speech_recognition", "str", section="Whisper")
+    f("whisper_hotwords", "Recognised Names",
+      "Proper nouns Whisper should expect, e.g. Vault or Obsidian. Without "
+      "them an unexpected name is transcribed as the nearest ordinary word "
+      "and the tool router never sees it. The wake word is always included",
+      "speech_recognition", "list", section="Whisper")
 
     # --- VAD ---
     f("vad_enabled", "Enable VAD",
