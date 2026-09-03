@@ -259,7 +259,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 ## 18. Canned Fallback Rendering
 
 - **File**: [src/jarvis/reply/fallbacks.py](src/jarvis/reply/fallbacks.py) — `in_the_voices_language()`.
-- **Trigger**: the reply engine is about to deliver one of its own canned messages (the malformed-output guard, or the empty-reply backstop) and the configured voice names a language. Every other reply is written by the model itself under the prompt's language rule, so no rendering is needed.
+- **Trigger**: the reply engine is about to deliver one of its own canned messages and the configured voice names a language. Those are the malformed-output guard, the automatic crew-handoff acknowledgement, and the three no-reply backstops, which say different things depending on why the turn produced nothing: an unusable model answer, an exhausted chat chain, or an exhausted tool-capable chain. Every other reply is written by the model itself under the prompt's language rule, so no rendering is needed.
 - **Model / gating**: FAST tier, `resolve_model(cfg, Tier.FAST)` via `get_llm_backend(cfg).chat(...)`. Gated on `resolve_voice_language(cfg.tts_piper_model_path)` returning a name, so text chat, a non-Piper engine, and unreadable voice metadata never reach the model.
 - **Inputs**: the canned English sentence and the voice's language name. No user text, no memory, no tool output.
 - **System prompt**: translate into the named language, translation only, no quotes or commentary. Anything beyond the sentence would be spoken aloud with it.

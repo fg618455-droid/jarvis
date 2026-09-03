@@ -219,3 +219,27 @@ class TestTheBudgetIsWiredFromARealConfigFile:
         cfg = load_settings()
 
         assert cfg.llm_chat_chain_budget_sec > 0
+
+
+class TestAnUnreadableBudgetLeavesTheRouterWorking:
+    """A ceiling is a refinement. A settings object that cannot supply one
+    must not take every route down with it: no answer at all is a far worse
+    outcome than an unbounded walk."""
+
+    @pytest.mark.parametrize("written", [object(), "thirty", [30]])
+    def test_an_unusable_value_is_ignored(self, tmp_path: Path, written):
+        clock = _Clock()
+        only = _route("only", 60.0)
+        backend = _SlowBackend(clock, 1.0, {"message": {"content": "answer"}})
+        router = RoutedBackend(
+            [only],
+            state_store=RouteStateStore(tmp_path / "state.json"),
+            backend_factory={only: backend}.__getitem__,
+            clock=clock,
+            chain_budget_sec=written,
+        )
+
+        assert router.chain_budget_sec is None
+        assert router.chat("chat", [{"role": "user", "content": "hi"}]) == {
+            "message": {"content": "answer"}
+        }

@@ -157,9 +157,15 @@ class RoutedBackend(LLMBackend):
         # individually allowed. Without it, a caller timeout measured in
         # minutes lets several individually reasonable routes add up to
         # longer than anyone waiting for an answer will sit through.
-        self.chain_budget_sec = (
-            float(chain_budget_sec) if chain_budget_sec else None
-        )
+        #
+        # Fail open on anything unreadable: a ceiling is a refinement, and
+        # a settings object that cannot supply one must leave the router
+        # working rather than take every route down with it.
+        try:
+            budget = float(chain_budget_sec) if chain_budget_sec else 0.0
+        except (TypeError, ValueError):
+            budget = 0.0
+        self.chain_budget_sec = budget if budget > 0 else None
 
     @property
     def routes(self) -> tuple[Route, ...]:
