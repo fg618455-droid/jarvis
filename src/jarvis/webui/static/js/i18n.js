@@ -122,6 +122,8 @@ const STRINGS = {
     "common.actions": "Actions",
     "common.reconnecting": "Reconnecting…",
 
+    "api.noAnswer": "No answer after {n} seconds. Nothing came back.",
+
     "ago.now": "just now",
     "ago.minutes": "{n} min ago",
     "ago.hours": "{n} h ago",
@@ -525,6 +527,8 @@ const STRINGS = {
     "common.description": "Beschreibung",
     "common.actions": "Aktionen",
     "common.reconnecting": "Verbindet neu…",
+
+    "api.noAnswer": "Keine Antwort nach {n} Sekunden. Es kam nichts zurück.",
 
     "ago.now": "gerade eben",
     "ago.minutes": "vor {n} Min.",

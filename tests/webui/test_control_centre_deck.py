@@ -331,6 +331,104 @@ class TestAPanelSaysWhenItsViewIsIn:
         )
 
 
+class TestARequestStopsWaitingEventually:
+    """A connection that is accepted and then never answered is the case a
+    view cannot see the end of on its own.
+
+    A module that fails to load rejects, and a server that answers with an
+    error rejects, and both of those already leave a reason in the panel. A
+    socket that is open and silent does neither: the `await` inside the
+    view's `mount` never settles, so the panel it was opened for stays
+    `aria-busy` for as long as the tab is left open, announcing itself as
+    still loading something that stopped arriving.
+
+    How long the wait is depends on what was asked for, so both ends of that
+    are asserted here: the short bound has to fire, and the long one has to
+    not fire early.
+    """
+
+    def _deadlines(self, page, served) -> dict:
+        """The bounds the page itself is built with, read from the page.
+
+        Fast-forwarding by a number written here instead would pass whatever
+        the module was changed to, because the test would be moving the
+        clock by its own idea of the deadline rather than by the one the
+        request is actually waiting on.
+        """
+        return page.evaluate(
+            f"import('{served}/static/js/api.js').then(m => m.DEADLINES)",
+        )
+
+    def _never_answers(self, page, pattern) -> None:
+        """Take the request and hold it: accepted, open, and silent."""
+        page.route(pattern, lambda route: None)
+
+    def test_a_panel_whose_endpoint_never_answers_stops_being_busy(
+        self, page, served,
+    ):
+        page.clock.install()
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
+        page.wait_for_selector(".face-stage", state="visible")
+        deadlines = self._deadlines(page, served)
+        self._never_answers(page, "**/api/tools")
+
+        page.goto(f"{served}/#/tools")
+        page.wait_for_selector(".panel", state="visible", timeout=5000)
+        assert page.locator(".panel").get_attribute("aria-busy") == "true"
+
+        page.clock.fast_forward(deadlines["reading"] + 1000)
+        page.wait_for_selector('.panel[aria-busy="false"]', timeout=15000)
+
+        assert page.locator(".panel-body .empty").count() == 1, (
+            "the panel gave up waiting without saying why"
+        )
+        assert page.locator(".panel-body .empty").inner_text().strip(), (
+            "the reason left in the panel is blank"
+        )
+        page.unroute_all(behavior="ignoreErrors")
+
+    def test_a_reading_gives_up_long_before_work_the_user_asked_for_does(
+        self, page, served,
+    ):
+        """The whole reason one bound will not do.
+
+        A turn runs a model, a probe walks a chain of providers, and a
+        briefing writes one: cutting those off at the bound that suits a
+        reading would report a failure for work that was still running.
+        """
+        page.goto(served, wait_until="domcontentloaded")
+        deadlines = self._deadlines(page, served)
+
+        assert deadlines["work"] > deadlines["reading"], (
+            "work the user asked for waits no longer than a reading does"
+        )
+        assert deadlines["reading"] > 0 and deadlines["work"] > 0, (
+            "a bound of zero or less is not a bound"
+        )
+
+    def test_a_turn_is_not_cut_off_at_the_bound_a_reading_gets(
+        self, page, served,
+    ):
+        page.clock.install()
+        page.goto(served, wait_until="domcontentloaded")
+        page.wait_for_selector(".face-stage", state="visible")
+        deadlines = self._deadlines(page, served)
+        self._never_answers(page, "**/api/chat")
+
+        page.locator(".face-dock input[type='text']").fill("hello")
+        page.keyboard.press("Enter")
+
+        page.clock.fast_forward(deadlines["reading"] + 1000)
+        page.wait_for_timeout(200)
+        assert page.locator(".toast").count() == 0, (
+            "a turn was reported as failed at the bound that suits a reading"
+        )
+
+        page.clock.fast_forward(deadlines["work"])
+        page.wait_for_selector(".toast", timeout=15000)
+        page.unroute_all(behavior="ignoreErrors")
+
+
 class TestOneSettingsButton:
     def test_settings_is_the_only_separate_destination(self, page, served):
         page.goto(served, wait_until="domcontentloaded")

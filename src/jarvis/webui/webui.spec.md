@@ -244,6 +244,41 @@ in place" below. The endpoint returns before that happens; the page polls
 the control and the restart endpoint refuses the request instead of reporting
 a restart that cannot occur.
 
+### How long the page waits for an answer
+
+Every request the page makes is bounded. A refused connection fails at once
+and an error status fails with a reason, and both already have somewhere to
+go; a socket that is accepted and then never answered has neither, because
+the promise never settles at all. The view awaiting one never finishes
+mounting, so the panel it was opened for stays `aria-busy` for as long as
+the tab is open, announcing itself as still loading something that stopped
+arriving.
+
+A single bound would have to be as long as the longest honest wait, which
+would leave it doing nothing for everything else. Which bound a call gets
+follows from whether anything will ask again:
+
+| | Waits | Because |
+|---|---|---|
+| A reading | The shorter bound | It is retaken, by the deck's snapshot or by opening the panel again, so giving up costs nothing and an answer that arrives after its replacement was due is not one |
+| Work, and every write | The longer bound | Nobody else asks for it. Cut short, a turn, a probe, a briefing or a restart is reported as failed while it is still running, and a write is reported as failed after it has already landed on disk |
+
+The briefing is both, and split accordingly: the prose is generated once a
+day when it is asked for, so `POST /api/briefing/refresh` is work and
+`GET /api/briefing`, which reads back what was kept, is a reading.
+
+A stream is bounded by silence rather than by duration. Importing a whole
+vault legitimately runs for minutes and reports progress line by line, so
+what means it has stopped is that nothing has arrived since the last line.
+Every line restarts the count, and only a stream that has gone quiet
+altogether reaches the bound.
+
+Reaching a bound is a failure like any other: the request rejects, saying
+that nothing came back and after how long, and the page puts that where it
+puts every other reason. In a panel that is in the body in place of the
+view, which also clears `aria-busy`; from the dock it is a message beside
+the face.
+
 ### Restarting in place
 
 The daemon's `main()` runs generations in a loop rather than exiting after
