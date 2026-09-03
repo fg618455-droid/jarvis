@@ -155,3 +155,96 @@ class TestDictationHonoursTheSetting:
         engine._transcribe_faster_whisper(model, object())
 
         assert model.transcribe.call_args[1]["language"] is None
+
+
+class TestEveryTranscriptionPathHonoursTheSetting:
+    """One call site that forgets the language undoes the setting entirely.
+
+    A user who pinned German and hears Icelandic come back has no way to
+    tell which of the several `transcribe()` calls dropped it, so each is
+    held to the same rule here: the configured language reaches Whisper,
+    and no fallback quietly restores identification.
+    """
+
+    def test_the_older_api_fallback_keeps_the_language(self):
+        """A faster-whisper build without `hotwords` or `vad_filter` raises
+        TypeError, and the retry must not drop the language along with the
+        arguments it was retrying without."""
+        listener, model = _listener_for_transcribe("de")
+        segment = MagicMock()
+        segment.text = "guten morgen"
+        info = MagicMock()
+        info.language = "de"
+        info.language_probability = 1.0
+        calls = []
+
+        def only_the_simple_signature(audio, **kwargs):
+            calls.append(kwargs)
+            if set(kwargs) - {"language"}:
+                raise TypeError("unexpected keyword argument")
+            return (iter([segment]), info)
+
+        model.transcribe.side_effect = only_the_simple_signature
+
+        listener._finalize_utterance()
+
+        assert len(calls) == 2, "the rich call should have been retried"
+        assert calls[-1]["language"] == "de"
+
+    def test_the_security_confirmation_capture_keeps_the_language(self):
+        """A spoken yes or no is transcribed on its own path. Detecting the
+        language there instead of pinning it risks misreading the one word
+        that decides whether a critical tool runs."""
+        listener, model = _listener_for_transcribe("de")
+        segment = MagicMock()
+        segment.text = "ja"
+        model.transcribe.return_value = (iter([segment]), MagicMock())
+
+        listener._transcribe_security_audio(object())
+
+        assert model.transcribe.call_args[1]["language"] == "de"
+
+    def test_the_security_captures_older_api_fallback_keeps_the_language(self):
+        listener, model = _listener_for_transcribe("de")
+        segment = MagicMock()
+        segment.text = "ja"
+        calls = []
+
+        def only_the_simple_signature(audio, **kwargs):
+            calls.append(kwargs)
+            if set(kwargs) - {"language"}:
+                raise TypeError("unexpected keyword argument")
+            return (iter([segment]), MagicMock())
+
+        model.transcribe.side_effect = only_the_simple_signature
+
+        listener._transcribe_security_audio(object())
+
+        assert len(calls) == 2
+        assert calls[-1]["language"] == "de"
+
+    def test_the_mlx_security_capture_keeps_the_language(self):
+        """The Apple Silicon branch is a separate call with its own
+        argument list, so it needs its own guard."""
+        from unittest.mock import patch as _patch
+
+        listener, _model = _listener_for_transcribe("de")
+        listener._whisper_backend = "mlx"
+        listener._mlx_model_repo = "some/repo"
+        fake = MagicMock()
+        fake.transcribe.return_value = {"text": "ja"}
+
+        with _patch("jarvis.listening.listener.mlx_whisper", fake, create=True):
+            listener._transcribe_security_audio(object())
+
+        assert fake.transcribe.call_args[1]["language"] == "de"
+
+    def test_an_unset_language_still_leaves_detection_on_everywhere(self):
+        """The guard must not become "always pin something": an unset
+        setting means identification, on every path."""
+        listener, model = _listener_for_transcribe("")
+        model.transcribe.return_value = (iter([]), MagicMock())
+
+        listener._transcribe_security_audio(object())
+
+        assert model.transcribe.call_args[1]["language"] is None
