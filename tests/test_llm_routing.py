@@ -707,3 +707,51 @@ class TestAnEmptyCompletionIsNotAnAnswer:
         })
 
         assert router.chat("chat", [{"role": "user", "content": "hi"}]) is None
+
+
+class TestAnEmptyLaneSaysSoRatherThanLookingLikeAFailure:
+    """A chain with no candidate at all is not the same as one whose
+    candidates all failed, and the difference is what a user needs to see.
+
+    A tool-bearing call only considers routes advertising ``tools``, which
+    can be a much shorter list than the tier's. When cooldowns take the
+    last of them, the walk ends before it starts: no request is made, no
+    route is marked failed, and nothing in the logs distinguishes that
+    from a model with nothing to say.
+    """
+
+    def _capture(self, monkeypatch):
+        from jarvis.llm import route as route_mod
+
+        seen: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            route_mod, "debug_log",
+            lambda message, category="debug": seen.append((message, category)),
+        )
+        return seen
+
+    def test_a_tool_call_with_no_tool_capable_route_is_logged(self, tmp_path, monkeypatch):
+        chat_only = Route(
+            **{**_route("chat-only").__dict__, "capabilities": frozenset({"chat"})}
+        )
+        seen = self._capture(monkeypatch)
+        router = _router(tmp_path, [chat_only], {chat_only: _Backend()})
+
+        result = router.chat(
+            "chat", [{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {"name": "createEvent"}}],
+        )
+
+        assert result is None
+        assert any("tools" in message for message, _ in seen)
+
+    def test_a_chain_with_candidates_does_not_log_an_empty_lane(self, tmp_path, monkeypatch):
+        route = _route("ordinary")
+        seen = self._capture(monkeypatch)
+        router = _router(tmp_path, [route], {
+            route: _Backend(chat_result={"message": {"content": "answer"}}),
+        })
+
+        router.chat("chat", [{"role": "user", "content": "hi"}])
+
+        assert not any("no enabled" in message for message, _ in seen)

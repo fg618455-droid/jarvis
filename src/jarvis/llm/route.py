@@ -251,9 +251,20 @@ class RoutedBackend(LLMBackend):
         preferred_provider: str | None = None,
         deadline: RequestDeadline | None = None,
     ):
+        tier = self._tier(model)
         candidates = self._ordered_for_preference(
-            list(self._available(self._tier(model), capability)), preferred_provider,
+            list(self._available(tier, capability)), preferred_provider,
         )
+        if not candidates:
+            # Not the same as a chain whose routes all failed: nothing was
+            # asked, so no route is marked and the walk leaves no trace of
+            # itself. A tool-bearing call sees only the routes advertising
+            # ``tools``, which can be a far shorter list than the tier's.
+            debug_log(
+                f"no enabled, capable, unblocked {tier.value} route "
+                f"advertises {capability!r}; the chain is empty for this call",
+                "llm",
+            )
         for route in candidates:
             if deadline is not None and deadline.expired(clock=self._clock):
                 break
