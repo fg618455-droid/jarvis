@@ -210,6 +210,17 @@ at all, which is how a caller distinguishes "turned on" from "nothing is
 listening". The control centre's Conversation view carries the button, and
 `POST /api/conversation/mode` answers 409 when the switch reached nothing.
 
+Spoken requests reach the same switch two ways. The intent judge decides ahead
+of the reply engine, in any language, that the user asked to keep talking; that
+is the fast path and it costs no reply turn. The judge is not always there,
+though: it can be unavailable, and text chat and Telegram never run one. A
+request that gets past it would otherwise reach the reply engine, which can
+only answer *about* the mode, so the user watches Jarvis explain a switch
+instead of flipping it. The `setConversationMode` builtin closes that gap by
+making the switch something the model can carry out. Neither path matches
+phrases: the judge and the tool router both read the request through a model,
+so no language is named in either.
+
 **Visibility:** both transitions publish to `RuntimeState`, which is what an
 interface watches. The state manager owns the conversation; the runtime holds
 the copy watchers read. Pushing it is not optional, because a conversation

@@ -21,6 +21,7 @@ from .builtin.nutrition.delete_meal import DeleteMealTool
 from .builtin.refresh_mcp_tools import RefreshMCPToolsTool
 from .builtin.weather import WeatherTool
 from .builtin.time_tool import TimeTool
+from .builtin.conversation_mode import ConversationModeTool
 from .builtin.stop import StopTool
 from .builtin.open_on_computer import OpenOnComputerTool
 from .builtin.tool_search import ToolSearchTool
@@ -51,6 +52,7 @@ BUILTIN_TOOLS = {
     "getWeather": WeatherTool(),
     "getTime": TimeTool(),
     "stop": StopTool(),
+    "setConversationMode": ConversationModeTool(),
     "openOnComputer": OpenOnComputerTool(),
     "toolSearchTool": ToolSearchTool(),
     "askCrew": AskCrewTool(),
