@@ -176,6 +176,9 @@ class TestOpenAICompatibleStreaming:
             b"not-a-data-line",
             b'data: not-json',
             b'data: {"choices": [{"delta": {"content": "ok"}}]}',
+            # A stream that never terminates is a severed one, which is its
+            # own failure — see TestATruncatedReplyIsNotAFinishedOne.
+            b'data: [DONE]',
         ]
         mock_post.return_value = _make_response(iter_lines=sse)
         backend = OpenAICompatibleBackend("http://localhost:1234/v1")
@@ -1202,3 +1205,105 @@ class TestOpenAICompatibleChatStreaming:
         )
 
         assert mock_post.call_args.kwargs["json"]["stream"] is False
+
+
+class TestATruncatedReplyIsNotAFinishedOne:
+    """A reply that stopped early must not be delivered as an answer.
+
+    An SSE stream that ends without its terminal marker looks exactly like a
+    finished one to a fold that only concatenates deltas: whatever arrived
+    before the connection dropped becomes the reply. One word after forty
+    seconds of work reads as a finished thought to the user, so the fold
+    reports the incompleteness as a route failure and the chain walks on.
+    """
+
+    @patch("jarvis.llm.requests.post")
+    def test_a_stream_cut_before_its_terminal_marker_is_a_provider_failure(self, mock_post):
+        from jarvis.llm import OpenAICompatibleBackend, ProviderError
+
+        mock_post.return_value = _make_response(iter_lines=[
+            b'data: {"choices": [{"delta": {"role": "assistant", "content": "Ich"}}]}',
+        ])
+
+        with pytest.raises(ProviderError):
+            OpenAICompatibleBackend("http://server/v1").chat(
+                "any", [{"role": "user", "content": "hi"}], on_token=lambda _t: None
+            )
+
+    @patch("jarvis.llm.requests.post")
+    def test_a_finish_reason_without_the_done_sentinel_still_completes(self, mock_post):
+        """Some servers close the stream on ``finish_reason`` alone. That is
+        a complete reply and must not be mistaken for a severed one."""
+        from jarvis.llm import OpenAICompatibleBackend
+
+        mock_post.return_value = _make_response(iter_lines=[
+            b'data: {"choices": [{"delta": {"content": "Alles gut."}}]}',
+            b'data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}',
+        ])
+
+        response = OpenAICompatibleBackend("http://server/v1").chat(
+            "any", [{"role": "user", "content": "hi"}], on_token=lambda _t: None
+        )
+
+        assert response["message"]["content"] == "Alles gut."
+
+    @patch("jarvis.llm.requests.post")
+    def test_a_reply_cut_off_by_the_token_cap_is_a_provider_failure(self, mock_post):
+        from jarvis.llm import OpenAICompatibleBackend, ProviderError
+
+        mock_post.return_value = _make_response(iter_lines=[
+            b'data: {"choices": [{"delta": {"content": "Ich"}}]}',
+            b'data: {"choices": [{"delta": {}, "finish_reason": "length"}]}',
+            b'data: [DONE]',
+        ])
+
+        with pytest.raises(ProviderError):
+            OpenAICompatibleBackend("http://server/v1").chat(
+                "any", [{"role": "user", "content": "hi"}], on_token=lambda _t: None
+            )
+
+    @patch("jarvis.llm.requests.post")
+    def test_an_unstreamed_reply_cut_off_by_the_token_cap_is_a_provider_failure(self, mock_post):
+        from jarvis.llm import OpenAICompatibleBackend, ProviderError
+
+        mock_post.return_value = _make_response(json_data={
+            "choices": [{"message": {"role": "assistant", "content": "Ich"},
+                         "finish_reason": "length"}],
+        })
+
+        with pytest.raises(ProviderError):
+            OpenAICompatibleBackend("http://server/v1").chat(
+                "any", [{"role": "user", "content": "hi"}]
+            )
+
+    @patch("jarvis.llm.requests.post")
+    def test_a_caller_that_asked_for_a_token_cap_keeps_its_short_answer(self, mock_post):
+        """A cap the caller set is the caller's own decision. Only an
+        unrequested truncation is a failure."""
+        from jarvis.llm import OpenAICompatibleBackend
+
+        mock_post.return_value = _make_response(json_data={
+            "choices": [{"message": {"role": "assistant", "content": "Ich"},
+                         "finish_reason": "length"}],
+        })
+
+        response = OpenAICompatibleBackend("http://server/v1").chat(
+            "any", [{"role": "user", "content": "hi"}],
+            extra_options={"max_tokens": 1},
+        )
+
+        assert response["message"]["content"] == "Ich"
+
+    @patch("jarvis.llm.requests.post")
+    def test_an_empty_stream_still_reports_nothing_rather_than_failing(self, mock_post):
+        """A route that says nothing at all is an empty response the router
+        already walks past; it must not become an exception instead."""
+        from jarvis.llm import OpenAICompatibleBackend
+
+        mock_post.return_value = _make_response(iter_lines=[b'data: [DONE]'])
+
+        response = OpenAICompatibleBackend("http://server/v1").chat(
+            "any", [{"role": "user", "content": "hi"}], on_token=lambda _t: None
+        )
+
+        assert response is None

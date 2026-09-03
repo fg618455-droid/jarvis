@@ -153,6 +153,8 @@ class ServerCapabilities:
 def _assemble_streamed_chat(
     resp: Any,
     on_token: Callable[[str], None],
+    *,
+    capped_by_caller: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Fold an OpenAI-shape chat stream back into one response dict.
 
@@ -163,10 +165,19 @@ def _assemble_streamed_chat(
 
     ``on_token`` is a side effect on the user's behalf, so a listener that
     raises must not cost them the answer.
+
+    A fold that only concatenates deltas cannot tell a finished reply from
+    one whose connection dropped halfway, so it also watches for the
+    stream's terminal marker: either a ``finish_reason`` or the ``[DONE]``
+    sentinel. Text that arrived without one is a severed stream, and
+    :func:`_raise_if_incomplete` reports it as a route failure rather than
+    handing a fragment back as an answer.
     """
     content: List[str] = []
     role = "assistant"
     calls: Dict[int, Dict[str, Any]] = {}
+    finish_reason: Optional[str] = None
+    terminated = False
 
     for raw in resp.iter_lines():
         if not raw:
@@ -175,7 +186,10 @@ def _assemble_streamed_chat(
         line = line.strip()
         if line.startswith("data:"):
             line = line[5:].strip()
-        if not line or line == "[DONE]":
+        if line == "[DONE]":
+            terminated = True
+            continue
+        if not line:
             continue
         try:
             data = json.loads(line)
@@ -184,6 +198,10 @@ def _assemble_streamed_chat(
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices:
             continue
+        reason = choices[0].get("finish_reason")
+        if isinstance(reason, str) and reason:
+            finish_reason = reason
+            terminated = True
         delta = choices[0].get("delta")
         if not isinstance(delta, dict):
             continue
@@ -218,6 +236,15 @@ def _assemble_streamed_chat(
         debug_log("OpenAICompatibleBackend.chat: stream produced nothing", "llm")
         return None
 
+    if not terminated:
+        debug_log(
+            "OpenAICompatibleBackend.chat: stream ended without a terminal "
+            "marker, treating the partial reply as a route failure",
+            "llm",
+        )
+        raise ProviderError("provider stream ended before the reply did")
+    _raise_if_incomplete(finish_reason, capped_by_caller=capped_by_caller)
+
     message: Dict[str, Any] = {"role": role, "content": "".join(content)}
     if calls:
         message["tool_calls"] = [
@@ -225,7 +252,32 @@ def _assemble_streamed_chat(
                                   "arguments": _decode_tool_arguments(call["function"]["arguments"])}}
             for _, call in sorted(calls.items())
         ]
-    return {"choices": [{"message": message}], "message": message}
+    return {
+        "choices": [{"message": message, "finish_reason": finish_reason}],
+        "message": message,
+    }
+
+
+def _raise_if_incomplete(
+    finish_reason: Optional[str],
+    *,
+    capped_by_caller: bool,
+) -> None:
+    """Refuse a reply the server stopped mid-sentence.
+
+    ``length`` means the model ran out of room, not that it finished. The
+    text is a fragment, and a fragment presented as an answer is worse than
+    no answer: the user has no way to see that the rest was cut off. A cap
+    the caller asked for is the caller's own decision and stands.
+    """
+    if capped_by_caller or finish_reason != "length":
+        return
+    debug_log(
+        "OpenAICompatibleBackend.chat: reply truncated at the token cap, "
+        "treating it as a route failure rather than an answer",
+        "llm",
+    )
+    raise ProviderError("provider truncated the reply")
 
 
 def _decode_tool_arguments(arguments: str) -> Any:
@@ -403,6 +455,8 @@ class OpenAICompatibleBackend(LLMBackend):
                 resp.raise_for_status()
 
                 full_response: List[str] = []
+                finish_reason: Optional[str] = None
+                terminated = False
                 for raw in resp.iter_lines():
                     if not raw:
                         continue
@@ -412,6 +466,7 @@ class OpenAICompatibleBackend(LLMBackend):
                         continue
                     payload_str = line[len("data:"):].strip()
                     if payload_str == "[DONE]":
+                        terminated = True
                         break
                     try:
                         chunk = json.loads(payload_str)
@@ -420,6 +475,10 @@ class OpenAICompatibleBackend(LLMBackend):
                     choices = chunk.get("choices") if isinstance(chunk, dict) else None
                     if not isinstance(choices, list) or not choices:
                         continue
+                    reason = choices[0].get("finish_reason") if isinstance(choices[0], dict) else None
+                    if isinstance(reason, str) and reason:
+                        finish_reason = reason
+                        terminated = True
                     delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
                     if not isinstance(delta, dict):
                         continue
@@ -430,7 +489,17 @@ class OpenAICompatibleBackend(LLMBackend):
                             on_token(content)
 
                 result = "".join(full_response)
-                return result if result.strip() else None
+                if not result.strip():
+                    return None
+                if not terminated:
+                    debug_log(
+                        "OpenAICompatibleBackend.streaming: stream ended "
+                        "without a terminal marker",
+                        "llm",
+                    )
+                    raise ProviderError("provider stream ended before the reply did")
+                _raise_if_incomplete(finish_reason, capped_by_caller=False)
+                return result
         except requests.exceptions.Timeout:
             raise ProviderError("provider request timed out") from None
         except requests.exceptions.ConnectionError:
@@ -519,9 +588,18 @@ class OpenAICompatibleBackend(LLMBackend):
             ) as resp:
                 resp.raise_for_status()
                 if on_token is not None:
-                    return _assemble_streamed_chat(resp, on_token)
+                    return _assemble_streamed_chat(
+                        resp, on_token,
+                        capped_by_caller="max_tokens" in payload,
+                    )
                 data = resp.json()
             if isinstance(data, dict):
+                choices = data.get("choices")
+                if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                    _raise_if_incomplete(
+                        choices[0].get("finish_reason"),
+                        capped_by_caller="max_tokens" in payload,
+                    )
                 return _normalise_response(data)
         except requests.exceptions.Timeout:
             debug_log(f"OpenAICompatibleBackend.chat: timeout after {timeout_sec}s", "llm")

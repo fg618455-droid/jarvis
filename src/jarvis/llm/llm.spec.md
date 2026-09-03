@@ -71,6 +71,12 @@ Function-style Ollama helpers remain available to performance tests and eval scr
 
 The first route to emit meaningful text owns the answer. Its wrapped callback becomes the only output path, and later output from an abandoned worker is discarded. Once a route owns the answer, a failure ends that stream and no later route is contacted. This output gate prevents a slow local worker from duplicating a cloud response.
 
+### Incomplete replies
+
+A fold that only concatenates deltas cannot tell a finished reply from one whose connection dropped halfway: both arrive as text and then nothing. `OpenAICompatibleBackend` therefore watches for the stream's terminal marker, either a `finish_reason` or the `[DONE]` sentinel, and text that arrived without one raises `ProviderError` so the chain walks on. A stream that produced nothing at all remains an empty response rather than an error, because that is a route with nothing to say rather than a severed one.
+
+`finish_reason: "length"` is the server stopping the model mid-sentence, not the model finishing, and it is refused the same way on both the streamed and unstreamed paths. A fragment presented as an answer is worse than no answer, because nothing in it tells the user that the rest was cut off. A cap the caller asked for (`max_tokens` in the request) is the caller's own decision and its short answer stands.
+
 ## Typed provider failures
 
 `OpenAICompatibleBackend` raises:
