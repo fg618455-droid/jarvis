@@ -215,10 +215,14 @@ def get_llm_backend(settings: Any) -> LLMBackend:
                 Tier.CHAT, _LOCAL_CHAT_TIMEOUT_SEC, keep_alive=keep_alive,
             ),
         }
+        allow_local_fallback = bool(
+            getattr(settings, "local_llm_fallback_enabled", True)
+        )
         for tier in (Tier.FAST, Tier.CHAT):
             tier_routes = [route for route in active_routes if route.tier is tier]
             if not any(RoutedBackend._is_local(route) for route in tier_routes):
-                routes.append(local_defaults[tier])
+                if allow_local_fallback:
+                    routes.append(local_defaults[tier])
     else:
         provider = _resolve_provider(getattr(settings, "llm_provider", None))
         if provider == _OPENAI_COMPATIBLE:
@@ -313,12 +317,17 @@ def describe_model_topology(settings: Any) -> dict[str, dict[str, Any]]:
     local_embedding = _str_attr(settings, "ollama_embed_model") or _str_attr(
         settings, "embedding_model"
     )
+    # PRIVATE work and embeddings are always local. The FAST and CHAT
+    # fallbacks only exist while `local_llm_fallback_enabled` is on, so
+    # reporting them unconditionally would show a local chat model to
+    # someone running a deliberately remote-only chain.
     local = {
-        "fast_fallback": {"model": local_fast, "provider": _OLLAMA},
-        "chat_fallback": {"model": local_chat, "provider": _OLLAMA},
         "private": {"model": local_chat, "provider": _OLLAMA},
         "embedding": {"model": local_embedding, "provider": _OLLAMA},
     }
+    if bool(getattr(settings, "local_llm_fallback_enabled", True)):
+        local["fast_fallback"] = {"model": local_fast, "provider": _OLLAMA}
+        local["chat_fallback"] = {"model": local_chat, "provider": _OLLAMA}
     return {"effective": effective, "local": local}
 
 

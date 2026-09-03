@@ -105,6 +105,12 @@ class Settings:
     llm_api_key: str
     llm_chat_model: str
     llm_routes: list[Dict[str, Any]]
+    # Whether a loopback Ollama route is appended to Tier.FAST and Tier.CHAT
+    # when the configured chain has no local entry for them. Off means a
+    # remote-only chain stays remote-only: if every configured route fails,
+    # the turn fails rather than quietly waking a local model. Tier.PRIVATE
+    # and embeddings are unaffected and always stay local.
+    local_llm_fallback_enabled: bool
     # "auto" (default) lets automatic per-turn classification and the
     # configured chain order decide; a specific provider name (e.g.
     # "ollama", "claude_subscription") forces every reply's Tier.CHAT call
@@ -949,6 +955,10 @@ def get_default_config() -> Dict[str, Any]:
         # Explicit loopback Ollama model appended after configured FAST routes.
         # Empty on disk follows DEFAULT_FAST_MODEL and future default upgrades.
         "local_fast_model": "",
+        # Whether FAST and CHAT fall back to a loopback Ollama route when the
+        # configured chain has no local entry. PRIVATE and embeddings stay
+        # local regardless.
+        "local_llm_fallback_enabled": True,
         "intent_judge_timeout_sec": 6.0,
         "intent_judge_thinking_enabled": False,  # Enable thinking for intent judge (adds latency to wake detection)
 
@@ -1086,6 +1096,9 @@ def load_settings() -> Settings:
     ollama_embed_model = str(merged.get("ollama_embed_model"))
     ollama_chat_model = str(merged.get("ollama_chat_model"))
 
+    local_llm_fallback_enabled = bool(
+        merged.get("local_llm_fallback_enabled", True)
+    )
     llm_routes: list[Dict[str, Any]] = []
     raw_routes = merged.get("llm_routes", [])
     if isinstance(raw_routes, list):
@@ -1552,6 +1565,7 @@ def load_settings() -> Settings:
         llm_api_key=llm_api_key,
         llm_chat_model=llm_chat_model,
         llm_routes=llm_routes,
+        local_llm_fallback_enabled=local_llm_fallback_enabled,
         chat_backend_override=chat_backend_override,
         embedding_provider=embedding_provider,
         embedding_base_url=embedding_base_url,
