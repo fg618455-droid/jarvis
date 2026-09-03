@@ -202,6 +202,13 @@ Speech is a side effect on the user's behalf: a listener that raises is logged a
 
    **Termination**: Natural-language content terminates when no malformed-output recovery or zero-tool external-work grounding gate applies. The planner's task list ordinarily direct-executes every planned tool step before synthesis. For plan-empty or reply-only queries, the first content response is delivered directly when the router supplied no narrowed external-work signal. A router-positive response with no executed tool takes the bounded corrective path above instead.
    - Automatic crew deadline: before each local loop unit and immediately after each main chat call, the engine applies the 3-second close-to-done decision and 5-second hard cutoff. A handoff response terminates the loop and is the turn's only output.
+
+   No reply at all:
+   - Three different failures can leave the turn with nothing to say, and each says so in its own words, because each asks something different of the user: rephrase it, or fix the configuration.
+   - A backend that answered with nothing usable keeps the ordinary "Sorry, I had trouble processing that" apology.
+   - An exhausted route chain (`chat_with_messages` returned `None`: every enabled, capable, unblocked route of that tier failed, timed out, or is in cooldown) says that no configured language model answered. Asking the user to try again would invite them to repeat a request that fails identically every time, and it reads as a comprehension failure where the fault is in routing.
+   - A chain exhausted on a call that carried a tool schema names the tool-capable chain specifically. That chain is the shorter one: a route without the `tools` capability is not a candidate for a tool turn at all, so a configuration whose chat routes mostly cannot carry tools can read every request but perform none of them.
+   - `debug_log` records which of the three fired at the decision point.
    - Max-turn digest: when the loop exhausts `agentic_max_turns` without ever producing a content turn (e.g. a pure tool-call loop), the engine calls `digest_loop_for_max_turns` in `enrichment.py`. This runs a single cheap LLM pass over the loop's accumulated activity (tool calls, tool result excerpts, any prose) and produces a short reply that begins with a caveat sentence noting the request was not fully completed. The caveat and the summary are generated in the same language as the user's request, not hardcoded English. On digest failure the engine falls back to the last candidate reply (if any) or a generic error message.
 
 7. Tool and Planning Protocol

@@ -149,6 +149,32 @@ if TYPE_CHECKING:
 CREW_HANDOFF_CHECKPOINT_MS = 3000.0
 LOCAL_REPLY_HARD_CUTOFF_MS = 5000.0
 
+# What the assistant says when it has no reply. Which one it says depends on
+# why, because the three failures ask different things of the user: rephrase,
+# wait, or fix the configuration. Telling someone to try again when no
+# backend can answer invites them to repeat a request that will fail
+# identically every time.
+UNUSABLE_MODEL_OUTPUT_MESSAGE = (
+    "Sorry, I had trouble processing that. Could you try again?"
+)
+NO_CHAT_BACKEND_MESSAGE = (
+    "No language model answered. Every backend configured for this request "
+    "failed or is unavailable just now, so I have nothing to tell you."
+)
+NO_TOOL_BACKEND_MESSAGE = (
+    "This needs a language model that can use tools, and none of the "
+    "configured ones answered, so I could not carry it out."
+)
+
+
+def _no_reply_message(backend_exhausted: Optional[str]) -> str:
+    """The honest reason this turn produced nothing."""
+    if backend_exhausted == "tools":
+        return NO_TOOL_BACKEND_MESSAGE
+    if backend_exhausted:
+        return NO_CHAT_BACKEND_MESSAGE
+    return UNUSABLE_MODEL_OUTPUT_MESSAGE
+
 
 def _automatic_crew_handoff_available(cfg: Any) -> bool:
     """Whether the deadline may hand this turn to the crew on its own.
@@ -2383,6 +2409,11 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # The latest plausible natural-language candidate. Used by the max-turns
     # digest backstop when the loop exhausts without producing a reply.
     last_candidate_reply: Optional[str] = None
+    # Set when the route chain itself came back empty-handed, so the reply
+    # backstop can name a routing fault instead of blaming the model for a
+    # request it was never asked. "tools" records that the failing call
+    # carried a tool schema, which is the narrower and much smaller chain.
+    backend_exhausted: Optional[str] = None
     max_turns = cfg.agentic_max_turns
     turn = 0
     malformed_retry_used = False
@@ -2826,7 +2857,15 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 response=llm_resp,
             )
         if not llm_resp:
-            debug_log("  ❌ LLM returned no response", "planning")
+            # Not a quiet model: every enabled, capable, unblocked route in
+            # this tier failed, timed out, or is in cooldown. A tool-bearing
+            # call walks the shorter "tools" chain, so it runs out first.
+            backend_exhausted = "tools" if _dump_tools_schema else "chat"
+            debug_log(
+                f"  ❌ no {backend_exhausted} backend answered: the route "
+                "chain is exhausted for this turn",
+                "planning",
+            )
             break
 
         # Debug: log raw LLM response structure
@@ -3370,10 +3409,12 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             )
             reply = last_candidate_reply
     if not reply or not reply.strip():
-        reply = in_the_voices_language(
-            cfg, "Sorry, I had trouble processing that. Could you try again?"
+        reply = in_the_voices_language(cfg, _no_reply_message(backend_exhausted))
+        debug_log(
+            f"no reply generated (backend_exhausted={backend_exhausted!r}), "
+            "returning error message",
+            "planning",
         )
-        debug_log("no reply generated, returning error message", "planning")
 
         # Print error message
         try:
@@ -3398,7 +3439,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     safe_reply = reply.strip()
     if not safe_reply:
         safe_reply = in_the_voices_language(
-            cfg, "Sorry, I had trouble processing that. Could you try again?"
+            cfg, _no_reply_message(backend_exhausted)
         )
         reply = safe_reply
     if safe_reply:
