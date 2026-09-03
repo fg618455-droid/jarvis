@@ -22,10 +22,47 @@ from .backend import (
 from .claude_subscription import ClaudeSubscriptionBackend
 from .codex_subscription import CodexSubscriptionBackend
 from .crew_chat import CrewChatBackend
-from .ollama import OllamaBackend
+from .ollama import OllamaBackend, extract_text_from_response
 from .openai_compatible import OpenAICompatibleBackend
 from .route_state import RouteStateStore
 from .tiers import Tier
+
+
+def chat_response_is_empty(response: Any) -> bool:
+    """Whether a chat response carries nothing the caller can act on.
+
+    Text, a tool call, and reasoning are the three things a turn can be
+    made of. A response holding none of them is a route that did not
+    answer, however well-formed the envelope around it is, and the chain
+    treats it exactly as it treats ``None``: the next capable route gets
+    its turn. Handing the emptiness back instead would end the turn on a
+    route that never spoke, and the caller has no way to tell that apart
+    from a model with nothing to say.
+    """
+    if response is None:
+        return True
+    if not isinstance(response, dict):
+        return False
+
+    text = extract_text_from_response(response)
+    if isinstance(text, str) and text.strip():
+        return False
+
+    message = response.get("message")
+    if not isinstance(message, dict):
+        choices = response.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            message = choices[0].get("message")
+    if not isinstance(message, dict):
+        return True
+
+    if message.get("tool_calls"):
+        return False
+    for field_name in ("thinking", "reasoning", "reasoning_content"):
+        value = message.get(field_name)
+        if isinstance(value, str) and value.strip():
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -349,7 +386,7 @@ class RoutedBackend(LLMBackend):
 
         def invoke(backend, route):
             listener = on_token if "stream" in route.capabilities else None
-            return backend.chat(
+            result = backend.chat(
                 route.model,
                 messages,
                 timeout_sec=min(
@@ -359,6 +396,7 @@ class RoutedBackend(LLMBackend):
                 extra_options=extra_options, tools=tools, thinking=thinking,
                 on_token=listener,
             )
+            return None if chat_response_is_empty(result) else result
 
         return self._run(
             chat_model, invoke,

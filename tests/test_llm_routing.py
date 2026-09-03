@@ -619,3 +619,91 @@ class TestPreferredProviderRouting:
         assert result == {"message": {"content": "first"}}
         assert first_backend.chat_calls == 1
         assert second_backend.chat_calls == 0
+
+
+class TestAnEmptyCompletionIsNotAnAnswer:
+    """A route that returns a well-formed response carrying nothing has not
+    answered. The chain must keep walking, exactly as it does for a route
+    that raised or returned nothing at all: an emptiness handed back to the
+    caller ends the turn on a route that never spoke."""
+
+    def test_empty_content_falls_through_to_the_next_route(self, tmp_path):
+        first = _route("first")
+        second = _route("second")
+        second_backend = _Backend(chat_result={"message": {"content": "real answer"}})
+        router = _router(tmp_path, [first, second], {
+            first: _Backend(chat_result={"message": {"role": "assistant", "content": ""}}),
+            second: second_backend,
+        })
+
+        result = router.chat("chat", [{"role": "user", "content": "hi"}])
+
+        assert result == {"message": {"content": "real answer"}}
+        assert second_backend.chat_calls == 1
+
+    def test_openai_shape_empty_completion_falls_through(self, tmp_path):
+        """Hermes answers a tool-bearing turn with an OpenAI-shaped
+        completion whose content is empty and whose token counts are zero."""
+        first = _route("first")
+        second = _route("second")
+        second_backend = _Backend(chat_result={"message": {"content": "real answer"}})
+        router = _router(tmp_path, [first, second], {
+            first: _Backend(chat_result={
+                "choices": [{"message": {"role": "assistant", "content": ""}}],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+            }),
+            second: second_backend,
+        })
+
+        result = router.chat("chat", [{"role": "user", "content": "hi"}])
+
+        assert result == {"message": {"content": "real answer"}}
+        assert second_backend.chat_calls == 1
+
+    def test_a_tool_call_without_text_is_an_answer(self, tmp_path):
+        """The usual shape of a tool turn: no prose, one call. It must own
+        the answer rather than being mistaken for silence."""
+        first = _route("first")
+        second = _route("second")
+        tool_response = {"message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": "webSearch", "arguments": {}}}],
+        }}
+        second_backend = _Backend(chat_result={"message": {"content": "must not run"}})
+        router = _router(tmp_path, [first, second], {
+            first: _Backend(chat_result=tool_response),
+            second: second_backend,
+        })
+
+        assert router.chat("chat", [{"role": "user", "content": "hi"}]) == tool_response
+        assert second_backend.chat_calls == 0
+
+    def test_a_thinking_only_turn_is_an_answer(self, tmp_path):
+        """Reasoning with no prose yet is the model working, not silence.
+        The engine lets that turn continue; the router must not take the
+        decision away from it."""
+        first = _route("first")
+        second = _route("second")
+        thinking = {"message": {"role": "assistant", "content": "",
+                                "thinking": "let me work through this"}}
+        second_backend = _Backend(chat_result={"message": {"content": "must not run"}})
+        router = _router(tmp_path, [first, second], {
+            first: _Backend(chat_result=thinking),
+            second: second_backend,
+        })
+
+        assert router.chat("chat", [{"role": "user", "content": "hi"}]) == thinking
+        assert second_backend.chat_calls == 0
+
+    def test_an_all_empty_chain_returns_nothing_rather_than_an_empty_shell(self, tmp_path):
+        """With every route silent the caller must see the exhausted chain,
+        not a response object it will read as a finished reply."""
+        first = _route("first")
+        second = _route("second")
+        router = _router(tmp_path, [first, second], {
+            first: _Backend(chat_result={"message": {"content": ""}}),
+            second: _Backend(chat_result={"message": {"content": "   "}}),
+        })
+
+        assert router.chat("chat", [{"role": "user", "content": "hi"}]) is None
