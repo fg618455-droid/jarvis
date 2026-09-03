@@ -78,6 +78,24 @@ theme painted, and one card quietly reads in the wrong palette.
 `tests/webui/test_theme_tokens.py` holds that rule as a mechanism rather than
 as a list of values, so it also holds for themes that do not exist yet.
 
+Every theme is held to the same legibility floor, measured rather than
+reviewed: text clears 4.5:1 against the surface it actually lands on, or
+3:1 once it is large, and a focus ring clears 3:1 against what sits next to
+it. A palette is the one part of the interface whose correctness is a
+number, and it is a number that cannot be read off `tokens.css`, because a
+token is legible or not only once something has chosen a surface for it and
+a size to set it at. So `tests/webui/test_contrast.py` renders the real
+interface in every theme and measures what a reader would see.
+
+That measurement is taken on a paint that has stopped moving. Swapping the
+palette gives every surface, border and label that has a transition
+something to do, so the frames after the change show one theme's text on
+another theme's surface: a ratio read there belongs to neither palette and
+is wrong in both directions, flattering a palette that is too faint and
+failing one that is fine. The page already says when it has finished, and
+that signal is what is waited for, before the first sweep and again after
+each theme is put on.
+
 The choice is this browser's, in `localStorage`, and never reaches
 `config.json`. It is a preference about looking at a screen rather than a
 fact about the assistant, so two people on two machines reading the same

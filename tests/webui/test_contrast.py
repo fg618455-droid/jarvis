@@ -181,6 +181,27 @@ def page(browser, served):
     context.close()
 
 
+def _still(page) -> None:
+    """Wait until the interface has stopped moving.
+
+    A colour read while the paint is still on its way to the value a reader
+    ends up looking at is neither the value under test nor a stable one, and
+    it is wrong in both directions: the same element can read better than it
+    settles, hiding a palette that is genuinely too faint, or worse than it
+    settles, failing a palette that is fine.
+
+    The two endless animations in the interface, the phase dot and the face's
+    breath, are excluded because they never finish by design.
+    """
+    page.wait_for_function(
+        """() => document.getAnimations().every(
+            (animation) => animation.playState !== 'running'
+                || (animation.effect?.getTiming().iterations === Infinity),
+        )""",
+        timeout=20000,
+    )
+
+
 def _painted(page, view: str) -> None:
     """Wait until the view is in the page and the stylesheet has applied.
 
@@ -206,18 +227,25 @@ def _painted(page, view: str) -> None:
         }""",
         timeout=20000,
     )
-    # And until the interface has stopped moving. A colour read while a view
-    # is still fading in is a colour part of the way to the one a reader
-    # ends up looking at, which is neither the value under test nor a stable
-    # one. The two endless animations in the interface, the phase dot and the
-    # face's breath, are excluded because they never finish by design.
-    page.wait_for_function(
-        """() => document.getAnimations().every(
-            (animation) => animation.playState !== 'running'
-                || (animation.effect?.getTiming().iterations === Infinity),
-        )""",
-        timeout=20000,
-    )
+    _still(page)
+
+
+def _wearing(page, theme: str) -> None:
+    """Put a theme on and let it land before anything is measured.
+
+    Swapping the palette is not instant: surfaces, borders and several kinds
+    of text are given a transition, so the attribute change starts a crowd of
+    them at once and the page spends the next fraction of a second between
+    two palettes. Measuring there mixes one theme's text with another
+    theme's surface and reports a ratio that belongs to neither, which is how
+    a sweep comes back red on a palette nobody has touched.
+
+    Waiting is not a guess about how long that takes: the page says when it
+    has stopped moving, and that is the same signal the initial paint is
+    waited for with.
+    """
+    page.evaluate(APPLY_THEME, theme)
+    _still(page)
 
 
 def _themes(page, served) -> list[str]:
@@ -261,14 +289,19 @@ FOCUS_SWEEP = COLOUR_JS + """
 }"""
 
 
+# Wearing a palette is its own step, because the page needs a moment to
+# finish putting it on. See `_wearing`.
+APPLY_THEME = """(theme) => {
+    document.documentElement.dataset.theme = theme;
+    // A forced reflow, so the transitions this starts are started now rather
+    // than at whatever later moment something else happens to read a style.
+    void document.body.offsetHeight;
+}"""
+
+
 # Every element carrying text of its own, measured where it is painted.
 TEXT_SWEEP = COLOUR_JS + """
-(theme) => {
-    document.documentElement.dataset.theme = theme;
-    // A forced reflow, so the measurements below read the new paint rather
-    // than the one the attribute just replaced.
-    void document.body.offsetHeight;
-
+() => {
     const findings = [];
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     const seen = new Set();
@@ -337,7 +370,8 @@ class TestTextClearsItsSurfaceInEveryTheme:
 
         failures = {}
         for theme in page.evaluate(THEMES_FROM_SOURCE):
-            found = page.evaluate(TEXT_SWEEP, theme)
+            _wearing(page, theme)
+            found = page.evaluate(TEXT_SWEEP)
             if found:
                 failures[theme] = [
                     f"{f['what']} {f['ratio']}:1 needs {f['floor']} "
@@ -346,6 +380,38 @@ class TestTextClearsItsSurfaceInEveryTheme:
                 ]
 
         assert not failures, f"{view}: {failures}"
+
+
+class TestTheInstrumentMeasuresAPageThatHasStoppedMoving:
+    """The sweep must not be the thing that makes the page move.
+
+    Swapping the palette starts a transition on every surface, border and
+    label that has one, so the frame after the attribute changes has one
+    theme's text sitting on another theme's surface. A ratio read there
+    belongs to neither palette, and it is wrong in both directions: on this
+    interface the same element reads as much as two points above where it
+    settles, which would hide a palette that is genuinely too faint, and
+    other elements read below where they settle, which fails a palette that
+    is fine and sends someone looking for a fault that is not there.
+
+    So this is asserted about the instrument rather than about the palette:
+    by the time a sweep measures, nothing may still be moving.
+    """
+
+    def test_a_theme_has_landed_before_anything_is_measured(self, page, served):
+        page.goto(f"{served}/#/system", wait_until="domcontentloaded")
+        _painted(page, "system")
+
+        moving = """() => document.getAnimations().filter(
+            (animation) => animation.playState === 'running'
+                && animation.effect?.getTiming().iterations !== Infinity,
+        ).length"""
+
+        for theme in page.evaluate(THEMES_FROM_SOURCE):
+            _wearing(page, theme)
+            assert page.evaluate(moving) == 0, (
+                f"{theme} was measured while the page was still putting it on"
+            )
 
 
 class TestEveryFocusableThingSaysWhereFocusIs:
