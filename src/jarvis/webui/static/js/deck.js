@@ -257,7 +257,13 @@ export function mountDeck(root, { onOpenPanel } = {}) {
     const opened = panelNode;
     try {
       const module = await PANEL_VIEWS[name]();
-      panelCleanup = (await module.mount(view)) || null;
+      const cleanup = (await module.mount(view)) || null;
+      // Closed, or replaced by another panel, while its module was still
+      // loading. Handing that cleanup to the shared slot would either lose
+      // it, leaving the view's subscriptions and timers running against a
+      // node nobody can see, or overwrite the live panel's own.
+      if (opened === panelNode) panelCleanup = cleanup;
+      else if (cleanup) cleanup();
     } catch (error) {
       console.error(`panel ${name} failed`, error);
       view.append(el("div", { class: "empty", text: String(error.message || error) }));

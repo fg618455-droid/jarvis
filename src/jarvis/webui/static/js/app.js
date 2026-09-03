@@ -180,7 +180,11 @@ async function showSettings() {
 
   try {
     const module = await import("./views/settings.js");
-    settingsCleanup = (await module.mount(view)) || null;
+    const cleanup = (await module.mount(view)) || null;
+    // Left while the module was still loading. The same rule as a panel's:
+    // a cleanup for a view nobody can see is run rather than stored.
+    if (dom.root.contains(view)) settingsCleanup = cleanup;
+    else if (cleanup) cleanup();
   } catch (error) {
     console.error("settings failed", error);
     view.append(el("div", { class: "empty", text: String(error.message || error) }));
