@@ -102,3 +102,36 @@ def test_a_model_that_answers_unusably_still_gets_the_ordinary_apology():
     )
 
     assert "try again" in reply.lower()
+
+
+@pytest.mark.unit
+def test_a_text_tools_retry_names_the_chain_it_actually_walked():
+    """A model that rejects the native tool schema is retried without one,
+    down the plain chat chain. Blaming the tool-capable chain there names
+    a chain this turn never reached."""
+    from src.jarvis.llm import ToolsNotSupportedError
+
+    def refuse_then_answer_nothing(*_args, **kwargs):
+        if kwargs.get("tools"):
+            raise ToolsNotSupportedError("native tools API is not supported")
+        return None
+
+    with patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value=""), \
+         patch("src.jarvis.memory.graph_ops.build_warm_profile",
+               return_value={"user": "", "directives": ""}), \
+         patch("src.jarvis.memory.graph.GraphMemoryStore"), \
+         patch("src.jarvis.reply.engine.plan_query", return_value=[]), \
+         patch("src.jarvis.reply.engine.extract_search_params_for_memory", return_value={}), \
+         patch("src.jarvis.reply.engine.digest_loop_for_max_turns", return_value=None), \
+         patch("src.jarvis.reply.engine.select_tools",
+               return_value=["composio__CREATE_EVENT", "stop"]), \
+         patch("src.jarvis.reply.engine.chat_with_messages",
+               side_effect=refuse_then_answer_nothing):
+        reply = run_reply_engine(
+            db=Mock(), cfg=_mock_cfg(), tts=None,
+            text="put an appointment in my calendar",
+            dialogue_memory=DialogueMemory(),
+        )
+
+    assert "tool" not in reply.lower()
+    assert "try again" not in reply.lower()

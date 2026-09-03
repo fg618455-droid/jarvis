@@ -2788,6 +2788,10 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         # first, fall back to text-based if the model returns HTTP 400 (native
         # tools API not supported).
         _dump_tools_schema = None if use_text_tools else tools_json_schema
+        # Which lane the last chat call actually walked. A native-tools
+        # call and its text-tools retry take different chains, so the
+        # honest failure below has to name the one that ran out.
+        _called_with_tools = bool(_dump_tools_schema)
         _chat_model = cfg.llm_chat_model
         _segmenter, _on_token = _stream_speech_for_turn()
         try:
@@ -2830,6 +2834,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 "planning",
             )
             use_text_tools = True
+            _called_with_tools = False
             messages[0] = {"role": "system", "content": _build_initial_system_message()}
             _update_system_message_with_context(messages)
             _segmenter, _on_token = _stream_speech_for_turn()
@@ -2866,7 +2871,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             # Not a quiet model: every enabled, capable, unblocked route in
             # this tier failed, timed out, or is in cooldown. A tool-bearing
             # call walks the shorter "tools" chain, so it runs out first.
-            backend_exhausted = "tools" if _dump_tools_schema else "chat"
+            backend_exhausted = "tools" if _called_with_tools else "chat"
             debug_log(
                 f"  ❌ no {backend_exhausted} backend answered: the route "
                 "chain is exhausted for this turn",
