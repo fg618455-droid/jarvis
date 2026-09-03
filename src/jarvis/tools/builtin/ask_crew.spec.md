@@ -14,7 +14,9 @@ Jarvis has no direct API into Hermes and does not run it. The one channel Hermes
 
 This keeps the tool a thin, stateless HTTP call (`sendMessage` via `RequestsTelegramTransport`), with no polling loop, no cross-bot reply correlation, and no new privileged surface on the NAS.
 
-The automatic path lives in `reply/engine.py`. It bypasses the model's tool-choice decision, not the tool registry or security gate, and calls `run_tool_with_retries` with `agent="jarvis"` and the redacted user request. The explicit and automatic paths therefore share validation, confirmation, Telegram transport, tool telemetry, and result wording.
+The automatic path lives in `reply/engine.py`. It bypasses the model's tool-choice decision, not the tool registry or security gate, and calls `run_tool_with_retries` with `agent="jarvis"` and the redacted user request. The explicit and automatic paths therefore share validation, confirmation, Telegram transport, and tool telemetry.
+
+Their acknowledgements are written for different readers, so they are not the same words. The tool's `reply_text` is read by a model that will rewrite it, and can therefore carry instructions about what not to claim. `spoken_acknowledgement()` is what the automatic deadline delivers straight to the speakers with no model in between, so it is finished prose addressed to the person listening, rendered through `in_the_voices_language`.
 
 ### Contract
 
@@ -47,7 +49,9 @@ The automatic deadline does not bypass confirmation. A refusal or unavailable co
 
 ### Handoff ownership and user experience
 
-The deadline decision owns the turn. Local content arriving after a handoff decision is discarded, and the local loop cannot deliver a second answer. Jarvis returns only the delegation acknowledgement. That acknowledgement says the result will appear later in the crew Telegram channel or shared vault. It does not claim that an inline answer is pending.
+The deadline decision owns the turn. Local content arriving after a handoff decision is discarded, and the local loop cannot deliver a second answer. Jarvis returns only the delegation acknowledgement.
+
+That acknowledgement has to be unmistakable about the one thing there is no channel for. There is no return path from the crew into this conversation, so a user who hears "I'll let you know once it's done" waits for a message that will never arrive, which is a worse outcome than being told plainly to look elsewhere. Stating where the result appears is not enough on its own: a model given only that fact still writes the follow-up promise, because that is what a helpful assistant says. Both acknowledgements therefore say explicitly that nothing about this task comes back here, and the tool's model-facing text forbids the promise in as many words.
 
 ### What askCrew is NOT
 
@@ -57,4 +61,4 @@ The deadline decision owns the turn. Local content arriving after a handoff deci
 
 ### Testing
 
-Behaviour tests (`tests/tools/builtin/test_ask_crew.py`) mock `RequestsTelegramTransport` and cover: unknown agent, empty task, missing configuration (both without any network call), a successful send's exact payload shape (including the no-thread-id case for `jarvis`), and a network failure reported as retryable. A gate test (`tests/test_security_gate.py`) confirms `askCrew` always requires confirmation. Engine tests (`tests/test_reply_crew_handoff.py`) cover both deadlines, the structural close-to-done predicate, shared pre-flight budgets, single-answer ownership, the `crew_handoff` stage, that `crew_handoff_enabled` defaults off with the deadline otherwise fully configured, and that `load_settings()` wires the flag from a real config file.
+Behaviour tests (`tests/tools/builtin/test_ask_crew.py`) mock `RequestsTelegramTransport` and cover: unknown agent, empty task, missing configuration (both without any network call), a successful send's exact payload shape (including the no-thread-id case for `jarvis`), a network failure reported as retryable, and that the acknowledgement states no answer returns to this conversation and forbids promising a follow-up. A gate test (`tests/test_security_gate.py`) confirms `askCrew` always requires confirmation. Engine tests (`tests/test_reply_crew_handoff.py`) cover both deadlines, the structural close-to-done predicate, shared pre-flight budgets, single-answer ownership, that the spoken acknowledgement carries no model-facing instruction, the `crew_handoff` stage, that `crew_handoff_enabled` defaults off with the deadline otherwise fully configured, and that `load_settings()` wires the flag from a real config file.

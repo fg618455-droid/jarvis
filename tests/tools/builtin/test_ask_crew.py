@@ -133,3 +133,53 @@ class TestAskCrewTool:
             result = self.tool.run({"agent": "  DEV ", "task": "x"}, self.context)
 
         assert result.success is True
+
+
+class TestTheAcknowledgementPromisesNothingItCannotKeep:
+    """There is no return channel from the crew into this conversation.
+
+    A user who hears "I'll get back to you once it's done" waits for a
+    reply that will never arrive, because the crew answers in Telegram or
+    the vault on its own schedule. The tool result is what the model
+    paraphrases, so it has to close that reading off rather than leave it
+    open for a helpful-sounding model to fill in.
+    """
+
+    def setup_method(self):
+        self.tool = AskCrewTool()
+        self.context = Mock(spec=ToolContext)
+        self.context.user_print = Mock()
+        self.context.cfg = Mock()
+        self.context.cfg.telegram_bot_token = "tok"
+        self.context.cfg.crew_telegram_chat_id = "-100123"
+        self.context.cfg.telegram_api_base_url = ""
+
+    def _delegate(self):
+        with patch(
+            "src.jarvis.tools.builtin.ask_crew.RequestsTelegramTransport",
+            return_value=Mock(),
+        ):
+            return self.tool.run(
+                {"agent": "schule", "task": "summarise last week"}, self.context,
+            )
+
+    def test_the_result_says_no_answer_comes_back_here(self):
+        result = self._delegate()
+
+        text = result.reply_text.lower()
+        assert "not" in text and "conversation" in text
+
+    def test_the_result_names_where_to_look_instead(self):
+        result = self._delegate()
+
+        text = result.reply_text.lower()
+        assert "telegram" in text or "channel" in text
+        assert "vault" in text
+
+    def test_the_result_forbids_promising_a_follow_up(self):
+        """The instruction has to be explicit. A model told only that the
+        answer appears "in the crew channel" still writes "I'll let you
+        know", because that is what a helpful assistant says."""
+        result = self._delegate()
+
+        assert "do not" in result.reply_text.lower()

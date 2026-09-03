@@ -34,6 +34,23 @@ AGENT_THREADS: Dict[str, Optional[int]] = {
 }
 
 
+def spoken_acknowledgement(agent: str) -> str:
+    """What the user hears when a turn was handed to the crew.
+
+    The tool result is written for a model that will rewrite it, so it can
+    carry instructions about what not to claim. The automatic deadline
+    hands its acknowledgement straight to the speakers with no model in
+    between, so that text has to be finished prose addressed to the person
+    listening, and it has to close off the same wrong expectation: nothing
+    about this task will arrive in this conversation.
+    """
+    return (
+        f"I have handed this to {agent} in the crew. The answer will appear "
+        f"in the crew's Telegram channel or the shared vault, not here, and "
+        f"there is no way for me to bring it back into this conversation."
+    )
+
+
 class AskCrewTool(Tool):
     """Delegates a task to one specialist in the Hermes crew, fire-and-forget."""
 
@@ -122,7 +139,12 @@ class AskCrewTool(Tool):
         return ToolExecutionResult(
             success=True,
             reply_text=(
-                f"Delegated to {agent}. They will post the result in the crew "
-                f"channel or the shared vault once done."
+                f"Delegated to {agent}. The result will appear in the crew's "
+                f"Telegram channel or the shared vault, on their schedule. "
+                f"It does not come back into this conversation, and there is "
+                f"no way to deliver it here. Tell the user where to look for "
+                f"it. Do not say that you will report back, follow up, or let "
+                f"them know when it is ready: no further message about this "
+                f"task will reach them here."
             ),
         )

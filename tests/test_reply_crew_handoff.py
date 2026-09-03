@@ -41,6 +41,9 @@ def _begin_elapsed_turn(elapsed_sec: float):
     return trace
 
 
+from src.jarvis.tools.builtin.ask_crew import spoken_acknowledgement
+
+
 def _delegated_result() -> ToolExecutionResult:
     return ToolExecutionResult(
         success=True,
@@ -74,7 +77,7 @@ def test_a_tool_heavy_turn_hands_off_at_three_seconds(
             quiet=True,
         )
 
-    assert result == _delegated_result().reply_text
+    assert result == spoken_acknowledgement("jarvis")
     local_chat.assert_not_called()
     assert tool_runner.call_args.kwargs["tool_name"] == "askCrew"
     assert tool_runner.call_args.kwargs["tool_args"] == {
@@ -143,7 +146,7 @@ def test_a_local_answer_finishing_after_five_seconds_is_discarded(
             quiet=True,
         )
 
-    assert result == _delegated_result().reply_text
+    assert result == spoken_acknowledgement("jarvis")
     assert "fully formed local answer" not in result
     assert tool_runner.call_count == 1
 
@@ -287,3 +290,56 @@ def test_router_and_planner_share_the_three_second_checkpoint(
     assert result == "local answer"
     assert router_timeouts and 0.0 < router_timeouts[0] <= 2.0
     assert planner_timeouts and 0.0 < planner_timeouts[0] <= 2.0
+
+
+def test_the_spoken_handoff_carries_no_instructions_meant_for_the_model(
+    mock_config, db, dialogue_memory,
+):
+    """The tool result is written for a model that will rewrite it. The
+    automatic handoff delivers its acknowledgement straight to the
+    speakers, so it needs words written for the person listening."""
+    from jarvis.reply import engine as engine_mod
+
+    _crew_ready(mock_config)
+    _begin_elapsed_turn(3.1)
+    tool_runner = MagicMock(return_value=_delegated_result())
+
+    with patch.object(engine_mod, "select_tools", return_value=["webSearch", "stop"]), \
+         patch.object(engine_mod, "chat_with_messages",
+                      MagicMock(return_value=_reply("local answer"))), \
+         patch.object(engine_mod, "run_tool_with_retries", tool_runner):
+        result = engine_mod.run_reply_engine(
+            db=db, cfg=mock_config, tts=None,
+            text="investigate this in depth",
+            dialogue_memory=dialogue_memory, quiet=True,
+        )
+
+    lowered = result.lower()
+    assert "do not say" not in lowered
+    assert "tell the user" not in lowered
+
+
+def test_the_spoken_handoff_says_the_answer_will_not_arrive_here(
+    mock_config, db, dialogue_memory,
+):
+    """A user told only that the crew is working on it waits in this
+    conversation for something that arrives somewhere else entirely."""
+    from jarvis.reply import engine as engine_mod
+
+    _crew_ready(mock_config)
+    _begin_elapsed_turn(3.1)
+
+    with patch.object(engine_mod, "select_tools", return_value=["webSearch", "stop"]), \
+         patch.object(engine_mod, "chat_with_messages",
+                      MagicMock(return_value=_reply("local answer"))), \
+         patch.object(engine_mod, "run_tool_with_retries",
+                      MagicMock(return_value=_delegated_result())):
+        result = engine_mod.run_reply_engine(
+            db=db, cfg=mock_config, tts=None,
+            text="investigate this in depth",
+            dialogue_memory=dialogue_memory, quiet=True,
+        )
+
+    lowered = result.lower()
+    assert "not here" in lowered or "not in this conversation" in lowered
+    assert "vault" in lowered

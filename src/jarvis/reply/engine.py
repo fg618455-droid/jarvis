@@ -16,6 +16,7 @@ from ..runtime import (
     stage as telemetry_stage,
 )
 from ..tools.registry import run_tool_with_retries, generate_tools_description, generate_tools_json_schema, BUILTIN_TOOLS
+from ..tools.builtin.ask_crew import spoken_acknowledgement
 from ..tools.builtin.stop import STOP_SIGNAL
 from ..debug import debug_log
 from ..llm import (
@@ -2476,7 +2477,12 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             result = None
 
         if result is not None and result.success and result.reply_text:
-            _handoff_reply = result.reply_text.strip()
+            # Not the tool's own reply text: that is written for a model
+            # about to rewrite it, and this path has no model between the
+            # words and the speakers.
+            _handoff_reply = in_the_voices_language(
+                cfg, spoken_acknowledgement("jarvis")
+            )
             debug_log("automatic crew handoff accepted", "planning")
         else:
             detail = (
