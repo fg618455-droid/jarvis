@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 from .events import EventBus, Subscription, get_event_bus
-from .state import Phase, RuntimeState, get_runtime_state, set_phase, set_phase_if
+from .state import (
+    Phase,
+    RuntimeState,
+    end_turn_phase,
+    get_runtime_state,
+    set_phase,
+    set_phase_if,
+)
 from .telemetry import (
     Stage,
     ToolCall,
@@ -28,6 +35,7 @@ __all__ = [
     "TurnRecorder",
     "TurnTrace",
     "current_turn",
+    "end_turn_phase",
     "get_event_bus",
     "get_recorder",
     "get_runtime_state",

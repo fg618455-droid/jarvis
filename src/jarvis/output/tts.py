@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 from dataclasses import dataclass
 
 from ..debug import debug_log
-from ..runtime import Phase, set_phase_if
+from ..runtime import Phase, set_phase_if, end_turn_phase
 from ..utils.audio_lock import portaudio_lock
 
 
@@ -703,8 +703,7 @@ class ChatterboxTTS:
         """
         if not self._q.empty():
             return
-        set_phase_if(Phase.SPEAKING, Phase.IDLE)
-        set_phase_if(Phase.THINKING, Phase.IDLE)
+        end_turn_phase()
 
     def _notify_audio_start(self, utterance: Utterance) -> None:
         """Announce that sound has started leaving the speakers.
@@ -1187,8 +1186,7 @@ class PiperTTS:
         """
         if not self._q.empty():
             return
-        set_phase_if(Phase.SPEAKING, Phase.IDLE)
-        set_phase_if(Phase.THINKING, Phase.IDLE)
+        end_turn_phase()
 
     def _notify_audio_start(self, utterance: Utterance) -> None:
         """Announce that sound has started leaving the speakers.
@@ -1506,8 +1504,7 @@ class KokoroTTS:
         """
         if not self._q.empty():
             return
-        set_phase_if(Phase.SPEAKING, Phase.IDLE)
-        set_phase_if(Phase.THINKING, Phase.IDLE)
+        end_turn_phase()
 
     def _notify_audio_start(self, utterance: Utterance) -> None:
         """Announce that sound has started leaving the speakers."""

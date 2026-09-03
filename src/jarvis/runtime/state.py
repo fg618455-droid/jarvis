@@ -40,6 +40,11 @@ class RuntimeState:
     phase: Phase = Phase.STARTING
     phase_since: float = field(default_factory=time.time)
     started_at: float = field(default_factory=time.time)
+    # How long a mid-turn phase may stand before it is treated as abandoned.
+    # Handbacks are conditional, so a stage that loses the race to another
+    # stage leaves its phase behind and nothing later clears it. Generous
+    # enough that a genuinely long tool keeps its phase.
+    phase_watchdog_sec: float = 180.0
 
     turns_voice: int = 0
     turns_text: int = 0
@@ -90,6 +95,33 @@ class RuntimeState:
             snapshot = self._phase_snapshot()
         get_event_bus().publish("phase", snapshot)
         return True
+
+    def end_turn_phase(self) -> bool:
+        """Return to idle from whatever mid-turn phase is still standing.
+
+        The stage handbacks are conditional and can be skipped when another
+        stage claimed the phase first, so the end of a turn is the one point
+        that knows no stage of it is running any more. Dictation is not part
+        of a turn and keeps the microphone regardless.
+        """
+        with self._lock:
+            if self.phase in (Phase.DICTATING, Phase.IDLE, Phase.STARTING):
+                return False
+            self.phase = Phase.IDLE
+            self.phase_since = time.time()
+            snapshot = self._phase_snapshot()
+        get_event_bus().publish("phase", snapshot)
+        return True
+
+    def _heal_stale_phase(self) -> Optional[dict]:
+        """Drop a mid-turn phase nothing handed back. Caller holds the lock."""
+        if self.phase in (Phase.DICTATING, Phase.IDLE, Phase.STARTING):
+            return None
+        if time.time() - self.phase_since < self.phase_watchdog_sec:
+            return None
+        self.phase = Phase.IDLE
+        self.phase_since = time.time()
+        return self._phase_snapshot()
 
     def count_turn(self, source: str) -> None:
         with self._lock:
@@ -212,9 +244,15 @@ class RuntimeState:
         return {"active": self.conversation_active}
 
     def snapshot(self) -> dict:
-        """A JSON-ready view of everything the interface shows."""
+        """A JSON-ready view of everything the interface shows.
+
+        Reading the state is also when an abandoned phase is noticed: the
+        interface asking "what is Jarvis doing" is exactly the moment a phase
+        left standing by a skipped handback becomes visible as a false hang.
+        """
         with self._lock:
-            return {
+            healed = self._heal_stale_phase()
+            view = {
                 **self._phase_snapshot(),
                 "started_at": self.started_at,
                 "uptime_seconds": max(0.0, time.time() - self.started_at),
@@ -234,6 +272,9 @@ class RuntimeState:
                 "passive": self._passive_snapshot(),
                 "conversation": self._conversation_snapshot(),
             }
+        if healed is not None:
+            get_event_bus().publish("phase", healed)
+        return view
 
 
 _state = RuntimeState()
@@ -252,3 +293,8 @@ def set_phase(phase: Phase) -> None:
 def set_phase_if(expected: Phase, phase: Phase) -> bool:
     """Shorthand for a conditional hand-back from a stage."""
     return _state.set_phase_if(expected, phase)
+
+
+def end_turn_phase() -> bool:
+    """Shorthand for the unconditional return to idle at a turn's end."""
+    return _state.end_turn_phase()

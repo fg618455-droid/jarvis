@@ -44,7 +44,14 @@ from ..config import resolve_transcription_language
 from ..debug import debug_log
 from ..llm import get_embedding_backend
 from ..reply.engine import warm_up_reply_prefix
-from ..runtime import Phase, get_recorder, get_runtime_state, set_phase, set_phase_if
+from ..runtime import (
+    Phase,
+    end_turn_phase,
+    get_recorder,
+    get_runtime_state,
+    set_phase,
+    set_phase_if,
+)
 from ..utils.location import is_location_available
 
 if TYPE_CHECKING:
@@ -1484,7 +1491,7 @@ class VoiceListener(threading.Thread):
             # Stop thinking tune if no TTS response
             self._stop_thinking_tune()
             recorder.finish(reply=reply)
-            set_phase_if(Phase.THINKING, Phase.IDLE)
+            end_turn_phase()
 
     def request_security_confirmation(
         self,

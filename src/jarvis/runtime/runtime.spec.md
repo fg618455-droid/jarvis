@@ -35,9 +35,23 @@ through it.
 
 `set_phase_if(expected, phase)` moves only when the assistant is still in
 `expected`, so a stage can hand the phase back without overwriting one a
-later stage has already claimed. Speech is the last stage of a turn, so the
-TTS engine owns the return to `idle` and does it however the playback
-ended, cut short included.
+later stage has already claimed.
+
+That conditional handback is deliberately lossy: a stage that lost the race
+to a later one skips its own handback, and the phase it claimed is then left
+standing. `end_turn_phase()` closes that gap. Speech is the last stage of a
+turn, so the TTS engine calls it however the playback ended, cut short
+included, and the no-speech path calls it too. It returns to `idle` from
+*any* mid-turn phase rather than from one named phase, because the end of a
+turn is the point that knows no stage of it is still running. `dictating`
+is not part of a turn and is left alone.
+
+A phase can still be orphaned by a path neither of those covers, and the
+symptom is bad: the interface reports work in progress for minutes after the
+answer was spoken, which reads as a hang. `snapshot()` therefore heals a
+mid-turn phase older than `phase_watchdog_sec` (180 s) back to `idle` and
+publishes the correction. The threshold sits far above a real tool call, so
+genuine long work keeps its phase.
 
 ## A turn
 
