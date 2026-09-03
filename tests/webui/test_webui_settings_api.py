@@ -254,17 +254,24 @@ class TestWriting:
         assert response.status_code == 200
         assert _stored(client)["tts_cloud_providers"] == providers
 
-    def test_local_ai_category_points_to_the_authoritative_route_editor(self, client):
-        body = client.get("/api/settings", headers=HEADERS).get_json()
-        category = next(item for item in body["categories"] if item["key"] == "local_ai")
+    def test_the_providers_category_names_the_editor_it_carries(self, client):
+        """An interface that cannot build the editor can leave it out.
 
-        assert category["action_href"] == "#/llm-routes"
-        assert "route" in category["description"].lower()
+        The route chains are ordered, probed and saved together, which no
+        list of fields describes, so the category names an editor instead of
+        describing one. A form builder that does not know the name renders
+        the category's fields and nothing else.
+        """
+        body = client.get("/api/settings", headers=HEADERS).get_json()
+        category = next(item for item in body["categories"] if item["key"] == "providers")
+
+        assert category["embed"] == "llm-routes"
+        assert "action_href" not in category
 
     def test_fields_expose_pipeline_section_labels(self, client):
         body = client.get("/api/settings", headers=HEADERS).get_json()
 
-        assert _field(body, "ollama_chat_model")["section"] == "Local models"
+        assert _field(body, "ollama_chat_model")["section"] == "Local Ollama"
         assert _field(body, "whisper_model")["section"] == "Whisper"
         assert _field(body, "tts_cloud_providers")["section"] == "Cloud chain"
 

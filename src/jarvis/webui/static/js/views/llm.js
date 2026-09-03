@@ -16,15 +16,23 @@ const CHAT_ONLY_PROVIDERS = new Set([
 ]);
 
 export async function mount(root) {
-  const head = el("div", { class: "view-head" }, [
+  root.append(el("div", { class: "view-head" }, [
     el("h1", { text: t("llm.title") }),
     el("p", { text: t("llm.lead") }),
-  ]);
+  ]));
+  return mountRoutes(root);
+}
+
+/* The routes themselves, without the heading that names the page they are
+   usually on. Settings carries this too, because the category named after
+   the providers is where someone looking for the providers goes; a heading
+   there would be the second one on a panel that already has its own. */
+export async function mountRoutes(root) {
   const actions = el("div", { class: "actions" });
   const backendCard = el("section", { class: "card" });
   const chains = el("div", { class: "grid" });
   const editorCard = el("section", { class: "card route-config-card" });
-  root.append(head, actions, backendCard, chains, editorCard);
+  root.append(actions, backendCard, chains, editorCard);
 
   let payload = null;
   /* The editor holds a copy of the routes and writes them in one go, so

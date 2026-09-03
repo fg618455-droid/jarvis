@@ -241,10 +241,26 @@ The shared field registry also describes structured object lists. The cloud
 TTS chain uses that shape, so each ordered provider is editable as named
 controls for provider, credential environment variable, voice, model, enabled
 state, and timeout. The API accepts only the nested keys in that schema.
-The Local AI & Behaviour category contains labelled local-model, timeout, and
-thinking sections and links to the authoritative LLM Routes editor. Provider
-connections, route models, backend override, and crew route selection are not
-duplicated in general Settings. Speech Input owns microphone, wake-word, and
+A category may also carry an editor that is not a form over config keys. The
+registry names it and the page decides what that name loads, so an interface
+without that editor renders the category's fields and leaves the rest out,
+where a paragraph telling the reader to go elsewhere could only be shown.
+
+Providers is that category. The route chains are ordered, probed and saved
+together, which no list of fields describes, so it carries the route editor
+itself: the same module the LLM Routes panel mounts, without the heading that
+names that panel. Where the providers are named is therefore where they are
+configured, rather than a window about local models with a link to the real
+one somewhere else. What stays beside the editor as ordinary fields is what
+is true of a reply whichever route produced it: the timeouts and the thinking
+switches. There is still exactly one editor; two places open it.
+
+Ollama sits under Advanced, in one labelled section. It is what PRIVATE work
+and embeddings run on and the fallback a remote-only chain can be given, and
+those are real settings that have to stay reachable, but they are not what a
+window about providers is about. Provider connections, route models, backend
+override, and crew route selection are not duplicated as settings fields
+anywhere. Speech Input owns microphone, wake-word, and
 VAD/endpointing sections; Speech Recognition owns Whisper; Speech Output owns
 common controls, the cloud chain, Piper, Chatterbox, and Kokoro as labelled
 sections. The API returns each field's section label so the web and Qt forms

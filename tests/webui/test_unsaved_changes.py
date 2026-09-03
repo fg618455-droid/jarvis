@@ -82,9 +82,21 @@ def _open_panel(page, served, panel):
     page.wait_for_selector('.panel[aria-busy="false"]', timeout=20000)
 
 
-def _open_settings(page, served):
+def _open_settings(page, served, category=None):
+    """Open Settings, optionally on a named category.
+
+    The category matters when the test needs something to type into: the one
+    Settings opens on carries the route editor and a set of numbers and
+    switches, and none of those is a box you can put a string back into to
+    prove that putting it back is not a change.
+    """
     page.goto(f"{served}/#/settings")
     page.wait_for_selector(".view-settings .settings-nav", state="visible", timeout=20000)
+    if category:
+        page.locator(".settings-nav").get_by_role("button", name=category).click()
+        page.wait_for_selector(
+            ".view-settings .field input[type='text']", state="visible", timeout=20000,
+        )
 
 
 ONE_SERVER = """async () => {
@@ -223,7 +235,7 @@ class TestQuietWhenThereIsNothingToLose:
 
     def test_a_change_that_was_typed_back_out_again_asks_nothing(self, page, served):
         """Settings compares with what is stored rather than counting keys."""
-        _open_settings(page, served)
+        _open_settings(page, served, category="Advanced")
         field = page.locator(".view-settings .field input[type='text']").first
         was = field.input_value()
         field.fill(f"{was}x")
@@ -259,7 +271,7 @@ class TestQuietWhenThereIsNothingToLose:
 
 class TestSettingsAndTheRouteEditorAreAskedTheSameWay:
     def test_settings_asks_before_its_way_out(self, page, served):
-        _open_settings(page, served)
+        _open_settings(page, served, category="Advanced")
         field = page.locator(".view-settings .field input[type='text']").first
         field.fill(f"{field.input_value()}-changed")
         _answer(page, leave=False)

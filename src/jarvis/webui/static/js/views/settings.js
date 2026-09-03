@@ -9,6 +9,16 @@ import { t } from "../i18n.js";
 import { chip, clear, el, toast } from "../ui.js";
 import { holdingUnsaved } from "../unsaved.js";
 
+/* An editor a category can carry that is not a form over config keys.
+
+   The route chains are ordered, probed and saved together, which no list of
+   fields describes, so the registry names the editor and this decides what
+   that name loads. A name the page does not know is a category with fields
+   and nothing else, which is what a form builder without the editor shows. */
+const EMBEDS = {
+  "llm-routes": () => import("./llm.js").then((module) => module.mountRoutes),
+};
+
 export async function mount(root) {
   const payload = await api.settings();
   const changes = new Map();
@@ -48,10 +58,14 @@ export async function mount(root) {
 
   root.append(head, layout, bar);
 
+  // A category earns its place by having something to show. Fields are the
+  // usual something; an embedded editor is the other, so a category that is
+  // one editor and no fields is still a place to go.
   const used = payload.categories.filter((category) =>
-    payload.fields.some((field) => field.category === category.key),
+    category.embed || payload.fields.some((field) => field.category === category.key),
   );
   let current = used[0]?.key;
+  let embedCleanup = null;
 
   function paintNav() {
     clear(nav);
@@ -291,6 +305,17 @@ export async function mount(root) {
   }
 
   function paintPanel() {
+    // An embedded editor subscribes and registers what it is holding, so the
+    // one the last paint mounted is torn down before another goes up. Left
+    // running it would go on answering for a panel nobody can see.
+    if (embedCleanup) {
+      try {
+        embedCleanup();
+      } catch (error) {
+        console.error("an embedded editor failed to clean up", error);
+      }
+      embedCleanup = null;
+    }
     clear(panel);
     const fields = payload.fields.filter((field) => field.category === current);
     const category = used.find((item) => item.key === current);
@@ -302,11 +327,9 @@ export async function mount(root) {
     if (category?.description) {
       panel.append(el("div", { class: "settings-note" }, [
         el("p", { text: category.description }),
-        category.action_href
-          ? el("a", { class: "btn", href: category.action_href, text: category.action_label })
-          : null,
       ]));
     }
+    if (category?.embed) mountEmbed(category.embed);
 
     let activeSection = null;
     for (const field of fields) {
@@ -337,6 +360,31 @@ export async function mount(root) {
           }, [node]),
         ]),
       );
+    }
+  }
+
+  /* The editor is fetched and run after the panel around it is drawn, so the
+     panel says it is still filling until that has happened or failed trying,
+     for the same reason a panel does while its view loads. */
+  async function mountEmbed(name) {
+    const load = EMBEDS[name];
+    if (!load) return;
+    const host = el("div", { class: "settings-embed", "aria-busy": "true" });
+    panel.append(host);
+    // The panel this call is filling, rather than whichever one is showing by
+    // the time the editor arrives: a category left while its module was
+    // loading must not have its cleanup written by the load it outlived.
+    const filling = host;
+    try {
+      const mountInto = await load();
+      const cleanup = (await mountInto(host)) || null;
+      if (filling.isConnected) embedCleanup = cleanup;
+      else if (cleanup) cleanup();
+    } catch (error) {
+      console.error(`the ${name} editor failed`, error);
+      host.append(el("div", { class: "empty", text: String(error.message || error) }));
+    } finally {
+      filling.setAttribute("aria-busy", "false");
     }
   }
 
@@ -406,5 +454,9 @@ export async function mount(root) {
   // A field typed back to what it already was is not a change: `changes`
   // holds only what differs from the stored value, so the shell stays quiet
   // for an edit that was undone.
-  return holdingUnsaved(() => changes.size > 0);
+  const withdraw = holdingUnsaved(() => changes.size > 0);
+  return () => {
+    withdraw();
+    if (embedCleanup) embedCleanup();
+  };
 }

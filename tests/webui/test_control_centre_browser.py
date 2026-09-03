@@ -403,17 +403,16 @@ class TestSettingsCoherence:
         page.wait_for_selector(".settings-nav button", state="visible")
         nav = page.locator(".settings-nav")
 
-        assert nav.get_by_role("button", name="Local AI & Behaviour").is_visible()
+        assert nav.get_by_role("button", name="Providers").is_visible()
         assert nav.get_by_role("button", name="Speech Input").is_visible()
         assert nav.get_by_role("button", name="Speech Recognition").is_visible()
         assert nav.get_by_role("button", name="Speech Output").is_visible()
         assert nav.get_by_role("button", name="Piper TTS").count() == 0
 
-        nav.get_by_role("button", name="Local AI & Behaviour").click()
-        assert page.get_by_role("heading", name="Local models").is_visible()
+        nav.get_by_role("button", name="Providers").click()
+        page.wait_for_selector(".settings-layout .route-config-card", timeout=20000)
         assert page.get_by_role("heading", name="Timeouts").is_visible()
         assert page.get_by_role("heading", name="Thinking and behaviour").is_visible()
-        assert page.get_by_role("link", name="Open LLM routes").is_visible()
 
         nav.get_by_role("button", name="Speech Recognition").click()
         assert page.get_by_role("heading", name="Whisper").is_visible()
@@ -422,21 +421,58 @@ class TestSettingsCoherence:
         for heading in ("Common output", "Cloud chain", "Piper", "Chatterbox", "Kokoro"):
             assert page.get_by_role("heading", name=heading, exact=True).is_visible()
 
+    def test_the_providers_window_holds_the_editor_rather_than_a_link_to_it(
+        self, page, served,
+    ):
+        """Where the providers are named is where they are configured.
+
+        The window that says Providers used to hold the local Ollama models
+        and a link to the place the real ones were edited, which made the
+        thing it was named after the one thing it could not do.
+        """
+        page.goto(f"{served}/#/settings", wait_until="domcontentloaded")
+        page.wait_for_selector(".settings-nav button", state="visible")
+        page.locator(".settings-nav").get_by_role("button", name="Providers").click()
+
+        page.wait_for_selector(".settings-layout .route-config-card", timeout=20000)
+        panel = page.locator(".settings-layout .route-config-card")
+        assert panel.get_by_role("button", name="+ Add route").is_visible()
+        assert page.locator(".settings-layout").get_by_role(
+            "button", name="Probe models",
+        ).is_visible()
+        assert page.get_by_role("link", name="Open LLM routes").count() == 0
+
+    def test_the_local_models_keep_a_home_for_what_they_are_still_for(
+        self, page, served,
+    ):
+        """Ollama still does PRIVATE work and embeddings, so it stays settable.
+
+        It is no longer what the provider window is about, which is the whole
+        point of the move, but a setting that leaves the interface entirely is
+        a setting nobody can reach.
+        """
+        page.goto(f"{served}/#/settings", wait_until="domcontentloaded")
+        page.wait_for_selector(".settings-nav button", state="visible")
+        page.locator(".settings-nav").get_by_role("button", name="Advanced").click()
+
+        assert page.get_by_role("heading", name="Local Ollama").is_visible()
+        for label in ("Embedding Model", "Ollama URL"):
+            assert page.get_by_text(label, exact=True).is_visible(), label
+
     def test_cloud_provider_chain_is_editable_without_raw_json(self, page, served):
         payload = {
             "path": "C:/config.json", "daemon_running": True,
             "categories": [
                 {
-                    "key": "local_ai", "label": "Local AI & Behaviour",
-                    "description": "Effective providers are configured in LLM Routes.",
-                    "action_label": "Open LLM routes", "action_href": "#/llm-routes",
+                    "key": "advanced", "label": "Advanced",
+                    "description": "Everything that is not part of the pipeline.",
                 },
                 {"key": "speech_output", "label": "Speech Output"},
             ],
             "fields": [
                 {
                     "key": "ollama_chat_model", "label": "Chat Model", "description": "Local fallback",
-                    "category": "local_ai", "section": "Local models",
+                    "category": "advanced", "section": "Local Ollama",
                     "type": "choice", "choices": [
                         {"value": "local-model", "label": "Local model"},
                     ], "value": "local-model", "restart_required": True,
@@ -469,7 +505,11 @@ class TestSettingsCoherence:
         page.route("**/api/settings", lambda route: route.fulfill(json=payload))
         open_view(page, served, "settings")
 
-        assert page.get_by_role("link", name="Open LLM routes").is_visible()
+        # The first category in the payload is the one showing, so the click
+        # below is a move to another one rather than a no-op that would pass
+        # whether or not switching category paints anything.
+        heading = page.locator(".settings-layout .card header h2")
+        assert heading.text_content().strip() == "Advanced"
         page.get_by_role("button", name="Speech Output").click()
 
         assert page.locator(".object-item").count() == 1

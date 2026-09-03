@@ -712,6 +712,30 @@
   max-width: 420px;
 }
 
+/* An editor a category carries rather than links to.
+
+   The editor is written to stand on a page of its own, where its parts are
+   cards on the background. Here the panel around it is already a card, so
+   the parts drop their own frame and become sections of the panel instead of
+   boxes drawn inside a box. Nothing about their content changes: this is the
+   same editor, wearing the surface it landed on. */
+.settings-embed {
+  display: grid;
+  gap: var(--s4);
+}
+
+.settings-embed .card {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+}
+
+.settings-embed .card + .card {
+  border-top: 1px solid var(--line);
+  padding-top: var(--s4);
+}
+
 .settings-section {
   margin: var(--s5) 0 0;
   padding-bottom: var(--s2);
