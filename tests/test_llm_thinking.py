@@ -254,7 +254,7 @@ class TestSettingsWindowThinking:
         from desktop_app.settings_window import FIELD_METADATA
         field = next(fm for fm in FIELD_METADATA if fm.key == "llm_thinking_enabled")
         assert field.field_type == "bool"
-        assert field.category == "local_ai"
+        assert field.category == "providers"
         assert field.section == "Thinking and behaviour"
 
     def test_field_metadata_includes_intent_judge_thinking(self):
@@ -266,7 +266,7 @@ class TestSettingsWindowThinking:
         from desktop_app.settings_window import FIELD_METADATA
         field = next(fm for fm in FIELD_METADATA if fm.key == "intent_judge_thinking_enabled")
         assert field.field_type == "bool"
-        assert field.category == "local_ai"
+        assert field.category == "providers"
         assert field.section == "Thinking and behaviour"
 
     def test_field_metadata_includes_dictation_thinking(self):

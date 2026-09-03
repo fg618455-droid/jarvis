@@ -21,6 +21,17 @@ import { chip, el, icon, ICONS } from "./ui.js";
 
 const NOTHING = "—";
 
+/* A security level is a reading with a direction, so it carries a tone rather
+   than borrowing one. `critical` and `paranoid` both stop something before it
+   runs; `off` stops nothing, and a gate that has been switched off is the one
+   state on this widget worth catching an eye. A level this does not name is
+   painted plainly rather than guessed at. */
+const LEVEL_TONES = {
+  off: "warn",
+  critical: "ok",
+  paranoid: "ok",
+};
+
 function reading(value, unit) {
   return el("div", { class: "widget-reading" }, [
     el("span", { class: "num", text: value ?? NOTHING }),
@@ -117,15 +128,23 @@ export const WIDGETS = [
     rail: "left",
     icon: ICONS.security,
     build() {
-      const level = el("div", { class: "widget-body" });
+      const chips = el("div", { class: "widget-chips" });
       const detail = note("");
       return {
-        body: [level, detail],
+        body: [chips, detail],
         update({ security }) {
           if (!security) return;
           const waiting = (security.pending || []).length;
-          level.replaceChildren(
-            chip(security.level || NOTHING, waiting ? "warn" : "ok"),
+          const level = security.level || "";
+          // Which level is in force and whether anything is queued are true at
+          // different times, so they get a chip each. Toned together, a gate
+          // that is switched off reads as healthy for as long as the queue
+          // happens to be empty, which is exactly when nobody checks.
+          chips.replaceChildren(
+            ...[
+              chip(level || NOTHING, LEVEL_TONES[level] ?? null),
+              waiting && chip(t("security.waitingShort", { n: waiting }), "warn"),
+            ].filter(Boolean),
           );
           detail.textContent = waiting
             ? t("security.waitingCount", { n: waiting })
@@ -171,6 +190,11 @@ export const WIDGETS = [
       const when = note("");
       return {
         body: [said, replied, when],
+        // A card with no turn in it has nothing to grow into, and the rail
+        // needs to know that: told to stretch anyway it becomes a third of a
+        // rail of empty box, which is the hole it was meant to close wearing
+        // a border.
+        empty: ({ status }) => !status?.last_turn,
         update({ status }) {
           const turn = status?.last_turn;
           if (!turn) {
@@ -312,5 +336,13 @@ export function buildWidget(definition, onOpen) {
     ],
   );
 
-  return { node, update: built.update };
+  return {
+    node,
+    update(snapshot) {
+      built.update(snapshot);
+      // Whether a card has anything to show is a layout fact as well as a
+      // reading, so it is written where a stylesheet can see it.
+      if (built.empty) node.dataset.empty = built.empty(snapshot) ? "true" : "false";
+    },
+  };
 }

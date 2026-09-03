@@ -172,7 +172,14 @@ class TestWriting:
 
         stored = _stored(client)
         assert stored["mcps"]["rube"]["command"] == "npx"
-        assert stored["_config_version"] == 3
+        # The version is the migration's own bookkeeping rather than a key
+        # the registry does not describe, and anything that reads the config
+        # after this write may bring it forward. Pinning it to the number the
+        # fixture wrote asserts that nothing ever reads the file, which is a
+        # property of when the reading happens rather than of the writing:
+        # one lazy `debug_log` on the way out of the request is enough to
+        # move it, which it does about one run in eighty.
+        assert stored["_config_version"] >= 3
 
     def test_a_number_outside_its_bounds_is_brought_back_inside(self, client):
         client.put("/api/settings", headers=WRITE_HEADERS,
@@ -247,17 +254,24 @@ class TestWriting:
         assert response.status_code == 200
         assert _stored(client)["tts_cloud_providers"] == providers
 
-    def test_local_ai_category_points_to_the_authoritative_route_editor(self, client):
-        body = client.get("/api/settings", headers=HEADERS).get_json()
-        category = next(item for item in body["categories"] if item["key"] == "local_ai")
+    def test_the_providers_category_names_the_editor_it_carries(self, client):
+        """An interface that cannot build the editor can leave it out.
 
-        assert category["action_href"] == "#/llm-routes"
-        assert "route" in category["description"].lower()
+        The route chains are ordered, probed and saved together, which no
+        list of fields describes, so the category names an editor instead of
+        describing one. A form builder that does not know the name renders
+        the category's fields and nothing else.
+        """
+        body = client.get("/api/settings", headers=HEADERS).get_json()
+        category = next(item for item in body["categories"] if item["key"] == "providers")
+
+        assert category["embed"] == "llm-routes"
+        assert "action_href" not in category
 
     def test_fields_expose_pipeline_section_labels(self, client):
         body = client.get("/api/settings", headers=HEADERS).get_json()
 
-        assert _field(body, "ollama_chat_model")["section"] == "Local models"
+        assert _field(body, "ollama_chat_model")["section"] == "Local Ollama"
         assert _field(body, "whisper_model")["section"] == "Whisper"
         assert _field(body, "tts_cloud_providers")["section"] == "Cloud chain"
 

@@ -49,12 +49,6 @@ TOKEN_BYTES = 16
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-# The vendored, AGPL-3.0-licensed ai-visualizer face gallery. Kept out of
-# STATIC_DIR so the permissively-licensed control centre assets and the
-# copyleft third-party face never share one directory tree; see
-# THIRD_PARTY_NOTICES.md.
-VISUALIZER_DIR = Path(__file__).parent / "visualizer" / "vendor"
-
 
 class WebUIMode(str, Enum):
     """Whether live daemon objects exist behind this HTTP server."""
@@ -182,21 +176,6 @@ def create_app(cfg: WebUIConfig) -> Flask:
             daemon_running=cfg.daemon_attached,
         )
 
-    @app.route("/visualizer/")
-    @app.route("/visualizer/<path:subpath>")
-    def _visualizer(subpath: str = "index.html"):  # noqa: ANN202 - Flask hook
-        # The vendored gallery/faces are a plain folder of static files,
-        # served the same way the control centre's own static/ is: no
-        # build step, no second server, just files answered from disk.
-        target = (VISUALIZER_DIR / subpath).resolve()
-        if VISUALIZER_DIR not in target.parents and target != VISUALIZER_DIR:
-            return jsonify(error="not found"), 404
-        if target.is_dir():
-            target = target / "index.html"
-        if not target.is_file():
-            return jsonify(error="not found"), 404
-        return send_from_directory(target.parent, target.name)
-
     from .api import register_blueprints
 
     register_blueprints(app)
@@ -249,6 +228,10 @@ class WebUIServer:
         if self._server is not None:
             try:
                 self._server.shutdown()
+                # Shutdown stops the accept loop; the listening socket is
+                # only given back by closing it, and a port still bound is a
+                # port the next start cannot have.
+                self._server.server_close()
             except Exception as exc:
                 debug_log(f"webui shutdown failed: {exc}", "webui")
         if self._thread is not None:

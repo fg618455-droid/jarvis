@@ -17,49 +17,81 @@
   gap: var(--s4);
   padding: var(--s4);
   position: relative;
-  animation: appear var(--t-view);
+  /* Fades in without moving. The shared `appear` lifts what it reveals by a
+     few pixels, which is right for something inside a scroll region and
+     wrong for this: the deck is exactly the window minus the header, so
+     nudging it down puts its own bottom past the bottom of the screen and
+     the page grows a scrollbar for as long as the animation runs. */
+  animation: deck-appear var(--t-view);
+}
+
+@keyframes deck-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* ── Rails ───────────────────────────────────────────────────────────── */
 
+/* A rail distributes into the height it is given rather than stacking at the
+   top of it. Sized against the window and packed from the top, the rails left
+   the bottom two thirds of the deck empty and the whole page read as
+   top-weighted with a hole underneath. Every card taking an equal share is a
+   scale rather than a gap someone left, and it gives the readings inside them
+   room to be set at a size worth reading. */
 .deck-rail {
   display: grid;
   gap: var(--s3);
-  align-content: start;
+  align-content: stretch;
+  grid-auto-rows: 1fr;
   overflow-y: auto;
   min-height: 0;
   /* The scrollbar sits outside the cards rather than over them. */
   padding-right: var(--s1);
 }
 
-/* The compact readings at the foot of a rail: too small to deserve a card
-   each, too different to merge into one. A pair of columns keeps five of
-   them inside one screen without any of them shrinking to a number with no
-   name on it. */
-.widget-tiles {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--s2);
+/* The right rail is the last exchange over the readings underneath it, and
+   the exchange takes its own height whether or not there has been a turn.
+   It is three lines that do not wrap, so it is the same three lines tall
+   either way: given a share of the rail it would be a tall box holding one
+   line of text, which is the hole this rail was packed to close with a
+   border drawn round it. The readings take the whole slack instead, and
+   because the exchange never changes size the rail never rearranges itself
+   the first time anyone speaks. */
+.deck-rail-right {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
-/* An odd number of tiles leaves the last one beside a gap, which reads as a
-   tile that failed to load rather than as the end of the list. It takes the
-   width instead. */
-.widget-tiles > :last-child:nth-child(odd) {
-  grid-column: 1 / -1;
+/* The readings at the foot of the rail: too small to deserve a card each,
+   too different to merge into one. They take the room the exchange does not,
+   in an equal share each, exactly as the cards opposite do — and in one
+   column, because five shares of a rail is a card's worth of height apiece
+   and two columns of that is a grid of boxes rather than a rail of
+   readings. */
+.widget-tiles {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-auto-rows: 1fr;
+  gap: var(--s2);
+  align-content: stretch;
+  min-height: 0;
 }
 
 /* ── Widgets ─────────────────────────────────────────────────────────── */
 
+/* A card is a step up off the page rather than a box drawn on it. Elevation
+   in a dark interface comes from a lighter surface; the hairline is there to
+   stop two adjacent cards merging, which is a smaller job than the one a
+   full-contrast border was doing. */
 .widget {
   background: var(--surface);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-soft);
   border-radius: var(--r);
-  padding: var(--s3);
+  padding: var(--s3) var(--s4);
   display: grid;
   gap: var(--s2);
-  align-content: start;
+  align-content: center;
   min-width: 0;
+  min-height: 0;
   transition: border-color var(--t-fast);
 }
 
@@ -79,6 +111,18 @@
    reads as an empty input rather than as one short status. */
 .widget .chip {
   justify-self: start;
+}
+
+/* Where a widget carries more than one status: two facts that are true at
+   different times, side by side rather than merged into one colour. They wrap
+   rather than shrink, because a chip narrower than its word is a chip that
+   says something else. */
+.widget-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
 }
 
 .widget-title {
@@ -167,12 +211,11 @@
   gap: var(--s0);
 }
 
-/* Two tiles to a rail leaves about half its width for a name. Tracking that
-   is generous on a full-width heading spends most of it on the gaps between
-   letters, so a tile drops it and keeps the letters instead. The row spends
-   less between its parts for the same reason: the longest name a tile
-   carries fits only if it is not paying for a full-width gap either side of
-   its icon. */
+/* Tracking that is generous on a full-width heading spends most of a tile's
+   row on the gaps between letters, so a tile drops it and keeps the letters
+   instead. Its head spends less between its parts for the same reason: below
+   1240px the tiles lay out across the deck and a row of five leaves each one
+   about a fifth of a window for a name. */
 .widget-tile .widget-head {
   gap: var(--s1);
 }
@@ -196,83 +239,58 @@
 
 /* ── The face ────────────────────────────────────────────────────────── */
 
+/* Two bands: the face in the room above, the dock standing on the floor. The
+   stage used to centre everything together and leave two hundred pixels of
+   dead air under the dock, which read as the page having stopped early. */
 .face-stage {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--s3);
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
   position: relative;
+  padding: var(--s5);
   border-radius: var(--r);
   /* The page falls away behind the face, so the centre reads as depth
-     rather than as another card. */
+     rather than as another card. No border: this is the room the deck is in
+     rather than a fourth card sitting between two rails. */
   background:
     radial-gradient(circle at 50% 42%, var(--face-aura) 0%, transparent 62%),
     var(--bg-deep);
-  border: 1px solid var(--line-soft);
   overflow: hidden;
 }
 
-/* The circular motif, taken from the reference displays and kept to three
-   quiet rings. Concentric borders rather than a drawn graphic: they cost
-   nothing, scale with the face, and carry the theme's accent at a weight
-   that reads as atmosphere rather than as a gauge showing a value. */
+.face-portrait {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: var(--s4);
+  min-height: 0;
+}
+
+/* The shell owns how large the face is, and the canvas simply fills it. The
+   geometry has to live on something other than the canvas: `face.js` sets the
+   canvas's width and height attributes to match the device pixels, and an
+   attribute change on an element whose CSS height is derived from its own
+   aspect ratio feeds straight back into layout. */
 .face-shell {
   position: relative;
-  display: grid;
-  place-items: center;
+  /* The preference, capped by the room there actually is, so a narrow centre
+     column shrinks the face rather than clipping it. */
+  width: min(var(--face-size), 100%);
+  aspect-ratio: 1;
   flex: none;
 }
 
-.face-rings {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  pointer-events: none;
-}
-
-.face-rings > span {
-  position: absolute;
-  border-radius: 50%;
-  border: 1px solid var(--hud-ring-soft);
-}
-
-.face-rings > span:nth-child(1) {
-  width: 118%;
-  height: 118%;
-  border-color: var(--hud-ring);
-}
-
-.face-rings > span:nth-child(2) {
-  width: 136%;
-  height: 136%;
-}
-
-.face-rings > span:nth-child(3) {
-  width: 160%;
-  height: 160%;
-  border-style: dashed;
-}
-
-/* The face itself is a third-party page with its own canvas and its own
-   palette, so it is framed rather than restyled. What harmonises it with
-   the theme is everything this side of the frame: the bed it sits on, the
-   aura behind it, the rings around it, and its size. */
-.face-frame {
+/* The face is drawn here rather than framed from somewhere else, so the ring,
+   the aura and the disc are one drawing made in one place instead of a
+   stylesheet decorating a foreign rectangle. Everything the eye reads as the
+   face is painted in `face.js`; all this rule owns is how large it is. */
+/* `face.js` draws at whatever width this settles on rather than at the number
+   it was asked for, so the drawing is never made larger than the room it has. */
+.face-canvas {
   display: block;
-  border: none;
-  border-radius: 50%;
-  background: var(--face-bed);
-  width: var(--face-size);
-  height: var(--face-size);
-  /* A face drawn in its own colours still belongs to this page if the light
-     around it is the page's own, and if its own light is rotated onto the
-     theme's hue on the way out of the frame. */
-  filter: var(--face-tint);
-  box-shadow: 0 0 0 1px var(--line-soft), 0 0 60px var(--face-aura);
+  width: 100%;
+  height: 100%;
 }
 
 .face-name {
@@ -293,13 +311,18 @@
 
 /* The dock sits under the face the way a composer sits under a
    conversation: the thing you type into is beneath the thing you are
-   talking to. */
+   talking to. A rule separates it from the face rather than a fourth
+   bordered box: the two belong to the same stage, and the line says where
+   one ends without proposing that the other is a card. */
 .face-dock {
   display: flex;
   align-items: center;
   gap: var(--s2);
-  width: min(520px, 100%);
-  padding: 0 var(--s4);
+  width: min(560px, 100%);
+  justify-self: center;
+  margin-top: var(--s4);
+  padding-top: var(--s4);
+  border-top: 1px solid var(--line-soft);
 }
 
 .face-dock input[type="text"] {
@@ -544,11 +567,25 @@
     grid-template-columns: var(--rail) minmax(0, 1fr);
   }
 
+  /* Folded under the deck and laid out across it, rather than scrolled
+     sideways. A horizontal scroller puts readings behind a gesture nobody
+     makes on a desktop, and there is enough width here to show all of them
+     at once. */
   .deck-rail-right {
     grid-column: 1 / -1;
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(180px, 1fr);
-    overflow-x: auto;
+    grid-template-rows: auto auto;
+    align-content: start;
+    overflow: visible;
+  }
+
+  /* One column is the right answer in a 320px rail, where it is a rail of
+     readings, and the wrong one across a whole window, where it makes five
+     readings into five full-width bands. Folded out here they are a row and
+     take their own height: there is no rail left for them to share. */
+  .widget-tiles {
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    grid-auto-rows: auto;
+    align-content: start;
   }
 }
 

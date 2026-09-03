@@ -31,8 +31,10 @@ one file and no view can drift from the rest.
 |---|---|
 | Surface | Four depths: the page, a card above it, a well recessed inside a card, and the raised controls within either |
 | Colour | One accent, for what is active, focused, selected, or newly arrived. Three status tones, each with a text, fill, and border value so a chip, a rail, and a meter read the same |
-| Type | An eight-step scale. Headings, labels, and readings are chosen from the ladder rather than per view |
+| Selected against status | What is selected or active is the accent as a rule: a border on one edge, accent text, at most `--accent-soft` behind it, never a filled chip. What carries a status is always a filled chip with its own fill, border, and glyph. The two are therefore different shapes before they are different colours, which is what makes them separable in a warm palette where accent and warning are neighbours, and for a reader who cannot tell those two hues apart at all |
+| Type | A seven-step scale. Headings, labels, and readings are chosen from the ladder rather than per view |
 | Motion | Transitions mark a change of state, never decorate one. `prefers-reduced-motion` disables every animation and transition outright, and anything painted from JavaScript, which that rule cannot reach, asks `motionAllowed()` for itself |
+| Focus | Anything that can hold focus shows a ring when a keyboard put it there, and the ring clears 3:1 against both the control and what the control sits on. A field may also warm its border on focus, but a border is an addition to the ring and never a replacement: a rule suppressing the outline on a field is more specific than the shared `:focus-visible` one and silently disarms the keyboard everywhere at once |
 | Overflow | A region that scrolls is sized against the window rather than a fixed count of pixels, and pins its heading above it, so a partly visible row reads as more below rather than as a rendering fault. Where the container is too narrow to hold the columns, the rows stack and each value carries its own column name instead, so a sliced record is still labelled |
 | Width | A view lays itself out against the box it is in, not against the window. The same module is a full-width page at one address and a column inside a panel at another, so its layout rules are container queries on `view`; only the shell around it, the header, the deck, and the page gutter, is sized against the window |
 | Shared parts | A component two views use is named for what it is rather than for whichever view needed it first, and lives in `app.css` rather than beside one of them |
@@ -50,6 +52,21 @@ because someone preferred a different palette.
 |---|---|
 | `graphite` | Near-black and one cool accent. The default, and what the interface has always looked like |
 | `arc` | The same instrument under a colder light: a blue-white filament on deep slate, with the circular motif carrying more of the accent |
+| `ember` | The same instrument in a warm light: a brown-black rather than a blue one, stepped surfaces, and one orange |
+
+`ember` is written in OKLCH, because its surfaces are a ramp rather than
+seven separate colours: stepped by lightness in OKLCH a surface stays the
+same colour getting lighter, where the same step in HSL turns muddy through
+the middle and has to be corrected by hand at every stop. A theme is free to
+be written in whatever notation suits it; nothing reads these values except
+the browser.
+
+Three places name the themes and all three have to agree: `tokens.css` paints
+them, `theme.js` offers them, and a small inline script in `index.html`
+applies the remembered one before the first paint. That script cannot import
+the module it is guarding against, so it carries its own copy of the list,
+and `tests/webui/test_theme_tokens.py` holds the two in step. Forgotten
+there, a theme is offered in the picker and refused on reload.
 
 Adding a theme is adding one block and one row in `theme.js`. No view knows a
 theme exists; every view reads `var(--accent)` and gets whatever the active
@@ -60,6 +77,24 @@ forgets does not fall back to a sensible default: it keeps whatever the last
 theme painted, and one card quietly reads in the wrong palette.
 `tests/webui/test_theme_tokens.py` holds that rule as a mechanism rather than
 as a list of values, so it also holds for themes that do not exist yet.
+
+Every theme is held to the same legibility floor, measured rather than
+reviewed: text clears 4.5:1 against the surface it actually lands on, or
+3:1 once it is large, and a focus ring clears 3:1 against what sits next to
+it. A palette is the one part of the interface whose correctness is a
+number, and it is a number that cannot be read off `tokens.css`, because a
+token is legible or not only once something has chosen a surface for it and
+a size to set it at. So `tests/webui/test_contrast.py` renders the real
+interface in every theme and measures what a reader would see.
+
+That measurement is taken on a paint that has stopped moving. Swapping the
+palette gives every surface, border and label that has a transition
+something to do, so the frames after the change show one theme's text on
+another theme's surface: a ratio read there belongs to neither palette and
+is wrong in both directions, flattering a palette that is too faint and
+failing one that is fine. The page already says when it has finished, and
+that signal is what is waited for, before the first sweep and again after
+each theme is put on.
 
 The choice is this browser's, in `localStorage`, and never reaches
 `config.json`. It is a preference about looking at a screen rather than a
@@ -181,9 +216,7 @@ allowed; reading one back is not.
 | `PUT /api/llm/routes` | Validate and replace generic route configuration while preserving unchanged masked credentials |
 | `GET /api/crew` | One reading of the NAS-hosted agent crew: recent activity, the agent roster with its tallies, a 14-day daily activity count, and when the reading was taken |
 | `POST /api/crew/chat` | Relay one message to one crew agent and return its reply |
-| `GET /api/visualizer/state` | The face's `idle\|listening\|thinking\|speaking` reading, a waveform, and the two ai-visualizer signals Jarvis never sets (`alert`, `loading`) |
-| `GET /api/visualizer/config` | The assistant's display name and the installed face gallery |
-| `GET /visualizer/`, `/visualizer/<path>` | The vendored, AGPL-3.0-licensed face gallery and its static assets, served from disk |
+| `GET /api/visualizer/state` | The face's `idle\|listening\|thinking\|speaking` reading, a waveform, and the two signals Jarvis never sets (`alert`, `loading`) |
 
 There is deliberately no `/api/telemetry` alias: `/api/status` is live
 session state and `/api/turns` is turn history, and conflating them would make
@@ -208,10 +241,26 @@ The shared field registry also describes structured object lists. The cloud
 TTS chain uses that shape, so each ordered provider is editable as named
 controls for provider, credential environment variable, voice, model, enabled
 state, and timeout. The API accepts only the nested keys in that schema.
-The Local AI & Behaviour category contains labelled local-model, timeout, and
-thinking sections and links to the authoritative LLM Routes editor. Provider
-connections, route models, backend override, and crew route selection are not
-duplicated in general Settings. Speech Input owns microphone, wake-word, and
+A category may also carry an editor that is not a form over config keys. The
+registry names it and the page decides what that name loads, so an interface
+without that editor renders the category's fields and leaves the rest out,
+where a paragraph telling the reader to go elsewhere could only be shown.
+
+Providers is that category. The route chains are ordered, probed and saved
+together, which no list of fields describes, so it carries the route editor
+itself: the same module the LLM Routes panel mounts, without the heading that
+names that panel. Where the providers are named is therefore where they are
+configured, rather than a window about local models with a link to the real
+one somewhere else. What stays beside the editor as ordinary fields is what
+is true of a reply whichever route produced it: the timeouts and the thinking
+switches. There is still exactly one editor; two places open it.
+
+Ollama sits under Advanced, in one labelled section. It is what PRIVATE work
+and embeddings run on and the fallback a remote-only chain can be given, and
+those are real settings that have to stay reachable, but they are not what a
+window about providers is about. Provider connections, route models, backend
+override, and crew route selection are not duplicated as settings fields
+anywhere. Speech Input owns microphone, wake-word, and
 VAD/endpointing sections; Speech Recognition owns Whisper; Speech Output owns
 common controls, the cloud chain, Piper, Chatterbox, and Kokoro as labelled
 sections. The API returns each field's section label so the web and Qt forms
@@ -228,6 +277,41 @@ in place" below. The endpoint returns before that happens; the page polls
 `/api/health` until it answers again, then reloads. Standalone mode disables
 the control and the restart endpoint refuses the request instead of reporting
 a restart that cannot occur.
+
+### How long the page waits for an answer
+
+Every request the page makes is bounded. A refused connection fails at once
+and an error status fails with a reason, and both already have somewhere to
+go; a socket that is accepted and then never answered has neither, because
+the promise never settles at all. The view awaiting one never finishes
+mounting, so the panel it was opened for stays `aria-busy` for as long as
+the tab is open, announcing itself as still loading something that stopped
+arriving.
+
+A single bound would have to be as long as the longest honest wait, which
+would leave it doing nothing for everything else. Which bound a call gets
+follows from whether anything will ask again:
+
+| | Waits | Because |
+|---|---|---|
+| A reading | The shorter bound | It is retaken, by the deck's snapshot or by opening the panel again, so giving up costs nothing and an answer that arrives after its replacement was due is not one |
+| Work, and every write | The longer bound | Nobody else asks for it. Cut short, a turn, a probe, a briefing or a restart is reported as failed while it is still running, and a write is reported as failed after it has already landed on disk |
+
+The briefing is both, and split accordingly: the prose is generated once a
+day when it is asked for, so `POST /api/briefing/refresh` is work and
+`GET /api/briefing`, which reads back what was kept, is a reading.
+
+A stream is bounded by silence rather than by duration. Importing a whole
+vault legitimately runs for minutes and reports progress line by line, so
+what means it has stopped is that nothing has arrived since the last line.
+Every line restarts the count, and only a stream that has gone quiet
+altogether reaches the bound.
+
+Reaching a bound is a failure like any other: the request rejects, saying
+that nothing came back and after how long, and the page puts that where it
+puts every other reason. In a panel that is in the body in place of the
+view, which also clears `aria-busy`; from the dock it is a message beside
+the face.
 
 ### Restarting in place
 
@@ -254,13 +338,35 @@ assistant work.
 |---|---|
 | Left rail | Today, System, Memory, Security, and the passive record. What the assistant knows and what state it is in |
 | Centre | The face, the assistant's name, what it is doing in words, and the dock that speaks or types to it |
-| Right rail | The last exchange, then Tools, MCP servers, LLM routes, Mission Control, and Logs as compact tiles. How the machine is wired |
+| Right rail | The last exchange, then Tools, MCP servers, LLM routes, Mission Control, and Logs as tiles under it, one to a row. How the machine is wired |
 | Panel | Whichever detail is open, over the right rail |
 
 The deck is sized against the window rather than flowed down it. Only a rail
 and an open panel's body scroll: a deck that grew past the bottom of the
 screen would put the face somewhere you have to scroll back to, which is the
 one thing this layout exists to prevent.
+
+Being sized against the window, a rail has to fill it. Every card in a rail
+takes an equal share of its height, so the scale of a card is the rail
+divided by what is in it rather than a gap someone left underneath. Two
+things are exempt.
+
+The last exchange takes its own height rather than a share. It is three
+lines that do not wrap, so it is the same three lines tall whether it is
+showing a turn or saying there has not been one; given a share of the rail
+it would be a tall box holding one line of text, which is the hole the rail
+was packed to close with a border drawn round it. What it does not take goes
+to the readings under it rather than back to the page, and because its
+height never changes the rail never rearranges itself the first time anyone
+speaks.
+
+And a tile is never given more room than a card beside it: it carries one
+number where a card carries a number and a line about it, so it comes out
+shorter at every window the deck is used at.
+
+Below 1240px the right rail stops being a rail and folds into a row under
+the deck. There is no height there to share, so the tiles lay out across the
+width and take their own.
 
 ### Widgets
 
@@ -276,9 +382,25 @@ direction: it is read once and then follows the `crew` event, because the
 daemon already takes one reading for everyone watching and the machine it
 reaches is often asleep.
 
+Each of those readings is fetched independently and painted the moment it
+lands, rather than all of them together once the last one has. A source that
+never answers is not the same as one that fails: it never rejects, so a page
+that waits for all of them waits for ever and shows nothing at all. One
+machine on the network that is not at home is not allowed to be a blank
+interface.
+
 A widget never invents a reading. A source that failed or has not answered
 yet shows an em dash, because a zero meaning "no answer" and a zero meaning
 "none" are very different facts on the security widget.
+
+A status chip is toned by what it says rather than by something beside it,
+and two facts that are true at different times get a chip each. The security
+widget carries both rules: the level in force is toned by the level, so a
+gate switched `off` reads as a warning whether or not anything happens to be
+queued, and what is waiting for an answer is its own chip rather than a
+colour borrowed by the level's. Merged, the reassuring tone would be showing
+at exactly the moment nobody looks: an empty queue in front of a gate that
+stops nothing.
 
 ### Panels
 
@@ -287,6 +409,50 @@ whatever else it is reached from: a panel is somewhere to put a view, not a
 different implementation of one. The panel names itself in its head, so the
 view's own heading is hidden inside one; its lead and its actions stay,
 because those are the view's rather than the panel's.
+
+A panel is drawn before the view it holds exists, and says so. From the
+moment it opens until its module has been fetched, run, and has finished
+asking its endpoint it is `aria-busy`; a view that failed to arrive clears
+it too, leaving the reason in the body. Without that, the empty body of a
+panel still loading and the empty body of a view that had nothing to show
+are the same page: a screen reader announces the dialog and reads an empty
+box, and so does anything else looking at it.
+
+A panel is dismissed by its close button, by Escape, or by going to
+`#/deck`. Escape is left to the field while a field inside the panel has
+focus: a key press there was never a departure, so it neither closes the
+panel nor raises the question below.
+
+### Unsaved changes
+
+Settings, the MCP editor and the LLM route editor collect a whole form and
+write it in one go, because what is being written is only coherent once its
+parts agree. Until Save is pressed, everything typed lives in the page and
+nowhere else. The MCP editor is why this matters: its fields are
+credentials, and a saved credential is read back masked, so a change
+discarded there is not an edit to make again but a secret to go and find
+again.
+
+A view says whether it is holding anything unsaved; the shell asks before
+the page becomes a different one. Leaving has several doors — the close
+button, Escape outside a field, the browser's back button, the widget for
+another panel, the way out of Settings, the language picker — and all of
+them end at the same address change, so all of them are asked once, there.
+Refusing puts the address back and leaves what was typed exactly where it
+was. Reloading or closing the tab is the browser's own door, so the browser
+raises its own warning.
+
+Reloading an editor in place is discarding it by another name, so it is
+asked the same way. The route editor is the one with controls that do it:
+probing the models, resetting the cooldowns, and either of the chat-backend
+selectors all replace its copy of the routes with what is stored. Refusing
+leaves the copy alone and puts a selector that has already moved back.
+
+The ask is silent unless a view says it is holding something, and a view
+holds something only when what is in the page differs from what is stored: a
+field typed and typed back again is not a change. A warning on every panel
+switch would be trained away inside a day, and then the one that mattered
+would be clicked through as fast as the rest.
 
 The conversation is the one view that keeps its own height. It scrolls its
 exchange internally and holds its composer in place, so the panel around it
@@ -504,52 +670,82 @@ so instead of showing a mode that is not running anywhere.
 ## The face
 
 A face that idles, listens, thinks, and speaks in step with the real
-conversation: the AGPL-3.0-licensed [ai-visualizer](https://github.com/jaredrhod/ai-visualizer)
-face gallery, vendored under `src/jarvis/webui/visualizer/vendor/` and
-served by this process rather than ai-visualizer's own stdlib HTTP server —
-see `THIRD_PARTY_NOTICES.md` for the licence terms this carries.
+conversation. It is one circle inside one ring, drawn by `static/js/face.js`
+into a canvas in the page.
 
 The face is the centre of the deck and is mounted once for as long as the
 page is open. Opening a panel does not rebuild it: a face rebuilt on every
-navigation would reload its frame, restart its animation, and blink at the
-reader each time they looked at a different reading.
+navigation would restart its animation and blink at the reader each time they
+looked at a different reading.
 
-One face is framed directly, at `/visualizer/faces/<id>/index.html`. Which
-one is a control on the deck rather than a page inside the frame, because
-reaching the gallery's own picker meant loading its index into the frame and
-choosing there, which put a second, differently-styled navigation inside the
-page.
+### What it draws
+
+The disc inside the ring is the reading, and how much of the ring it fills is
+what the state is. That matters more than it sounds: it is a channel that
+survives a reader who has asked for no motion, and with every animation off
+the four states are still four different pictures. A face that separated
+`listening` from `thinking` by the speed of a rotation would have nothing
+left to say to that reader, and reporting the state is the only reason this
+drawing exists.
+
+| Reading | The face shows |
+|---|---|
+| `idle` | The disc at rest, at just over half the ring, breathing slowly |
+| `listening` | The disc open to four fifths of the ring: the largest step on the scale, and the one that has to read across a room |
+| `thinking` | The disc back at rest with one mark travelling round the ring. One moving part rather than an orbit of them, parked at the top when nothing may move |
+| `speaking` | The disc at two thirds, its edge pushed by the block of audio the TTS engine last wrote to the speakers |
+
+A waveform may move the edge of the disc by at most a fourteenth of its
+radius. Past roughly a tenth an outline stops reading as a circle that is
+speaking and starts reading as a shape that is not a circle, and the samples
+arrive raw from the speakers, so they are normalised against their own peak
+and smoothed against their neighbours before they are drawn.
+
+Everything is painted from `var(--accent)`, read off the stylesheet rather
+than held in the module, so a theme drives the face for free and there is no
+second palette to keep in step with the first. The custom property is
+resolved when the theme changes rather than on every frame.
+
+`motionAllowed()` decides whether there is an animation loop at all. When the
+answer is no there is no loop: a new reading is the only thing that repaints,
+so the picture is genuinely still rather than animating slowly.
 
 ### Dressing it
 
-The face's own controls sit beside the face rather than in Settings. How the
-assistant looks while it is talking to you is a different kind of decision
-from which port the daemon binds, and it is made while looking at the thing
-it changes. Which face and how large are this browser's, in `localStorage`,
-the same way the theme is.
+How large the face is drawn is a control beside it rather than in Settings.
+How the assistant looks while it is talking to you is a different kind of
+decision from which port the daemon binds, and it is made while looking at
+the thing it changes. The size is this browser's, in `localStorage`, the same
+way the theme is. There is nothing else to choose: there is one face, and it
+is ours.
 
-The vendored pages are never edited, so everything that makes a face belong
-to the interface is on this side of the frame: the bed it sits on, the aura
-behind it, three quiet concentric rings, its size, and `--face-tint`. That
-last one is a filter, named per theme, that rotates the framed result onto
-the theme's own hue on the way out of the frame. It is presentation only:
-the third-party code is untouched and still renders exactly what its author
-wrote. Without it a face painted in its own palette glows a different colour
-at the centre of a page built around one accent.
+### Where the reading comes from
 
-The face polls
-`/api/visualizer/state` roughly eight times a second and `/api/visualizer/config`
-once, both answered by `jarvis.webui.visualizer.state`, which derives the
-reading entirely from Jarvis's own live objects:
+The face polls `/api/visualizer/state` roughly eight times a second, answered
+by `jarvis.webui.visualizer.state`, which derives the reading entirely from
+Jarvis's own live objects:
 
 | Reading | Source |
 |---|---|
 | `state` | The runtime phase (`jarvis.runtime.state.Phase`), mapped to `idle`, `listening`, `thinking`, or `speaking`. `capturing` reads as listening; `transcribing`, `thinking`, and `tool` all read as thinking; `starting` and `dictating` read as idle |
-| `level`, `samples` | The most recent block of audio a TTS engine wrote to the speakers, fed in by `PiperTTS` and `KokoroTTS` as they play — the in-process replacement for ai-visualizer's own `.voice_waveform` signal file. A waveform older than 0.6 seconds is stale and is not shown; when the samples are fresh they are trusted as speech even if the phase reading has not caught up yet, the same rule ai-visualizer's own server.py applies to its signal files |
+| `level`, `samples` | The most recent block of audio a TTS engine wrote to the speakers, fed in by `PiperTTS` and `KokoroTTS` as they play. A waveform older than 0.6 seconds is stale and is not shown; when the samples are fresh they are trusted as speech even if the phase reading has not caught up yet |
 | `alert`, `loading` | Always `false`. Jarvis has no attention-signal concept and no TTS engine plays a thinking sound separate from the reply itself, so nothing here would ever set them |
 
 No signal files are read or written, and no second HTTP server runs: one
 process, the same principle every other view in this spec follows.
+
+A hidden page stops asking rather than merely stopping drawing. The server
+closes every connection it answers, so a poll is a new socket rather than a
+reuse of one and the operating system holds each closed socket for minutes
+afterwards. Eight a second is affordable while someone is watching the face
+and is not affordable for a tab left behind another window all day. Returning
+to the page takes a reading at once rather than waiting out the skipped tick.
+
+What the face draws is the assistant's own reading; the words beside it come
+from the event stream instead, because that is the only source that can say
+this page has lost the daemon. A poll that fails and an assistant that is
+idle look identical from here, so a failed poll holds the last honest reading
+rather than dropping the face to idle.
 
 ## Passive record
 

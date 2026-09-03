@@ -71,13 +71,42 @@ a:hover {
   letter-spacing: 0.02em;
 }
 
-.header-right {
-  margin-left: auto;
+/* The strip holds three kinds of thing: what the assistant is doing, two
+   readings about it, and the controls that change this page. Run together
+   under one gap they read as nine unrelated items, so they are grouped, and
+   the groups are told apart by space first and by a single hairline second.
+   Nothing here gains a box: a border around a header group would be a fourth
+   surface competing with the cards below it. */
+.header-group {
   display: flex;
   align-items: center;
-  gap: var(--s5);
+  gap: var(--s3);
   color: var(--fg-dim);
   font-size: var(--fs-sm);
+  min-width: 0;
+  /* The strip is one fixed row tall, so nothing in it may take two. */
+  white-space: nowrap;
+}
+
+/* The one group that may be asked to give way: what the assistant is doing
+   is the longest text here and the least damaged by being cut short, because
+   it is also drawn under the face in full. */
+.header-live {
+  overflow: hidden;
+}
+
+#phase-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-readings {
+  margin-left: auto;
+}
+
+.header-group + .header-group {
+  padding-left: var(--s5);
+  border-left: 1px solid var(--line-soft);
 }
 
 .header-metric {
@@ -89,6 +118,32 @@ a:hover {
 .header-metric .label {
   color: var(--fg-mute);
   font-size: var(--fs-xs);
+}
+
+/* The two pickers were the only browser chrome left in an otherwise fully
+   drawn interface, and the only sizes living outside the token file. The
+   arrow is drawn here rather than left to the platform, so the control
+   belongs to this page instead of to whichever operating system is showing
+   it, and the width comes from the words in the list rather than from a
+   number written on the element. */
+.header-controls select {
+  width: auto;
+  padding: 5px 30px 5px var(--s3);
+  font-size: var(--fs-sm);
+  color: var(--fg-dim);
+  appearance: none;
+  cursor: pointer;
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 17px) 52%, calc(100% - 12px) 52%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.header-controls select:hover {
+  color: var(--fg);
+  border-color: var(--accent-line);
 }
 
 .passive-indicator {
@@ -294,6 +349,17 @@ a:hover {
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 
+/* A row of single readings: a name and one number each. These are the
+   smallest card there is, and they pack far tighter than the general grid,
+   which is sized for cards holding a table or a routing chain. Left at that
+   minimum inside a panel a third of the window wide, four readings become
+   four stacked rows spending two hundred pixels on four integers. */
+.readings {
+  display: grid;
+  gap: var(--s3);
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+}
+
 /* A pair of cards that hold unrelated readings, so they size to what they
    hold. Stretched to match, an empty one becomes a tall box of nothing
    beside a full one. */
@@ -380,22 +446,6 @@ a:hover {
 
 .stagebar > span:hover {
   opacity: 0.7;
-}
-
-.stagelegend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s3);
-  font-size: var(--fs-xs);
-  color: var(--fg-dim);
-}
-
-.stagelegend .swatch {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  margin-right: var(--s1);
 }
 
 /* ── Tables ──────────────────────────────────────────────────────────── */
@@ -560,10 +610,14 @@ textarea {
   font-family: var(--font);
 }
 
+/* A field warms its border whenever it holds focus, including from a click,
+   because a bordered box is the one control whose focus a colour can carry.
+   The ring itself is left to `:focus-visible` above: an `outline: none` here
+   is more specific than that rule and would take the ring off every field in
+   the interface at once, leaving a keyboard with nothing to follow. */
 input:focus,
 select:focus,
 textarea:focus {
-  outline: none;
   border-color: var(--accent-line);
 }
 
@@ -772,7 +826,9 @@ input[type="checkbox"] {
 
 /* ── Narrow screens ──────────────────────────────────────────────────── */
 
-@media (max-width: 760px) {
+/* The same width the deck stops being a deck at, so the shell and the layout
+   under it fold together rather than 140px apart. */
+@media (max-width: 900px) {
   :root {
     --main-pad: var(--s3);
   }
@@ -793,7 +849,22 @@ input[type="checkbox"] {
     display: none;
   }
 
-  .header-right {
-    gap: var(--s3);
+  /* With the readings hidden their group is empty, so its hairline would be
+     a rule separating nothing from nothing. The controls take the space the
+     readings were holding open instead. */
+  .header-readings {
+    display: none;
+  }
+
+  .header-controls {
+    margin-left: auto;
+  }
+
+  .header-group {
+    gap: var(--s2);
+  }
+
+  .header-group + .header-group {
+    padding-left: var(--s3);
   }
 }

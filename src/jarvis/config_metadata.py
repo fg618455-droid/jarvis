@@ -123,7 +123,7 @@ CLOUD_TTS_PROVIDER_FIELD_METADATA = (
 # for its colour. There are also more categories here than there are obvious
 # pictures for them, so a pictograph per label ends up repeating itself.
 CATEGORIES = [
-    ("local_ai", "Local AI & Behaviour"),
+    ("providers", "Providers"),
     ("speech_input", "Speech Input"),
     ("speech_recognition", "Speech Recognition"),
     ("speech_output", "Speech Output"),
@@ -141,15 +141,20 @@ CATEGORIES = [
 ]
 
 
+# What a category carries besides its own fields. An `embed` names an editor
+# that is not a form over config keys and so cannot be built out of
+# `FIELD_METADATA`: the route chains are ordered, probed and saved together,
+# which is a shape a field list cannot describe. It is named rather than
+# described so that an interface without that editor can leave it out, where
+# a paragraph telling the reader to go elsewhere can only be shown.
 CATEGORY_DETAILS = {
-    "local_ai": {
+    "providers": {
         "description": (
-            "These models run in local Ollama for fallback, PRIVATE work, and "
-            "embeddings. Effective FAST and CHAT providers are configured only "
-            "in LLM Routes."
+            "The ordered FAST and CHAT chains, and the backend that answers a "
+            "chat turn. Endpoints are contacted only by Jarvis calls or an "
+            "explicit probe."
         ),
-        "action_label": "Open LLM routes",
-        "action_href": "#/llm-routes",
+        "embed": "llm-routes",
     },
 }
 
@@ -218,42 +223,32 @@ def _build_field_metadata() -> List[FieldMeta]:
         fields.append(FieldMeta(key=key, label=label, description=desc,
                                 category=cat, field_type=ftype, **kw))
 
-    # --- Local AI & Behaviour ---
-    model_choices = [(mid, info["name"]) for mid, info in SUPPORTED_CHAT_MODELS.items()]
-    f("ollama_chat_model", "Chat Model", "Primary LLM for conversations",
-      "local_ai", "choice", choices=model_choices, section="Local models")
-    f("local_fast_model", "Local Fast Fallback",
-      "Small Ollama model used after configured FAST routes fail. Route models "
-      "remain authoritative for effective FAST requests",
-      "local_ai", "choice", choices=[("", "Automatic (recommended)")] + model_choices,
-      section="Local models")
-    f("ollama_embed_model", "Embedding Model", "Model for text embeddings",
-      "local_ai", "str", section="Local models")
-    f("ollama_base_url", "Ollama URL", "Ollama server base URL",
-      "local_ai", "str", section="Local models")
+    # --- Providers ---
+    # The chains themselves are the embedded route editor; what is left here
+    # is everything that is true of a reply whichever route produced it.
     f("llm_chat_timeout_sec", "Chat Timeout", "Max seconds for chat responses",
-      "local_ai", "float", min_val=10, max_val=600, step=10, suffix="s",
+      "providers", "float", min_val=10, max_val=600, step=10, suffix="s",
       section="Timeouts")
     f("llm_tools_timeout_sec", "Tools Timeout", "Max seconds for tool calls",
-      "local_ai", "float", min_val=10, max_val=600, step=10, suffix="s",
+      "providers", "float", min_val=10, max_val=600, step=10, suffix="s",
       section="Timeouts")
     f("llm_embedding_timeout_sec", "Embedding Timeout", "Max seconds for embeddings",
-      "local_ai", "float", min_val=5, max_val=300, step=5, suffix="s",
+      "providers", "float", min_val=5, max_val=300, step=5, suffix="s",
       section="Timeouts")
     f("llm_profile_select_timeout_sec", "Profile Select Timeout",
       "Max seconds for profile selection",
-      "local_ai", "float", min_val=5, max_val=120, step=5, suffix="s",
+      "providers", "float", min_val=5, max_val=120, step=5, suffix="s",
       section="Timeouts")
     f("intent_judge_timeout_sec", "Intent Judge Timeout",
       "Max seconds for intent judgement",
-      "local_ai", "float", min_val=1, max_val=30, step=0.5, suffix="s",
+      "providers", "float", min_val=1, max_val=30, step=0.5, suffix="s",
       section="Timeouts")
     f("llm_thinking_enabled", "Chat Thinking Mode",
       "Let the chat model think/reason before answering (slower but may improve quality)",
-      "local_ai", "bool", section="Thinking and behaviour")
+      "providers", "bool", section="Thinking and behaviour")
     f("intent_judge_thinking_enabled", "Intent Judge Thinking Mode",
       "Let the intent judge think before classifying (adds latency to wake detection)",
-      "local_ai", "bool", section="Thinking and behaviour")
+      "providers", "bool", section="Thinking and behaviour")
 
     # --- Text-to-Speech ---
     f("tts_enabled", "Enable TTS", "Enable text-to-speech output",
@@ -648,9 +643,31 @@ def _build_field_metadata() -> List[FieldMeta]:
       "confirm can sit at the full confirmation timeout before it gives up",
       "crew", "bool")
     # --- Advanced ---
+    # Ollama is what PRIVATE work and embeddings run on, and the fallback a
+    # remote-only chain can be given if its owner wants one. That is a
+    # smaller job than the provider window, so it is settled here rather
+    # than standing in front of the chains that actually answer.
+    model_choices = [(mid, info["name"]) for mid, info in SUPPORTED_CHAT_MODELS.items()]
+    f("local_llm_fallback_enabled", "Local Chat/Fast Fallback",
+      "Append a local Ollama route to FAST and CHAT when the configured chain "
+      "has no local entry. Off keeps a remote-only chain remote-only. Memory "
+      "(PRIVATE) and embeddings stay local either way",
+      "advanced", "bool", section="Local Ollama")
+    f("ollama_chat_model", "Chat Model", "Local model used by that fallback",
+      "advanced", "choice", choices=model_choices, section="Local Ollama")
+    f("local_fast_model", "Local Fast Fallback",
+      "Small Ollama model used after configured FAST routes fail. Route models "
+      "remain authoritative for effective FAST requests",
+      "advanced", "choice", choices=[("", "Automatic (recommended)")] + model_choices,
+      section="Local Ollama")
+    f("ollama_embed_model", "Embedding Model", "Model for text embeddings",
+      "advanced", "str", section="Local Ollama")
+    f("ollama_base_url", "Ollama URL", "Ollama server base URL",
+      "advanced", "str", section="Local Ollama")
     f("echo_tolerance", "Echo Tolerance",
       "Time tolerance for echo detection",
-      "advanced", "float", min_val=0.0, max_val=2.0, step=0.05, suffix="s")
+      "advanced", "float", min_val=0.0, max_val=2.0, step=0.05, suffix="s",
+      section="Behaviour")
 
     return fields
 

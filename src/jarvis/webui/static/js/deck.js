@@ -100,14 +100,19 @@ export function mountDeck(root, { onOpenPanel } = {}) {
   const snapshot = {};
 
   /* One source failing is not the deck failing. Every reading is fetched
-     independently and a rejection leaves that widget on its last honest
-     value rather than blanking the whole rail. */
+     independently, a rejection leaves that widget on its last honest value
+     rather than blanking the whole rail, and each one is painted the moment
+     it lands. Painting once at the end instead would let the slowest of the
+     nine decide when any of them is shown, and a source that never answers
+     at all — a machine on the network that is not at home — would mean none
+     of them ever were. */
   async function into(key, call) {
     try {
       snapshot[key] = await call();
     } catch {
       /* The widget keeps showing nothing rather than showing a guess. */
     }
+    paint();
   }
 
   async function takeReading() {
@@ -126,10 +131,15 @@ export function mountDeck(root, { onOpenPanel } = {}) {
       into("passive", () => api.passive("", 1)),
       into("briefing", () => api.briefing()),
     ]);
-    paint();
   }
 
   function paint() {
+    // The assistant is called after its wake word, which `/api/status` already
+    // reports. The face therefore reads its own name from the reading every
+    // widget is painted from rather than from an endpoint of its own.
+    const wakeWord = snapshot.status?.audio?.wake_word;
+    if (wakeWord) face.setName(wakeWord.charAt(0).toUpperCase() + wakeWord.slice(1));
+
     for (const widget of built) {
       try {
         widget.update(snapshot);
@@ -143,12 +153,16 @@ export function mountDeck(root, { onOpenPanel } = {}) {
      already takes one reading for everyone watching. The deck therefore
      asks once and then follows the event the daemon publishes, rather than
      adding its own timer against a NAS. */
-  into("crew", () => api.crew()).then(paint);
+  into("crew", () => api.crew());
 
   const offCrew = live.on("crew", (reading) => {
     snapshot.crew = reading;
     paint();
   });
+  /* The face reads its own state on a slow timer and speeds up only while
+     there is a waveform to follow, so a phase the daemon announces is handed
+     to it directly rather than waited for. */
+  const offPhase = live.on("phase", () => face.poll());
   const offStatus = live.on("status", (status) => {
     snapshot.status = status;
     paint();
@@ -170,6 +184,21 @@ export function mountDeck(root, { onOpenPanel } = {}) {
   let panelNode = null;
   let panelCleanup = null;
   let panelName = null;
+  let panelEscape = null;
+
+  /* A panel calls itself a dialog, so it answers to the key that dismisses
+     one. Not while someone is typing, though: in a field, Escape belongs to
+     the field, and a key press there was never a departure to ask about.
+     Outside one it is a departure like any other and goes through the shell,
+     which asks first if the view is holding anything unsaved. */
+  function isEditing() {
+    const focused = document.activeElement;
+    if (!focused || !panelNode || !panelNode.contains(focused)) return false;
+    return (
+      focused.isContentEditable
+      || ["INPUT", "TEXTAREA", "SELECT"].includes(focused.tagName)
+    );
+  }
 
   async function openPanel(name, { onClose } = {}) {
     if (!PANEL_VIEWS[name]) return;
@@ -185,7 +214,19 @@ export function mountDeck(root, { onOpenPanel } = {}) {
     const view = el("div", { class: "view" });
     body.append(view);
 
-    panelNode = el("div", { class: "panel", role: "dialog", "aria-label": panelTitle(name) }, [
+    /* The panel is drawn before the view it holds exists: the module is
+       fetched, run, and asked its endpoint after this, and until all three
+       have happened the body is empty. Said nothing about, that empty body
+       reads as the view's answer — a screen reader announces the dialog and
+       finds nothing in it, and so does anything else looking at the page.
+       So the panel carries whether its contents have settled, from the
+       moment it opens until its view is mounted or has failed trying. */
+    panelNode = el("div", {
+      class: "panel",
+      role: "dialog",
+      "aria-busy": "true",
+      "aria-label": panelTitle(name),
+    }, [
       el("div", { class: "panel-head" }, [
         el("h1", { class: "panel-title", text: panelTitle(name) }),
         el(
@@ -203,16 +244,42 @@ export function mountDeck(root, { onOpenPanel } = {}) {
     ]);
     root.append(panelNode);
 
+    panelEscape = (event) => {
+      if (event.key !== "Escape" || isEditing()) return;
+      event.preventDefault();
+      if (onClose) onClose();
+    };
+    document.addEventListener("keydown", panelEscape);
+
+    // The panel this call opened, rather than whichever one is open by the
+    // time the view arrives: a panel closed while its module was still
+    // loading must not have its state written by the load it outlived.
+    const opened = panelNode;
     try {
       const module = await PANEL_VIEWS[name]();
-      panelCleanup = (await module.mount(view)) || null;
+      const cleanup = (await module.mount(view)) || null;
+      // Closed, or replaced by another panel, while its module was still
+      // loading. Handing that cleanup to the shared slot would either lose
+      // it, leaving the view's subscriptions and timers running against a
+      // node nobody can see, or overwrite the live panel's own.
+      if (opened === panelNode) panelCleanup = cleanup;
+      else if (cleanup) cleanup();
     } catch (error) {
       console.error(`panel ${name} failed`, error);
       view.append(el("div", { class: "empty", text: String(error.message || error) }));
+    } finally {
+      // Failed the same as mounted: a view that never arrived left a reason
+      // in its place, and a panel left announcing itself as busy for ever
+      // would be a worse answer than the reason.
+      opened.setAttribute("aria-busy", "false");
     }
   }
 
   function closePanel() {
+    if (panelEscape) {
+      document.removeEventListener("keydown", panelEscape);
+      panelEscape = null;
+    }
     if (panelCleanup) {
       try {
         panelCleanup();
@@ -245,9 +312,13 @@ export function mountDeck(root, { onOpenPanel } = {}) {
       closePanel();
       clearInterval(timer);
       offCrew();
+      offPhase();
       offStatus();
       offTurn();
       offPassive();
+      // The face paints itself and polls for its own reading, so removing the
+      // node it drew into is not enough to stop either.
+      face.destroy();
       mic.stop();
     },
   };

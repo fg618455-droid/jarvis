@@ -104,10 +104,14 @@ def page(browser, served):
 
 
 def _open(page, served: str, panel: str) -> None:
+    """Open a panel and wait until the view inside it is mounted.
+
+    The panel is drawn while its module is still being fetched, so anything
+    that waits for the shell measures an empty body.
+    """
     page.goto(f"{served}/#/{panel}", wait_until="domcontentloaded")
-    page.wait_for_selector(".panel .view", state="visible", timeout=5000)
-    page.wait_for_selector(".panel-body .card, .panel-body .empty", timeout=5000)
-    page.wait_for_timeout(400)
+    page.wait_for_selector('.panel[aria-busy="false"]', timeout=20000)
+    page.wait_for_selector(".panel-body .card, .panel-body .empty", timeout=20000)
 
 
 def _widen_the_panel(page, width: str = "1180px") -> None:
@@ -196,6 +200,41 @@ class TestTheContainerPicksTheLayout:
         )
         assert not wide["stacked"], "the table did not come back in a wide container"
         assert wide["cells"] == narrow["cells"], "a stacked table dropped a reading"
+
+
+class TestSmallReadingsPackIntoAPanel:
+    """A card holding one integer is not the size of a card holding a table.
+
+    Given the general grid's minimum, the four memory readings each claimed a
+    row of their own inside a panel a third of the window wide, spending most
+    of the panel's first screen on four numbers before anything the view is
+    actually for. They are their own component now, sized for what they hold.
+    """
+
+    def test_four_single_readings_do_not_take_four_rows(self, browser, served):
+        context = browser.new_context(viewport={"width": 1600, "height": 950})
+        page = context.new_page()
+        try:
+            page.goto(f"{served}/#/memory", wait_until="domcontentloaded")
+            page.wait_for_selector('.panel[aria-busy="false"]', timeout=20000)
+            page.wait_for_selector(".panel-body .readings", state="visible", timeout=20000)
+
+            shape = page.evaluate(
+                """() => {
+                    const row = document.querySelector('.panel-body .readings');
+                    const tops = [...row.children].map(
+                        (card) => Math.round(card.getBoundingClientRect().top)
+                    );
+                    return { cards: tops.length, rows: new Set(tops).size };
+                }"""
+            )
+
+            assert shape["cards"] >= 4, "the memory readings did not render"
+            assert shape["rows"] < shape["cards"], (
+                f"{shape['cards']} single readings stacked into {shape['rows']} rows"
+            )
+        finally:
+            context.close()
 
 
 class TestViewLayoutIsAskedOfTheContainer:

@@ -49,6 +49,26 @@ def _free_port() -> int:
         return probe.getsockname()[1]
 
 
+def open_view(page, served: str, view: str) -> None:
+    """Go to a view's address and wait until the view is in the page.
+
+    A panel's head is drawn the moment it opens and its body stays empty
+    until the view module has been fetched, run, and asked its endpoint.
+    Waiting for anything in the shell — ``main h1``, the panel, its title —
+    reads the page a module load and a request too early, which passes on an
+    idle machine and fails on a busy one. The panel says when its contents
+    have settled, so that is what to wait for.
+
+    Settings is the one address that replaces the deck instead of opening a
+    panel, so it has its own view to wait for.
+    """
+    page.goto(f"{served}/#/{view}")
+    if view == "settings":
+        page.wait_for_selector(".view-settings .settings-nav", state="visible", timeout=20000)
+    else:
+        page.wait_for_selector('.panel[aria-busy="false"]', timeout=20000)
+
+
 @pytest.fixture(scope="module")
 def browser():
     """A headless Chromium, skipped when the browser is not installed.
@@ -120,9 +140,7 @@ class TestEveryViewRenders:
         page.goto(served, wait_until="domcontentloaded")
 
         for view in VIEWS:
-            page.goto(f"{served}/#/{view}")
-            page.wait_for_selector("main h1", state="visible", timeout=5000)
-            page.wait_for_timeout(400)
+            open_view(page, served, view)
             # A panel names itself in its head; Settings replaces the deck and
             # keeps the heading its own view renders.
             heading = ".panel-title" if view != "settings" else ".view-settings h1"
@@ -133,27 +151,24 @@ class TestEveryViewRenders:
         page.goto(served, wait_until="domcontentloaded")
 
         for view in VIEWS:
-            page.goto(f"{served}/#/{view}")
-            page.wait_for_timeout(400)
+            open_view(page, served, view)
 
         assert not page.foreign_requests, f"outbound: {page.foreign_requests}"
 
     def test_switching_language_keeps_the_view_you_are_on(self, page, served):
-        page.goto(f"{served}/#/tools", wait_until="domcontentloaded")
-        page.wait_for_selector("main h1", state="visible")
+        open_view(page, served, "tools")
 
         page.select_option("#language", "de")
-        page.wait_for_timeout(300)
+        page.wait_for_selector('.panel[aria-busy="false"]', timeout=20000)
 
         assert page.evaluate("location.hash") == "#/tools"
         assert not page.console_errors
 
     def test_legacy_llm_hash_is_canonicalised(self, page, served):
-        page.goto(f"{served}/#/llm", wait_until="domcontentloaded")
-        page.wait_for_selector("main h1", state="visible")
+        open_view(page, served, "llm")
 
         assert page.evaluate("location.hash") == "#/llm-routes"
-        assert page.locator("main h1").inner_text().strip()
+        assert page.locator(".panel-title").inner_text().strip()
 
 
 class TestALongTableSaysThereIsMoreBelow:
@@ -183,8 +198,7 @@ class TestALongTableSaysThereIsMoreBelow:
                 )});
             }"""
         )
-        page.goto(f"{served}/#/tools")
-        page.wait_for_selector(".panel .view table", state="attached")
+        open_view(page, served, "tools")
 
     def test_the_column_headings_stay_put_while_the_rows_scroll(self, page, served):
         self._with_sixty_tools(page, served)
@@ -318,8 +332,7 @@ class TestLlmRouteLayout:
                 };
             }"""
         )
-        page.goto(f"{served}/#/llm-routes")
-        page.wait_for_selector(".llm-chain", state="visible")
+        open_view(page, served, "llm-routes")
 
     def test_route_details_wrap_within_each_chain_card(self, page, served):
         self._open_with_routes(page, served)
@@ -390,17 +403,16 @@ class TestSettingsCoherence:
         page.wait_for_selector(".settings-nav button", state="visible")
         nav = page.locator(".settings-nav")
 
-        assert nav.get_by_role("button", name="Local AI & Behaviour").is_visible()
+        assert nav.get_by_role("button", name="Providers").is_visible()
         assert nav.get_by_role("button", name="Speech Input").is_visible()
         assert nav.get_by_role("button", name="Speech Recognition").is_visible()
         assert nav.get_by_role("button", name="Speech Output").is_visible()
         assert nav.get_by_role("button", name="Piper TTS").count() == 0
 
-        nav.get_by_role("button", name="Local AI & Behaviour").click()
-        assert page.get_by_role("heading", name="Local models").is_visible()
+        nav.get_by_role("button", name="Providers").click()
+        page.wait_for_selector(".settings-layout .route-config-card", timeout=20000)
         assert page.get_by_role("heading", name="Timeouts").is_visible()
         assert page.get_by_role("heading", name="Thinking and behaviour").is_visible()
-        assert page.get_by_role("link", name="Open LLM routes").is_visible()
 
         nav.get_by_role("button", name="Speech Recognition").click()
         assert page.get_by_role("heading", name="Whisper").is_visible()
@@ -409,21 +421,58 @@ class TestSettingsCoherence:
         for heading in ("Common output", "Cloud chain", "Piper", "Chatterbox", "Kokoro"):
             assert page.get_by_role("heading", name=heading, exact=True).is_visible()
 
+    def test_the_providers_window_holds_the_editor_rather_than_a_link_to_it(
+        self, page, served,
+    ):
+        """Where the providers are named is where they are configured.
+
+        The window that says Providers used to hold the local Ollama models
+        and a link to the place the real ones were edited, which made the
+        thing it was named after the one thing it could not do.
+        """
+        page.goto(f"{served}/#/settings", wait_until="domcontentloaded")
+        page.wait_for_selector(".settings-nav button", state="visible")
+        page.locator(".settings-nav").get_by_role("button", name="Providers").click()
+
+        page.wait_for_selector(".settings-layout .route-config-card", timeout=20000)
+        panel = page.locator(".settings-layout .route-config-card")
+        assert panel.get_by_role("button", name="+ Add route").is_visible()
+        assert page.locator(".settings-layout").get_by_role(
+            "button", name="Probe models",
+        ).is_visible()
+        assert page.get_by_role("link", name="Open LLM routes").count() == 0
+
+    def test_the_local_models_keep_a_home_for_what_they_are_still_for(
+        self, page, served,
+    ):
+        """Ollama still does PRIVATE work and embeddings, so it stays settable.
+
+        It is no longer what the provider window is about, which is the whole
+        point of the move, but a setting that leaves the interface entirely is
+        a setting nobody can reach.
+        """
+        page.goto(f"{served}/#/settings", wait_until="domcontentloaded")
+        page.wait_for_selector(".settings-nav button", state="visible")
+        page.locator(".settings-nav").get_by_role("button", name="Advanced").click()
+
+        assert page.get_by_role("heading", name="Local Ollama").is_visible()
+        for label in ("Embedding Model", "Ollama URL"):
+            assert page.get_by_text(label, exact=True).is_visible(), label
+
     def test_cloud_provider_chain_is_editable_without_raw_json(self, page, served):
         payload = {
             "path": "C:/config.json", "daemon_running": True,
             "categories": [
                 {
-                    "key": "local_ai", "label": "Local AI & Behaviour",
-                    "description": "Effective providers are configured in LLM Routes.",
-                    "action_label": "Open LLM routes", "action_href": "#/llm-routes",
+                    "key": "advanced", "label": "Advanced",
+                    "description": "Everything that is not part of the pipeline.",
                 },
                 {"key": "speech_output", "label": "Speech Output"},
             ],
             "fields": [
                 {
                     "key": "ollama_chat_model", "label": "Chat Model", "description": "Local fallback",
-                    "category": "local_ai", "section": "Local models",
+                    "category": "advanced", "section": "Local Ollama",
                     "type": "choice", "choices": [
                         {"value": "local-model", "label": "Local model"},
                     ], "value": "local-model", "restart_required": True,
@@ -454,10 +503,13 @@ class TestSettingsCoherence:
             ],
         }
         page.route("**/api/settings", lambda route: route.fulfill(json=payload))
-        page.goto(f"{served}/#/settings", wait_until="domcontentloaded")
-        page.wait_for_selector("main h1", state="visible")
+        open_view(page, served, "settings")
 
-        assert page.get_by_role("link", name="Open LLM routes").is_visible()
+        # The first category in the payload is the one showing, so the click
+        # below is a move to another one rather than a no-op that would pass
+        # whether or not switching category paints anything.
+        heading = page.locator(".settings-layout .card header h2")
+        assert heading.text_content().strip() == "Advanced"
         page.get_by_role("button", name="Speech Output").click()
 
         assert page.locator(".object-item").count() == 1
@@ -593,7 +645,8 @@ class TestSystemModelTruth:
             "process": {"pid": 1, "python": "3", "platform": "test", "threads": 1},
         }))
         page.route("**/api/turns?*", lambda route: route.fulfill(json={"turns": []}))
-        page.goto(f"{served}/#/system", wait_until="domcontentloaded")
+        page.goto(served, wait_until="domcontentloaded")
+        open_view(page, served, "system")
 
         effective = page.locator(".effective-models")
         local = page.locator(".local-models")
@@ -653,8 +706,7 @@ class TestMemoryMaintenance:
                 }
             }"""
         )
-        page.goto(f"{served}/#/memory")
-        page.wait_for_selector("main h1", state="visible")
+        open_view(page, served, "memory")
 
     def test_memory_view_shows_meals_and_topic_tally_as_text(self, page, served):
         self._open_with_memory_data(page, served)
@@ -722,8 +774,7 @@ class TestMotionIsOptional:
                 });
             }"""
         )
-        page.goto(f"{served}/#/crew")
-        page.wait_for_selector(".state-pill", state="visible")
+        open_view(page, served, "crew")
         try:
             return page.evaluate(
                 """() => [...document.querySelectorAll('*')]
@@ -838,8 +889,7 @@ class TestMissionControl:
             }""",
             self._reading(entries, agents),
         )
-        page.goto(f"{served}/#/crew")
-        page.wait_for_selector(".agent", state="visible")
+        open_view(page, served, "crew")
         return agents
 
     ENTRIES = [
@@ -989,8 +1039,7 @@ class TestTheConversationIsTheConversationView:
             }""",
             turns,
         )
-        page.goto(f"{served}/#/conversation")
-        page.wait_for_selector(".dialogue", state="visible")
+        open_view(page, served, "conversation")
         return turns
 
     def test_the_exchange_is_the_first_thing_you_see(self, page, served):
@@ -1146,8 +1195,7 @@ class TestTheMicrophoneReachesTheDaemon:
                 api.voiceStatus = async () => ({ ingress: true, sample_rate: 16000 });
             }"""
         )
-        page.goto(f"{served}/#/conversation")
-        page.wait_for_selector(".voice-mic", state="visible")
+        open_view(page, served, "conversation")
         return context, page
 
     def test_opening_it_streams_and_the_level_follows_what_it_hears(
@@ -1156,15 +1204,21 @@ class TestTheMicrophoneReachesTheDaemon:
         context, page = self._open(browser, served)
         try:
             page.locator(".voice-mic").click()
-            page.wait_for_timeout(2500)
+            # Permission, a worklet, a socket and the first frame of audio all
+            # have to happen before there is a level to read, and how long that
+            # takes is a property of the machine rather than of the interface.
+            # Waiting for the level itself fails only if one never arrives.
+            page.wait_for_function(
+                """() => {
+                    const bar = document.querySelector('.voice-level > span');
+                    return bar && bar.style.height && bar.style.height !== '0%';
+                }""",
+                timeout=30000,
+            )
 
             assert page.locator(".voice-mic").get_attribute("aria-pressed") == "true"
             # The state is in words, not only in the meter.
             assert page.locator(".voice-mic-state").inner_text().strip()
-            height = page.evaluate(
-                "() => document.querySelector('.voice-level > span').style.height"
-            )
-            assert height not in ("", "0%"), f"no level from a live capture: {height!r}"
             assert not page.console_errors
         finally:
             context.close()
@@ -1174,13 +1228,12 @@ class TestTheMicrophoneReachesTheDaemon:
         context, page = self._open(browser, served)
         try:
             page.locator(".voice-mic").click()
-            page.wait_for_timeout(1500)
+            page.wait_for_selector('.voice-mic[aria-pressed="true"]', timeout=30000)
 
             page.goto(f"{served}/#/deck")
-            page.wait_for_timeout(800)
+            page.wait_for_selector(".panel", state="detached", timeout=20000)
 
-            page.goto(f"{served}/#/conversation")
-            page.wait_for_selector(".voice-mic", state="visible")
+            open_view(page, served, "conversation")
             assert page.locator(".voice-mic").get_attribute("aria-pressed") == "false"
             assert not page.console_errors
         finally:
@@ -1221,13 +1274,11 @@ class TestPassiveRecordHasItsOwnHome:
             }""",
             [self.LINES, enabled],
         )
-        page.goto(f"{served}/#/passive")
-        page.wait_for_selector("main h1", state="visible")
+        open_view(page, served, "passive")
 
     def test_the_conversation_view_no_longer_carries_the_record(self, page, served):
-        page.goto(f"{served}/#/conversation", wait_until="domcontentloaded")
-        page.wait_for_selector("main h1", state="visible")
-        page.wait_for_timeout(400)
+        page.goto(served, wait_until="domcontentloaded")
+        open_view(page, served, "conversation")
 
         assert page.locator(".passive-day").count() == 0
         assert not page.console_errors
@@ -1304,8 +1355,7 @@ class TestTheDiagnosticLogIsReadable:
             }""",
             self.ENTRIES if entries is None else entries,
         )
-        page.goto(f"{served}/#/logs")
-        page.wait_for_selector(".log-line", state="visible")
+        open_view(page, served, "logs")
 
     def test_every_entry_is_a_row_rather_than_one_block_of_text(self, page, served):
         self._open(page, served)
@@ -1469,3 +1519,58 @@ class TestStreamingApiClient:
         ]
         assert result["complete"]["total_facts"] == 5
         assert seen_request == {"method": "POST", "ui_header": "1"}
+
+
+class TestEveryFieldSaysWhatItIs:
+    """A label beside a control is not a label on it.
+
+    Settings is where the assistant is configured, and its fields are named
+    only by a `<label>` that sits next to them with nothing joining the two.
+    Sighted, that reads perfectly; to anything reading the accessibility tree
+    it is an unnamed edit box next to some unrelated text, and the field that
+    holds the Ollama URL is announced the same way as the one that holds a
+    timeout.
+
+    Asserted across every form in the interface rather than only the one that
+    was wrong, so the next form is held to it too.
+    """
+
+    UNNAMED = """() => {
+        const fields = [...document.querySelectorAll(
+            'main input:not([type=hidden]), main select, main textarea'
+        )];
+        const named = (node) => (
+            (node.labels && node.labels.length > 0)
+            || !!node.getAttribute('aria-label')
+            || !!node.getAttribute('aria-labelledby')
+            || !!node.getAttribute('title')
+        );
+        return {
+            total: fields.length,
+            unnamed: fields.filter((node) => !named(node)).map((node) => {
+                const near = (node.closest('.field, label, .row, section') || node);
+                return `${node.tagName.toLowerCase()}[${node.type || ''}] near ${
+                    near.textContent.trim().slice(0, 40)}`;
+            }),
+        };
+    }"""
+
+    @pytest.mark.parametrize("view", ["settings", "mcp", "llm-routes", "deck"])
+    def test_no_control_is_left_unnamed(self, page, served, view):
+        page.goto(served, wait_until="domcontentloaded")
+        if view == "deck":
+            # The deck is the page rather than a panel over it, and the field
+            # this checks is the face's size control behind its own toggle.
+            page.wait_for_selector(".face-settings-open", state="visible", timeout=20000)
+            page.locator(".face-settings-open").click()
+            page.wait_for_selector(".face-settings", state="visible")
+        else:
+            open_view(page, served, view)
+
+        found = page.evaluate(self.UNNAMED)
+
+        assert found["total"], f"{view} rendered no fields to check"
+        assert not found["unnamed"], (
+            f"{view}: {len(found['unnamed'])} of {found['total']} fields are "
+            f"unnamed: {found['unnamed']}"
+        )

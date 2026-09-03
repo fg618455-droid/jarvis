@@ -164,8 +164,8 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 - **Conversational Awareness** - Understands ongoing discussions. Ask "Jarvis, what do you think?" and it knows what you're talking about. Works naturally in multi-person conversations.
 - **Text Chat** - Type to Jarvis alongside voice. Voice and text share one conversation, so a follow-up typed in the chat window continues a voice discussion. Text never speaks. Open it from the tray menu (`💬 Chat…`) while Jarvis is listening. The window is styled like an SMS thread with a single contact: speech bubbles, timestamps, and an online/typing presence line. It shows a local status banner while Jarvis starts, stops, or needs to be restarted, and every message you send carries a rewind button that rolls the conversation back to that point and regenerates the reply.
 - **Unlimited Memory** - Never forgets. Searches across all your conversation history and can add bounded, attributable excerpts from a local Remio knowledge base. Browse and edit Jarvis memory in the Control Centre.
-- **Control Centre** - A local web interface the daemon serves at `http://127.0.0.1:5055`. The face is the page: it sits at the centre with widgets around it for memory, tools, MCP servers, security, LLM routes, system readings, and the day's briefing. Each widget opens its detail beside the face rather than replacing it, and Settings is the one button that takes the whole window. Two themes, offline, no build step, nothing leaves the machine.
-- **Face/Visualizer** - A face at the centre of the Control Centre that idles, listens, thinks, and speaks in step with the real conversation, reading Jarvis's own live state directly (no signal files, no second server). Pick which face and how large it draws from the control beside it; it takes its colour from the active theme. The face gallery itself is a vendored, AGPL-3.0-licensed third-party component; see `THIRD_PARTY_NOTICES.md`.
+- **Control Centre** - A local web interface the daemon serves at `http://127.0.0.1:5055`. The face is the page: it sits at the centre with widgets around it for memory, tools, MCP servers, security, LLM routes, system readings, and the day's briefing. Each widget opens its detail beside the face rather than replacing it, and Settings is the one button that takes the whole window. Three themes, offline, no build step, nothing leaves the machine.
+- **Face** - A face at the centre of the Control Centre that idles, listens, thinks, and speaks in step with the real conversation, reading Jarvis's own live state directly (no signal files, no second server). One circle inside one ring: how much of the ring the disc fills is what the assistant is doing, so the four states stay four different pictures for a reader who has asked for no motion. It is painted in the active theme's accent, and how large it draws is a control beside it.
 - **MCP servers from the interface** - Add, edit, and remove MCP servers in the Control Centre instead of hand-editing `config.json`. Credentials are writable but never readable, and each server says whether it is configured, connected, or waiting on a restart.
 - **Today** - A briefing widget over what Jarvis has learned about school: what is on, and a short written summary on request. It shares its source and its wording with the spoken morning briefing, so the two never disagree about the same day.
 - **Passive Capture (opt-in)** - Keep a local, text-only record of speech the recogniser already transcribed, including ambient conversation not addressed to Jarvis. It is off by default, visibly indicated while active, and deletable by line, day, or in full. No audio is written to disk.
@@ -830,8 +830,8 @@ provider can't run out the voice-assistant latency budget.
 
 - **Personal use**: Free forever
 - **Commercial use**: [Contact us](mailto:baris@writeme.com)
-- A handful of vendored, opt-in components (the Face/Visualizer view and the
-  Kokoro TTS engine) carry their own AGPL-3.0 licence instead — see
+- One vendored, opt-in component (the Kokoro TTS engine) carries its own
+  AGPL-3.0 licence instead — see
   [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## Support

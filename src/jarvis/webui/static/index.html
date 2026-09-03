@@ -13,13 +13,17 @@
     <link rel="stylesheet" href="/static/css/views.css" />
     <!-- The theme is applied before the first paint rather than by the module
          below, which is deferred: a page that painted graphite and then
-         repainted arc would flash on every load for anyone who changed it.
+         repainted ember would flash on every load for anyone who changed it.
          The attribute above is the fallback for a browser that never runs
-         this, so the interface is never left with no palette at all. -->
+         this, so the interface is never left with no palette at all.
+
+         The list of names is a copy of `THEMES` in `theme.js`, because this
+         script runs before any module can be imported. `test_theme_tokens.py`
+         holds the two in step. -->
     <script>
       try {
         var stored = localStorage.getItem("jarvis.theme");
-        if (stored === "graphite" || stored === "arc") {
+        if (stored === "graphite" || stored === "arc" || stored === "ember") {
           document.documentElement.dataset.theme = stored;
         }
       } catch (error) {
@@ -32,12 +36,15 @@
     />
   </head>
   <body>
+    <!-- Three kinds of thing, and they are grouped as three rather than run
+         together into one strip: what the assistant is doing right now, two
+         readings about it, and the controls that change this page. -->
     <header class="header">
-      <div class="brand">
-        <span class="dot" id="phase-dot" data-phase="starting"></span>
-        <span id="brand-name">Jarvis</span>
-      </div>
-      <div class="header-right">
+      <div class="header-group header-live">
+        <span class="brand">
+          <span class="dot" id="phase-dot" data-phase="starting"></span>
+          <span id="brand-name">Jarvis</span>
+        </span>
         <span id="phase-text" class="muted"></span>
         <span id="passive-indicator" class="passive-indicator" hidden>
           <span class="passive-dot"></span>
@@ -47,6 +54,8 @@
           <span class="conversation-dot"></span>
           <span id="conversation-indicator-text"></span>
         </span>
+      </div>
+      <div class="header-group header-readings">
         <span class="header-metric">
           <span class="label" id="uptime-label"></span>
           <span class="num" id="uptime-value">—</span>
@@ -55,8 +64,10 @@
           <span class="label" id="last-turn-label"></span>
           <span class="num" id="last-turn-value">—</span>
         </span>
-        <select id="theme" aria-label="Theme" style="width: auto"></select>
-        <select id="language" aria-label="Language" style="width: auto"></select>
+      </div>
+      <div class="header-group header-controls">
+        <select id="theme" aria-label="Theme"></select>
+        <select id="language" aria-label="Language"></select>
         <button
           type="button"
           class="settings-button"

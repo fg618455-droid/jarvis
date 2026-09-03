@@ -18,9 +18,10 @@ const STORAGE_KEY = "jarvis.theme";
 export const THEMES = [
   { id: "graphite", label: "Graphite" },
   { id: "arc", label: "Arc" },
+  { id: "ember", label: "Ember" },
 ];
 
-export const DEFAULT_THEME = "graphite";
+const DEFAULT_THEME = "graphite";
 
 function known(id) {
   return THEMES.some((theme) => theme.id === id) ? id : null;
@@ -50,9 +51,4 @@ export function applyTheme(id) {
     /* The page still wears it for this session. */
   }
   return theme;
-}
-
-/* Called before the first view is built, so nothing paints twice. */
-export function startTheme() {
-  return applyTheme(activeTheme());
 }

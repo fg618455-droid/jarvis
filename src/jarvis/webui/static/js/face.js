@@ -1,29 +1,59 @@
 /* The face: the centre of the interface rather than a page inside it.
 
-   The face itself is the vendored, AGPL-3.0-licensed ai-visualizer gallery,
-   which is a self-contained page with its own canvas, its own animation
-   loop, and its own palette. It is framed rather than reimplemented, and it
-   is never edited: harmonising it with the interface is done entirely on
-   this side of the frame, by the bed it sits on, the aura behind it, the
-   rings around it, and how large it is drawn.
+   One circle inside one ring. What the assistant is doing is carried by the
+   size of the disc, which is a channel that survives a reader who has asked
+   for no motion: with every animation off, idle, listening, thinking and
+   speaking are still four different pictures. A face that separated its
+   states by the speed of a rotation would have nothing left to say to that
+   reader, and the state is the one thing this drawing exists to report.
 
-   Picking a face is a control here. The gallery has a picker of its own, but
-   reaching it meant loading the gallery's index inside the frame and
-   choosing there, which put a second, differently-styled navigation inside
-   the page. One face is loaded directly, and which one is this browser's
-   preference, the same way the theme is. */
+   It is painted from `var(--accent)`, read off the stylesheet rather than
+   held here, so a theme drives the face for free and there is no second
+   palette to keep in step with the first.
+
+   The reading comes from `/api/visualizer/state`, which derives everything
+   from Jarvis's own live objects. The words beside the face come from the
+   event stream instead, because that is the only source that can say the
+   page has lost the daemon: a poll that fails and a daemon that is idle look
+   identical from here. */
 
 import { api } from "./api.js";
 import { t } from "./i18n.js";
-import { el, icon, ICONS } from "./ui.js";
+import { el, icon, ICONS, motionAllowed } from "./ui.js";
 
-const FACE_KEY = "jarvis.face";
 const SIZE_KEY = "jarvis.faceSize";
 
-const DEFAULT_FACE = "radial";
-export const MIN_SIZE = 180;
-export const MAX_SIZE = 560;
-const DEFAULT_SIZE = 320;
+const MIN_SIZE = 180;
+const MAX_SIZE = 560;
+const DEFAULT_SIZE = 400;
+
+/* Eight times a second is what a mouth needs to agree with speech, and it is
+   far more than anything else here needs: idle, listening and thinking change
+   on a human timescale and are announced on the event stream the moment they
+   change. So the fast rate is spent only while there is a waveform to follow,
+   and the deck nudges the face to read again whenever the phase changes, so a
+   state still arrives at once rather than up to the slow interval late.
+
+   It is not a free choice. The server closes every connection it answers, so
+   a poll is a new socket that the operating system then holds for minutes;
+   eight a second, all day, exhausts the pool. */
+const POLL_SPEAKING_MS = 125;
+const POLL_IDLE_MS = 400;
+
+/* How large the disc is drawn, as a share of the ring it sits in. This table
+   is the state contract: four values far enough apart to be told apart in a
+   still picture across a room. */
+const DISC = {
+  idle: 0.52,
+  listening: 0.80,
+  thinking: 0.52,
+  speaking: 0.66,
+};
+
+/* How far a waveform may push the edge of the disc, as a share of its radius.
+   Past roughly a tenth the outline stops reading as a circle that is speaking
+   and starts reading as a shape that is not a circle. */
+const SPEECH_DEFORMATION = 0.07;
 
 function remembered(key, fallback) {
   try {
@@ -47,33 +77,219 @@ function clampSize(value) {
   return Math.min(MAX_SIZE, Math.max(MIN_SIZE, number));
 }
 
-/* A face id becomes a path, so it is checked against the gallery the daemon
-   actually reports rather than trusted. A stale preference for a face that
-   has since been removed falls back instead of framing a 404. */
-function faceSource(id) {
-  return `/visualizer/faces/${encodeURIComponent(id)}/index.html`;
+/* A waveform straight from the speakers is jagged, and jaggedness at this
+   size reads as noise in the drawing rather than as sound. Each point is
+   averaged with its neighbours around the ring, so the outline stays a
+   circle that is moving rather than a star. */
+function smoothed(samples) {
+  const peak = samples.reduce((most, value) => Math.max(most, Math.abs(value)), 0);
+  if (!peak) return null;
+  const unit = samples.map((value) => Math.abs(value) / peak);
+  return unit.map((_, index) => {
+    const before = unit[(index - 1 + unit.length) % unit.length];
+    const after = unit[(index + 1) % unit.length];
+    return (before + unit[index] * 2 + after) / 4;
+  });
 }
 
 export function mountFace(stage, { onSend, onMicToggle } = {}) {
   const state = {
-    faces: [],
-    face: remembered(FACE_KEY, DEFAULT_FACE),
     size: clampSize(remembered(SIZE_KEY, DEFAULT_SIZE)),
+    reading: "idle",
+    wave: null,
     name: "Jarvis",
   };
 
-  const frame = el("iframe", {
-    class: "face-frame",
-    src: faceSource(state.face),
-    title: t("face.title"),
-  });
-  const shell = el("div", { class: "face-shell" }, [
-    el("div", { class: "face-rings" }, [el("span"), el("span"), el("span")]),
-    frame,
-  ]);
+  const canvas = el("canvas", { class: "face-canvas", role: "img" });
+  const shell = el("div", { class: "face-shell" }, [canvas]);
+  const context = canvas.getContext("2d");
 
   const nameNode = el("div", { class: "face-name", text: state.name });
   const stateNode = el("div", { class: "face-state" });
+
+  /* The face, its name, and what it is doing: one block, so the stage can
+     hold it in the middle and stand the dock on the floor underneath. */
+  const portrait = el("div", { class: "face-portrait" }, [shell, nameNode, stateNode]);
+
+  /* ── The drawing ─────────────────────────────────────────────────── */
+
+  /* Reading a custom property is a style resolution, which is too expensive
+     to do sixty times a second. The theme is the only thing that changes it
+     and it announces itself on the root element, so the answer is kept until
+     that changes. */
+  let paintedFor = null;
+  let accent = "#ffffff";
+  function accentColour() {
+    const theme = document.documentElement.dataset.theme;
+    if (theme !== paintedFor) {
+      accent = getComputedStyle(document.documentElement)
+        .getPropertyValue("--accent")
+        .trim() || accent;
+      paintedFor = theme;
+    }
+    return accent;
+  }
+
+  /* An alpha of the accent, whatever notation the theme wrote it in.
+     `color-mix` keeps this working for a hex, an `rgb()`, and an `oklch()`
+     alike, so a theme is never constrained in how it names its colours. */
+  function fade(colour, alpha) {
+    return `color-mix(in srgb, ${colour} ${Math.round(alpha * 100)}%, transparent)`;
+  }
+
+  function draw(seconds) {
+    // The size the browser settled on, not the one that was asked for. In a
+    // column too narrow for the preference the stylesheet caps it, and a
+    // drawing made at the requested size would be cut off by the difference.
+    const size = canvas.clientWidth || state.size;
+    if (!size) return;
+    const dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== Math.round(size * dpr)) {
+      canvas.width = Math.round(size * dpr);
+      canvas.height = Math.round(size * dpr);
+    }
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.clearRect(0, 0, size, size);
+
+    const moving = motionAllowed();
+    const time = moving ? seconds : 0;
+    const colour = accentColour();
+    const reading = state.reading;
+    const ring = size * 0.40;
+
+    context.save();
+    context.translate(size / 2, size / 2);
+
+    /* The light the drawing sits in, so the centre of the page reads as
+       depth rather than as a sticker on a flat surface. */
+    const aura = context.createRadialGradient(0, 0, ring * 0.3, 0, 0, ring * 1.5);
+    aura.addColorStop(0, fade(colour, 0.16));
+    aura.addColorStop(1, "transparent");
+    context.fillStyle = aura;
+    context.beginPath();
+    context.arc(0, 0, ring * 1.5, 0, Math.PI * 2);
+    context.fill();
+
+    /* The ring. It never changes, so it is the fixed thing the disc inside
+       it is read against: how open the face is, is how much of the ring the
+       disc has taken. */
+    context.strokeStyle = fade(colour, 0.32);
+    context.lineWidth = Math.max(1, size * 0.005);
+    context.beginPath();
+    context.arc(0, 0, ring, 0, Math.PI * 2);
+    context.stroke();
+
+    /* The disc. Idle breathes, because a face that is perfectly still reads
+       as a picture of an assistant rather than as one that is running. */
+    const breath = reading === "idle" && moving ? 1 + 0.025 * Math.sin(time * 1.15) : 1;
+    const radius = ring * DISC[reading] * breath;
+
+    context.fillStyle = colour;
+    const wave = reading === "speaking" && moving ? smoothed(state.wave || []) : null;
+    if (wave) {
+      context.beginPath();
+      const steps = 160;
+      for (let step = 0; step <= steps; step += 1) {
+        const angle = (step / steps) * Math.PI * 2;
+        const at = (step / steps) * wave.length;
+        const low = Math.floor(at) % wave.length;
+        const high = (low + 1) % wave.length;
+        const blend = at - Math.floor(at);
+        const value = wave[low] * (1 - blend) + wave[high] * blend;
+        const reach = radius * (1 + (value - 0.5) * 2 * SPEECH_DEFORMATION);
+        const x = Math.cos(angle) * reach;
+        const y = Math.sin(angle) * reach;
+        if (step === 0) context.moveTo(x, y);
+        else context.lineTo(x, y);
+      }
+      context.closePath();
+      context.fill();
+    } else {
+      context.beginPath();
+      context.arc(0, 0, radius, 0, Math.PI * 2);
+      context.fill();
+    }
+
+    /* Thinking puts one mark on the ring and walks it round. One moving part
+       rather than an orbit of them, and parked at the top when nothing is
+       allowed to move, so the state is still a different picture. */
+    if (reading === "thinking") {
+      context.strokeStyle = colour;
+      context.lineWidth = Math.max(2, size * 0.011);
+      context.lineCap = "round";
+      const from = moving ? time * 1.5 : -Math.PI / 2;
+      context.beginPath();
+      context.arc(0, 0, ring, from, from + Math.PI * 0.45);
+      context.stroke();
+    }
+
+    context.restore();
+  }
+
+  /* ── Keeping it painted ──────────────────────────────────────────── */
+
+  let frame = null;
+  let started = null;
+
+  function loop(now) {
+    if (started === null) started = now;
+    draw((now - started) / 1000);
+    frame = window.requestAnimationFrame(loop);
+  }
+
+  /* Draw once, for the cases where nothing else will. With motion allowed
+     the loop is already redrawing sixty times a second and this is a no-op;
+     with motion refused there is no loop, so a new reading, a resize or a
+     change of theme is the only thing that ever repaints. */
+  function repaintIfStill() {
+    if (motionAllowed()) return;
+    draw(0);
+  }
+
+  function startPainting() {
+    if (motionAllowed()) frame = window.requestAnimationFrame(loop);
+    else draw(0);
+  }
+
+  function stopPainting() {
+    if (frame !== null) window.cancelAnimationFrame(frame);
+    frame = null;
+  }
+
+  /* ── The reading ─────────────────────────────────────────────────── */
+
+  let polling = null;
+  let pollRate = null;
+
+  function pollEvery(ms) {
+    if (pollRate === ms) return;
+    pollRate = ms;
+    clearInterval(polling);
+    polling = setInterval(takeReading, ms);
+  }
+
+  async function takeReading() {
+    // The server closes every connection it answers, so a poll is a fresh
+    // socket rather than a reuse of one, and a socket that has been closed is
+    // held by the operating system for minutes afterwards. Eight a second is
+    // affordable while someone is watching the face and is not affordable for
+    // a tab left open behind another window all day, which is why a hidden
+    // page stops asking rather than merely stops drawing.
+    if (document.hidden) return;
+    try {
+      const reading = await api.visualizerState();
+      const named = DISC[reading.state] ? reading.state : "idle";
+      const changed = named !== state.reading;
+      state.reading = named;
+      state.wave = named === "speaking" ? reading.samples || [] : null;
+      pollEvery(named === "speaking" ? POLL_SPEAKING_MS : POLL_IDLE_MS);
+      if (changed) repaintIfStill();
+    } catch {
+      /* A poll that failed says nothing about the assistant, so the face
+         holds its last honest reading rather than dropping to idle. What
+         the page has actually lost is said in words beside it. */
+    }
+  }
 
   /* ── Speaking to it ─────────────────────────────────────────────── */
 
@@ -122,9 +338,8 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
 
   const dock = el("div", { class: "face-dock" }, [mic, input, send]);
 
-  /* ── Dressing it ────────────────────────────────────────────────── */
+  /* ── Sizing it ──────────────────────────────────────────────────── */
 
-  const facePicker = el("select", { name: "face", onchange: () => setFace(facePicker.value) });
   const sizePicker = el("input", {
     type: "range",
     name: "size",
@@ -136,14 +351,7 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
   });
 
   const settings = el("div", { class: "face-settings", hidden: true }, [
-    el("label", {}, [
-      el("span", { text: t("face.whichFace") }),
-      facePicker,
-    ]),
-    el("label", {}, [
-      el("span", { text: t("face.size") }),
-      sizePicker,
-    ]),
+    el("label", {}, [el("span", { text: t("face.size") }), sizePicker]),
   ]);
 
   const settingsToggle = el(
@@ -162,78 +370,81 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
     [icon(ICONS.sliders)],
   );
 
-  function setFace(id) {
-    state.face = id;
-    remember(FACE_KEY, id);
-    frame.src = faceSource(id);
-  }
-
   function setSize(value) {
     state.size = clampSize(value);
     remember(SIZE_KEY, state.size);
-    // Written on the element rather than the stylesheet: this is one
-    // reader's preference about one face, not a retune of the interface.
+    // Written on the element rather than the stylesheet: this is one reader's
+    // preference about one face, not a retune of the interface. How much of
+    // it survives a narrow column is the stylesheet's business.
     shell.style.setProperty("--face-size", `${state.size}px`);
+    repaintIfStill();
   }
 
   setSize(state.size);
 
-  stage.append(shell, nameNode, stateNode, dock, settingsToggle, settings);
+  // In the order they are read. The size control sits at the top of the
+  // stage and the dock along the bottom of it, so appending the control last
+  // put a keyboard on it after the thing below it.
+  stage.append(settingsToggle, settings, portrait, dock);
 
-  /* ── What it is doing ───────────────────────────────────────────── */
+  /* ── What it is doing, in words ─────────────────────────────────── */
 
-  /* The face animates the phase itself. The words under it are for the
-     reader who cannot tell an idle face from a listening one, and for the
-     one who asked for no motion at all. */
+  /* The face draws the assistant's own reading; this says what the page
+     knows, which is a different fact the moment the connection drops. It is
+     also what a reader who cannot tell an idle disc from a listening one is
+     actually reading. */
   function paintPhase(phase, connected) {
     const known = phase && t(`phase.${phase}`) !== `phase.${phase}`;
+    const label = connected === false
+      ? t("common.reconnecting")
+      : known ? t(`phase.${phase}`) : t("phase.offline");
+    canvas.setAttribute("aria-label", label);
     stateNode.replaceChildren(
       el("span", { class: `state-pill${phase === "idle" ? "" : " live"}` }, [
         el("span", { class: "state-pill-dot", dataset: { phase: phase || "offline" } }),
-        el("span", {
-          text: connected === false
-            ? t("common.reconnecting")
-            : known ? t(`phase.${phase}`) : t("phase.offline"),
-        }),
+        el("span", { text: label }),
       ]),
     );
   }
 
-  async function loadConfig() {
-    try {
-      const config = await api.visualizerConfig();
-      state.faces = config.faces || [];
-      state.name = config.name || "Jarvis";
-      nameNode.textContent = state.name;
-
-      const ids = state.faces.map((face) => face.id);
-      if (ids.length && !ids.includes(state.face)) setFace(ids[0]);
-
-      facePicker.replaceChildren(
-        ...state.faces.map((face) =>
-          el("option", {
-            value: face.id,
-            text: face.title || face.id,
-            selected: face.id === state.face,
-          }),
-        ),
-      );
-    } catch {
-      /* Without the gallery listing the framed face still loads; only the
-         picker has nothing to offer, which it shows as an empty select. */
-    }
+  /* Coming back to the page asks at once rather than waiting out the tick
+     that was skipped, so a face returned to is correct immediately. */
+  function onVisibility() {
+    if (!document.hidden) takeReading();
   }
+  document.addEventListener("visibilitychange", onVisibility);
 
-  loadConfig();
+  /* A theme changes the accent the face is painted in, and with motion
+     refused there is no loop to notice: the page around the face would
+     change colour and the largest thing on it would keep the palette it was
+     first drawn in. The attribute that carries the theme is watched instead. */
+  const themeWatch = new MutationObserver(() => repaintIfStill());
+  themeWatch.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme"],
+  });
+
   paintPhase("idle");
+  startPainting();
+  takeReading();
+  pollEvery(POLL_IDLE_MS);
 
   return {
     paintPhase,
+    /* The deck calls this when the daemon announces a new phase, so a state
+       change is drawn at once rather than at the next slow tick. */
+    poll: takeReading,
     setName(name) {
       if (!name) return;
       state.name = name;
       nameNode.textContent = name;
     },
     micButton: mic,
+    destroy() {
+      stopPainting();
+      clearInterval(polling);
+      themeWatch.disconnect();
+      document.removeEventListener("visibilitychange", onVisibility);
+    },
   };
 }

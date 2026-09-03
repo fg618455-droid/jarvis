@@ -143,12 +143,12 @@ const STAGE_TONES = {
 
 const TOOL_TONE = "#fbbf24";
 
-export function stageTone(name) {
+function stageTone(name) {
   if (name.startsWith("tool:")) return TOOL_TONE;
   return STAGE_TONES[name] || "#4b5563";
 }
 
-export function stageTotals(turn) {
+function stageTotals(turn) {
   const totals = new Map();
   for (const stage of turn.stages || []) {
     totals.set(stage.name, (totals.get(stage.name) || 0) + stage.duration_ms);
@@ -181,46 +181,6 @@ export function stageBar(turn) {
     );
   }
   return bar;
-}
-
-export function stageLegend(turn) {
-  const totals = stageTotals(turn);
-  return el(
-    "div",
-    { class: "stagelegend" },
-    [...totals].map(([name, duration]) =>
-      el("span", {}, [
-        el("i", { class: "swatch", style: `background: ${stageTone(name)}` }),
-        `${name} ${fmt.ms(duration)}`,
-      ]),
-    ),
-  );
-}
-
-/* A sparkline of recent totals. Inline SVG keeps it dependency-free and
-   crisp at any zoom. */
-export function sparkline(values, { width = 160, height = 32 } = {}) {
-  if (!values.length) return el("span", { class: "muted", text: "—" });
-  const max = Math.max(...values, 1);
-  const step = values.length > 1 ? width / (values.length - 1) : width;
-  const points = values
-    .map((value, index) => `${(index * step).toFixed(1)},${(height - (value / max) * height).toFixed(1)}`)
-    .join(" ");
-
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  svg.setAttribute("width", String(width));
-  svg.setAttribute("height", String(height));
-  svg.setAttribute("preserveAspectRatio", "none");
-
-  const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
-  line.setAttribute("points", points);
-  line.setAttribute("fill", "none");
-  line.setAttribute("stroke", "var(--accent)");
-  line.setAttribute("stroke-width", "1.5");
-  line.setAttribute("stroke-linejoin", "round");
-  svg.append(line);
-  return svg;
 }
 
 let toastHost = null;

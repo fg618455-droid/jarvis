@@ -309,7 +309,7 @@ class TestSettingsPipelineLayout:
         window = SettingsWindow()
 
         sidebar = [window._sidebar.item(i).text() for i in range(window._sidebar.count())]
-        assert any("Local AI & Behaviour" in label for label in sidebar)
+        assert any("Providers" in label for label in sidebar)
         assert any("Speech Recognition" in label for label in sidebar)
         assert any("Speech Output" in label for label in sidebar)
         assert not any("Piper TTS" in label for label in sidebar)
@@ -320,7 +320,7 @@ class TestSettingsPipelineLayout:
             if label.objectName() == "settingsSection"
         }
         assert {
-            "Local models", "Timeouts", "Thinking and behaviour", "Microphone",
+            "Local Ollama", "Timeouts", "Thinking and behaviour", "Microphone",
             "Wake word", "Voice activity and endpointing", "Whisper",
             "Common output", "Cloud chain", "Piper", "Chatterbox", "Kokoro",
         } <= sections

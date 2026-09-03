@@ -3,6 +3,7 @@
 import { api } from "../api.js";
 import { t } from "../i18n.js";
 import { chip, clear, el, empty, toast } from "../ui.js";
+import { holdingUnsaved } from "../unsaved.js";
 
 const CHAT_BACKEND_CHOICES = [
   "auto", "ollama", "claude_subscription", "codex_subscription", "crew_chat",
@@ -15,28 +16,50 @@ const CHAT_ONLY_PROVIDERS = new Set([
 ]);
 
 export async function mount(root) {
-  const head = el("div", { class: "view-head" }, [
+  root.append(el("div", { class: "view-head" }, [
     el("h1", { text: t("llm.title") }),
     el("p", { text: t("llm.lead") }),
-  ]);
+  ]));
+  return mountRoutes(root);
+}
+
+/* The routes themselves, without the heading that names the page they are
+   usually on. Settings carries this too, because the category named after
+   the providers is where someone looking for the providers goes; a heading
+   there would be the second one on a panel that already has its own. */
+export async function mountRoutes(root) {
   const actions = el("div", { class: "actions" });
   const backendCard = el("section", { class: "card" });
   const chains = el("div", { class: "grid" });
   const editorCard = el("section", { class: "card route-config-card" });
-  root.append(head, actions, backendCard, chains, editorCard);
+  root.append(actions, backendCard, chains, editorCard);
 
   let payload = null;
+  /* The editor holds a copy of the routes and writes them in one go, so
+     until Save is pressed a change lives in the page and nowhere else. A
+     reload replaces that copy with what is stored, which is what refresh
+     does, so it is also what clears this. */
+  let edited = false;
 
   async function refresh() {
     payload = await api.llmRoutes();
-    paintBackendSelectors(backendCard, payload, refresh);
+    edited = false;
+    paintBackendSelectors(backendCard, payload, refresh, mayDiscard);
     paintChains(chains, payload.effective_chains || payload.chains || {});
-    paintEditor(editorCard, payload, refresh);
+    paintEditor(editorCard, payload, refresh, () => { edited = true; });
+  }
+
+  /* Reloading replaces the editor's copy with what is stored, so anything
+     that reloads throws away what is typed into it. Every control that does
+     asks first, for the same reason leaving the view does. */
+  function mayDiscard() {
+    return !edited || window.confirm(t("unsaved.discardConfirm"));
   }
 
   const probe = el("button", {
     class: "btn", type: "button", text: t("llm.probe"),
     onclick: async () => {
+      if (!mayDiscard()) return;
       probe.disabled = true;
       try {
         const result = await api.probeLlmRoutes();
@@ -53,6 +76,7 @@ export async function mount(root) {
   const reset = el("button", {
     class: "btn", type: "button", text: t("llm.reset"),
     onclick: async () => {
+      if (!mayDiscard()) return;
       await api.resetLlmRoutes();
       toast(t("llm.resetDone"));
       await refresh();
@@ -61,6 +85,8 @@ export async function mount(root) {
   actions.append(probe, reset);
 
   await refresh();
+
+  return holdingUnsaved(() => edited);
 }
 
 function clone(value) {
@@ -78,7 +104,7 @@ function initialRoute(fields) {
   return route;
 }
 
-function paintEditor(container, currentPayload, refresh) {
+function paintEditor(container, currentPayload, refresh, touch) {
   clear(container);
   const fields = currentPayload.route_fields || [];
   const placeholders = currentPayload.provider_placeholders || {};
@@ -98,6 +124,7 @@ function paintEditor(container, currentPayload, refresh) {
           field, route, placeholders,
           (value) => {
             route[field.key] = value;
+            touch();
             if (field.key === "name") titleNode.textContent = value || title;
             if (field.key === "provider" && CHAT_ONLY_PROVIDERS.has(value)) {
               route.tier = "chat";
@@ -127,6 +154,7 @@ function paintEditor(container, currentPayload, refresh) {
               disabled: index === 0,
               onclick: () => {
                 [routes[index - 1], routes[index]] = [routes[index], routes[index - 1]];
+                touch();
                 repaint();
               },
             }),
@@ -137,6 +165,7 @@ function paintEditor(container, currentPayload, refresh) {
               disabled: index === routes.length - 1,
               onclick: () => {
                 [routes[index + 1], routes[index]] = [routes[index], routes[index + 1]];
+                touch();
                 repaint();
               },
             }),
@@ -144,7 +173,7 @@ function paintEditor(container, currentPayload, refresh) {
               class: "btn icon-btn", type: "button", text: "×",
               title: t("common.remove"),
               "aria-label": `${t("common.remove")}: ${title}`,
-              onclick: () => { routes.splice(index, 1); repaint(); },
+              onclick: () => { routes.splice(index, 1); touch(); repaint(); },
             }),
           ]),
         ]),
@@ -157,7 +186,7 @@ function paintEditor(container, currentPayload, refresh) {
 
   const add = el("button", {
     class: "btn", type: "button", text: t("llm.addRoute"),
-    onclick: () => { routes.push(initialRoute(fields)); repaint(); },
+    onclick: () => { routes.push(initialRoute(fields)); touch(); repaint(); },
   });
   const save = el("button", {
     class: "btn primary", type: "button", text: t("llm.save"),
@@ -250,7 +279,7 @@ function routeControl(field, route, placeholders, changed) {
   return input;
 }
 
-function paintBackendSelectors(container, currentPayload, refresh) {
+function paintBackendSelectors(container, currentPayload, refresh, mayDiscard) {
   clear(container);
   const overrideSelect = el(
     "select", { class: "input", "aria-label": t("llm.backendOverride") },
@@ -259,6 +288,11 @@ function paintBackendSelectors(container, currentPayload, refresh) {
   );
   overrideSelect.value = currentPayload.chat_backend_override || "auto";
   overrideSelect.addEventListener("change", async () => {
+    // Saving this reloads the whole view, editor included.
+    if (!mayDiscard()) {
+      overrideSelect.value = currentPayload.chat_backend_override || "auto";
+      return;
+    }
     try {
       await api.setChatBackendOverride(overrideSelect.value);
       toast(t("llm.backendSaved"));
@@ -275,6 +309,10 @@ function paintBackendSelectors(container, currentPayload, refresh) {
   );
   agentSelect.value = currentPayload.crew_chat_agent || "";
   agentSelect.addEventListener("change", async () => {
+    if (!mayDiscard()) {
+      agentSelect.value = currentPayload.crew_chat_agent || "";
+      return;
+    }
     try {
       await api.setCrewChatAgent(agentSelect.value);
       toast(t("llm.backendSaved"));

@@ -10,6 +10,7 @@ import re
 from jarvis.config import get_default_config
 from jarvis.config_metadata import (
     CATEGORIES,
+    CATEGORY_DETAILS,
     CLOUD_TTS_PROVIDER_FIELD_METADATA,
     FIELD_METADATA,
     FieldMeta,
@@ -128,11 +129,12 @@ class TestFieldMetadata:
         assert field.field_type == "bool"
 
 
-class TestLocalAISettings:
-    """General settings expose only local runtime and behaviour controls.
+class TestProviderSettings:
+    """The window named after the providers is where they are configured.
 
     Effective providers, credentials, route models, backend override, and
-    crew route selection have one authoritative editor at ``#/llm-routes``.
+    crew route selection have one authoritative editor, and that editor is
+    carried by this category rather than linked to from it.
     """
 
     def _field(self, key):
@@ -141,10 +143,20 @@ class TestLocalAISettings:
                 return fm
         return None
 
-    def test_local_ai_has_its_own_category(self):
+    def test_providers_has_its_own_category(self):
         cat_keys = [k for k, _ in CATEGORIES]
-        assert "local_ai" in cat_keys
+        assert "providers" in cat_keys
+        assert "local_ai" not in cat_keys
         assert "llm" not in cat_keys
+
+    def test_the_category_carries_the_route_editor_itself(self):
+        """Named rather than described, so a form builder can refuse it.
+
+        The Qt window builds a form out of fields and has no route editor to
+        put here; an embed it does not recognise is one it can leave out,
+        which a paragraph of prose telling the reader to go elsewhere is not.
+        """
+        assert CATEGORY_DETAILS["providers"]["embed"] == "llm-routes"
 
     def test_route_authoritative_fields_are_not_duplicated(self):
         routed = {
@@ -155,12 +167,9 @@ class TestLocalAISettings:
         present = {fm.key for fm in FIELD_METADATA}
         assert not routed & present
 
-    def test_local_ai_follows_the_runtime_pipeline(self):
+    def test_what_is_not_a_provider_stays_with_the_providers(self):
+        """A timeout and a thinking switch are about every route, not Ollama's."""
         expected_sections = {
-            "ollama_chat_model": "Local models",
-            "local_fast_model": "Local models",
-            "ollama_embed_model": "Local models",
-            "ollama_base_url": "Local models",
             "llm_chat_timeout_sec": "Timeouts",
             "llm_tools_timeout_sec": "Timeouts",
             "llm_embedding_timeout_sec": "Timeouts",
@@ -172,8 +181,23 @@ class TestLocalAISettings:
         for key, section in expected_sections.items():
             field = self._field(key)
             assert field is not None
-            assert field.category == "local_ai"
+            assert field.category == "providers"
             assert field.section == section
+
+    def test_the_local_models_are_still_reachable(self):
+        """Ollama is PRIVATE work and embeddings, not a provider window.
+
+        It keeps a home because those two jobs are still its, and a setting
+        that leaves the interface altogether is one nobody can change.
+        """
+        for key in (
+            "local_llm_fallback_enabled", "ollama_chat_model", "local_fast_model",
+            "ollama_embed_model", "ollama_base_url",
+        ):
+            field = self._field(key)
+            assert field is not None, key
+            assert field.category == "advanced", key
+            assert field.section == "Local Ollama", key
 
 
 class TestSpeechSettings:

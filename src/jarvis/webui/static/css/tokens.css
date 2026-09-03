@@ -27,8 +27,10 @@
   --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
   --mono: ui-monospace, "Cascadia Mono", "Consolas", "SF Mono", monospace;
 
-  /* Type scale. Eight steps, so a heading, a label, and a reading are
-     picked from a ladder rather than chosen one view at a time. */
+  /* Type scale. Seven steps, so a heading, a label, and a reading are picked
+     from a ladder rather than chosen one view at a time. The interface lives
+     in the bottom four of them: an eighth step at 34px was carried for a long
+     time without a single rule ever asking for it. */
   --fs-micro: 11px;
   --fs-xs: 12px;
   --fs-sm: 13px;
@@ -36,7 +38,6 @@
   --fs-lg: 16px;
   --fs-xl: 20px;
   --fs-2xl: 24px;
-  --fs-3xl: 34px;
 
   --s0: 2px;
   --s1: 4px;
@@ -44,7 +45,6 @@
   --s3: 12px;
   --s4: 16px;
   --s5: 24px;
-  --s6: 32px;
 
   --r: 10px;
   --r-sm: 6px;
@@ -92,12 +92,15 @@
 
   --fg: #e8eaed;
   --fg-dim: #9aa1ac;
-  --fg-mute: #6b7280;
+  /* The quietest of the three, and the one that carries the smallest text:
+     widget titles at 11px, units, and the log's time column. It is therefore
+     the token with the least room to be wrong, and it is measured against the
+     surfaces it actually lands on rather than chosen by eye. */
+  --fg-mute: #80899c;
 
   --accent: #7dd3fc;
   --accent-soft: rgba(125, 211, 252, 0.12);
   --accent-line: rgba(125, 211, 252, 0.35);
-  --accent-glow: rgba(125, 211, 252, 0.22);
 
   /* Status. Each tone carries a fill and a border alongside its text
      colour, because a chip, a rail, and a meter all need the same reading
@@ -114,18 +117,10 @@
   --bad-soft: rgba(248, 113, 113, 0.12);
   --bad-line: rgba(248, 113, 113, 0.3);
 
-  /* The face and the rings around it. Restrained on purpose: the reference
-     is the atmosphere of a heads-up display, not its clutter. */
-  --hud-ring: rgba(125, 211, 252, 0.16);
-  --hud-ring-soft: rgba(125, 211, 252, 0.06);
+  /* The light the centre of the page is lit by, behind the face. The face
+     itself is drawn from the accent, so this is the room around it rather
+     than the thing in it. */
   --face-aura: rgba(125, 211, 252, 0.10);
-  --face-bed: #0a0b0e;
-  /* The faces are third-party pages that paint in their own colours, and
-     they are never edited. Rotating the framed result onto the theme's own
-     hue is how a face joins the page it sits in rather than glowing a
-     different colour at the centre of it. Presentation only: the vendored
-     code is untouched and still renders exactly what its author wrote. */
-  --face-tint: hue-rotate(48deg) saturate(0.85);
 
   --scrim: rgba(8, 9, 11, 0.72);
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
@@ -151,12 +146,11 @@
 
   --fg: #eaf2ff;
   --fg-dim: #9db2d0;
-  --fg-mute: #677d9e;
+  --fg-mute: #738fad;
 
   --accent: #58d7ff;
   --accent-soft: rgba(88, 215, 255, 0.16);
   --accent-line: rgba(88, 215, 255, 0.45);
-  --accent-glow: rgba(88, 215, 255, 0.34);
 
   --ok: #34d399;
   --ok-soft: rgba(52, 211, 153, 0.14);
@@ -170,14 +164,83 @@
   --bad-soft: rgba(251, 113, 133, 0.14);
   --bad-line: rgba(251, 113, 133, 0.34);
 
-  --hud-ring: rgba(88, 215, 255, 0.26);
-  --hud-ring-soft: rgba(88, 215, 255, 0.1);
   --face-aura: rgba(88, 215, 255, 0.2);
-  --face-bed: #040810;
-  --face-tint: hue-rotate(44deg) saturate(1.15) brightness(1.05);
 
   --scrim: rgba(2, 5, 12, 0.78);
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.65);
+}
+
+/* ── Ember ────────────────────────────────────────────────────────────────
+
+   The same instrument in a warm light: a near-black that is brown rather
+   than blue, stepped surfaces, and one orange.
+
+   Written in OKLCH because these are ramps rather than seven separate
+   colours. A surface stepped by lightness in OKLCH stays the same colour
+   getting lighter, where the same step in HSL turns muddy through the middle
+   of the range and has to be corrected by hand at every stop.
+
+   The accent is deliberately quieter than a pure orange: chroma 0.13 against
+   roughly 0.20 for `#ff6a00`. A fully saturated warm hue vibrates against a
+   dark surface, and this one has to be legible as text as well as visible as
+   a face, so it is picked to clear 4.5:1 on `--surface` rather than to be as
+   orange as possible.
+
+   Orange and amber are the hard problem here, because "this is selected" and
+   "this needs your attention" must not be the same colour on an interface
+   whose whole job is reporting state. Separating them by hue is not enough:
+   simulated for a red-green deficient reader, this accent and this warning
+   sit 1.33:1 apart, which is not a difference. So the separation is a rule
+   about form, and it holds in every theme rather than only in this one:
+
+     - what is selected or active is the accent as a *rule*: a border on one
+       edge, accent text, at most `--accent-soft` behind it. Never a filled
+       chip.
+     - what has a status is a filled chip: its own `-soft` fill, its own
+       `-line` border, and a glyph.
+
+   Selected and warning are then different shapes before they are different
+   colours, and the colour is what confirms which, rather than what carries
+   it. */
+
+[data-theme="ember"] {
+  --bg: oklch(14.5% 0.010 58);
+  /* Behind the face, where the page falls away. */
+  --bg-deep: oklch(11% 0.008 58);
+  --surface-inset: oklch(17.5% 0.010 58);
+  --surface: oklch(20.5% 0.011 58);
+  --surface-2: oklch(24.5% 0.013 58);
+  --surface-3: oklch(29% 0.015 58);
+  --line: oklch(34% 0.016 58);
+  --line-soft: oklch(26% 0.013 58);
+
+  --fg: oklch(95% 0.006 75);
+  --fg-dim: oklch(80% 0.014 70);
+  --fg-mute: oklch(68% 0.018 70);
+
+  --accent: oklch(72% 0.130 55);
+  --accent-soft: oklch(72% 0.130 55 / 0.14);
+  --accent-line: oklch(72% 0.130 55 / 0.45);
+
+  --ok: oklch(78% 0.145 158);
+  --ok-soft: oklch(78% 0.145 158 / 0.13);
+  --ok-line: oklch(78% 0.145 158 / 0.34);
+
+  /* Lifted well above the accent in lightness as well as turned towards
+     yellow, so the two are as far apart as a warm palette allows before the
+     rule about form takes over. */
+  --warn: oklch(87% 0.145 95);
+  --warn-soft: oklch(87% 0.145 95 / 0.13);
+  --warn-line: oklch(87% 0.145 95 / 0.36);
+
+  --bad: oklch(68% 0.170 22);
+  --bad-soft: oklch(68% 0.170 22 / 0.13);
+  --bad-line: oklch(68% 0.170 22 / 0.34);
+
+  --face-aura: oklch(72% 0.130 55 / 0.13);
+
+  --scrim: oklch(11% 0.008 58 / 0.76);
+  --shadow: 0 8px 32px oklch(0% 0 0 / 0.55);
 }
 
 /* A page that has not been told which theme to wear still has to be
