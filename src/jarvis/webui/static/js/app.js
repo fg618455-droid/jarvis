@@ -14,6 +14,7 @@ import { api } from "./api.js";
 import { mountDeck, PANELS } from "./deck.js";
 import * as fmt from "./fmt.js";
 import { language, languages, setLanguage, t } from "./i18n.js";
+import { phaseLabel } from "./phase.js";
 import { live } from "./sse.js";
 import { applyTheme, activeTheme, THEMES } from "./theme.js";
 import { el, icon, ICONS, toast } from "./ui.js";
@@ -137,7 +138,7 @@ async function showDeck() {
   const host = el("div");
   dom.root.append(host);
   deck = mountDeck(host, { onOpenPanel: (panel) => go(panel) });
-  deck.paintPhase(state.status?.phase || "idle", state.connected);
+  deck.paintPhase(state.status?.phase || "idle", reading());
 }
 
 function teardownDeck() {
@@ -198,6 +199,17 @@ function markSettings(current) {
 
 /* ── Header ────────────────────────────────────────────────────────── */
 
+/* Everything a phase has to be read against. The same phase means different
+   things depending on whether a conversation is open and whether the room is
+   being written down, so the words are chosen from all three together. */
+function reading() {
+  return {
+    connected: state.connected,
+    conversation: Boolean(state.status?.conversation?.active),
+    passive: Boolean(state.status?.passive?.enabled),
+  };
+}
+
 function paintHeader() {
   dom.uptimeLabel.textContent = t("common.uptime");
   dom.lastTurnLabel.textContent = t("common.lastTurn");
@@ -227,17 +239,15 @@ function paintHeader() {
     dom.phase.textContent = t("phase.offline");
     dom.uptime.textContent = "—";
     dom.lastTurn.textContent = "—";
-    deck?.paintPhase("offline", state.connected);
+    deck?.paintPhase("offline", reading());
     return;
   }
 
   dom.dot.dataset.phase = status.phase;
-  dom.phase.textContent = state.connected
-    ? t(`phase.${status.phase}`)
-    : t("common.reconnecting");
+  dom.phase.textContent = phaseLabel(status.phase, reading());
   dom.uptime.textContent = fmt.seconds(status.uptime_seconds);
   dom.lastTurn.textContent = status.last_turn ? fmt.ms(status.last_turn.total_ms) : "—";
-  deck?.paintPhase(status.phase, state.connected);
+  deck?.paintPhase(status.phase, reading());
 }
 
 /* ── Live wiring ───────────────────────────────────────────────────── */

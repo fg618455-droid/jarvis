@@ -78,8 +78,11 @@ class StateManager:
         self._cancel_hot_window_expiry_timer()
         self._cancel_command_capture_expiry_timer()
         with self._state_lock:
+            was_conversing = self._conversation_active
             self._conversation_active = False
             self._state = ListeningState.COMMAND_CAPTURE
+        if was_conversing:
+            self._announce_conversation(False)
         self._set_face_state("LISTENING", "wake acknowledgement")
         debug_log("wake acknowledgement opened one-request capture", "state")
 
@@ -401,6 +404,14 @@ class StateManager:
             except Exception as e:
                 debug_log(f"failed to set face state to LISTENING: {e}", "state")
 
+            # A conversation has no countdown to offer and nothing to expire
+            # into: it is already the state the window would leave behind.
+            # Announcing a few seconds here would name a limit the user is
+            # not on.
+            if self.is_conversation_active:
+                debug_log("follow-up window folded into the running conversation", "state")
+                return
+
             # Always show user-facing output
             try:
                 print(f"👂 Listening for follow-up ({int(self.hot_window_seconds)}s)...", flush=True)
@@ -524,4 +535,7 @@ class StateManager:
 
         with self._state_lock:
             self._state = ListeningState.WAKE_WORD
+            was_conversing = self._conversation_active
             self._conversation_active = False
+        if was_conversing:
+            self._announce_conversation(False)

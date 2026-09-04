@@ -16,6 +16,7 @@ import { api } from "../api.js";
 import * as fmt from "../fmt.js";
 import { t } from "../i18n.js";
 import { createMic } from "../mic.js";
+import { phaseLabel } from "../phase.js";
 import { live } from "../sse.js";
 import { ICONS, chip, clear, el, empty, icon, motionAllowed, stageBar, toast } from "../ui.js";
 
@@ -37,6 +38,10 @@ export async function mount(root) {
     phaseSince: 0,
     stage: "",
     mode: false,
+    /* Whether the room is being written down. The band reads it because
+       `capturing` outside a conversation means the passive record, not a
+       question waiting for an answer. */
+    passive: false,
     lastTotalMs: null,
     /* Turn ids that have been on screen. A turn glows on the reading that
        first brought it in and never again. */
@@ -70,6 +75,9 @@ export async function mount(root) {
     const payload = await api.conversation(50);
     state.mode = Boolean(payload.conversation_mode);
     capture.paintMode();
+    // The mode decides what the phase beside it means, so the reading is
+    // repainted with it rather than waiting for the next phase change.
+    capture.paintReading();
     paintDiscarded(band, payload.discarded || {});
     paintDialogue(dialogue, payload.turns || [], state);
   }
@@ -84,6 +92,7 @@ export async function mount(root) {
   if (status) {
     state.phase = status.phase || state.phase;
     state.phaseSince = status.phase_since || Date.now() / 1000;
+    state.passive = Boolean(status.passive?.enabled);
     state.lastTotalMs = status.last_turn?.total_ms ?? null;
     capture.paintReading();
   }
@@ -98,6 +107,10 @@ export async function mount(root) {
   // ask Jarvis to stop, so the switch follows the runtime rather than the
   // last thing this page clicked.
   const offMode = live.on("conversation", () => refresh().catch(() => {}));
+  const offPassive = live.on("passive", (passive) => {
+    state.passive = Boolean(passive?.enabled);
+    capture.paintReading();
+  });
   const offPhase = live.on("phase", (phase) => {
     state.phase = phase.phase;
     state.phaseSince = phase.phase_since || Date.now() / 1000;
@@ -119,6 +132,7 @@ export async function mount(root) {
     offTurn();
     offDiscard();
     offMode();
+    offPassive();
     offPhase();
     offStage();
     clearInterval(ticking);
@@ -158,7 +172,10 @@ function buildCapture(band, state) {
   function paintReading() {
     const phase = state.phase || "offline";
     phaseDot.dataset.phase = phase;
-    phaseName.textContent = t(`phase.${phase}`) || phase;
+    phaseName.textContent = phaseLabel(phase, {
+      conversation: state.mode,
+      passive: state.passive,
+    });
     stageName.textContent = state.stage;
 
     // While something is happening, how long it has been happening. When

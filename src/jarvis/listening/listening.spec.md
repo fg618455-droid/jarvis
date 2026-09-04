@@ -221,20 +221,29 @@ making the switch something the model can carry out. Neither path matches
 phrases: the judge and the tool router both read the request through a model,
 so no language is named in either.
 
-**Visibility:** both transitions publish to `RuntimeState`, which is what an
+**Visibility:** every transition publishes to `RuntimeState`, which is what an
 interface watches. The state manager owns the conversation; the runtime holds
 the copy watchers read. Pushing it is not optional, because a conversation
 also ends without anyone clicking: the judge's `stop` decision closes it, and
 a page that only knew what it had itself switched on would then be wrong.
+Every path that clears the conversation announces it, the wake
+acknowledgement and the listener stopping included. A conversation ended
+silently is worse than one that never started: the interface goes on
+promising that no wake word is needed while every utterance is being dropped
+for the want of one.
 
 **Behaviour:** `was_speech_during_hot_window` answers True for every utterance,
 which is what routes speech through the same acceptance path as a follow-up:
 echo checks, intent judge, and the hot-window override. Both expiry paths and
 the expiry timer decline to act while a conversation runs, so the window
-cannot quietly close underneath it.
+cannot quietly close underneath it. The window still opens after each reply,
+and while a conversation runs it announces nothing and arms no expiry: it is
+already the state the window would leave behind, and naming a few seconds
+there would offer the user a limit they are not on.
 
 **Ending:** the intent judge's `stop` decision ends the conversation, and the
-listener returns to wake-word mode. Deciding what counts as asking Jarvis to
+listener returns to wake-word mode. Answering a standalone wake word ends it
+too: that opens a one-request capture, which is the opposite arrangement. Deciding what counts as asking Jarvis to
 stop belongs to the judge rather than to a list of stop words, so it holds in
 every language. A `stop` decision outside a conversation does nothing: Jarvis
 does not support spoken interruption, and a stop while it is answering is not

@@ -19,6 +19,7 @@
 
 import { api } from "./api.js";
 import { t } from "./i18n.js";
+import { phaseLabel } from "./phase.js";
 import { el, icon, ICONS, motionAllowed } from "./ui.js";
 
 const SIZE_KEY = "jarvis.faceSize";
@@ -393,11 +394,8 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
      knows, which is a different fact the moment the connection drops. It is
      also what a reader who cannot tell an idle disc from a listening one is
      actually reading. */
-  function paintPhase(phase, connected) {
-    const known = phase && t(`phase.${phase}`) !== `phase.${phase}`;
-    const label = connected === false
-      ? t("common.reconnecting")
-      : known ? t(`phase.${phase}`) : t("phase.offline");
+  function paintPhase(phase, reading) {
+    const label = phaseLabel(phase, reading);
     canvas.setAttribute("aria-label", label);
     stateNode.replaceChildren(
       el("span", { class: `state-pill${phase === "idle" ? "" : " live"}` }, [

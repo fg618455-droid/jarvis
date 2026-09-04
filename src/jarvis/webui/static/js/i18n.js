@@ -96,7 +96,10 @@ const STRINGS = {
 
     "phase.starting": "starting up",
     "phase.idle": "waiting for the wake word",
+    "phase.idle.conversation": "in conversation, no wake word needed",
     "phase.capturing": "listening",
+    "phase.capturing.record": "writing the room down in the background",
+    "phase.capturing.wake": "checking what it heard for the wake word",
     "phase.transcribing": "transcribing",
     "phase.thinking": "thinking",
     "phase.tool": "running a tool",
@@ -502,7 +505,10 @@ const STRINGS = {
 
     "phase.starting": "startet",
     "phase.idle": "wartet auf das Weckwort",
+    "phase.idle.conversation": "im Gespräch, kein Weckwort nötig",
     "phase.capturing": "hört zu",
+    "phase.capturing.record": "schreibt den Raum im Hintergrund mit",
+    "phase.capturing.wake": "prüft das Gehörte auf das Weckwort",
     "phase.transcribing": "schreibt mit",
     "phase.thinking": "denkt nach",
     "phase.tool": "benutzt ein Werkzeug",

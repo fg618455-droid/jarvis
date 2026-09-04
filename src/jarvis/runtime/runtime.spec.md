@@ -33,6 +33,11 @@ through it.
 | `speaking` | Synthesised speech is playing | the TTS engine, at first sound |
 | `dictating` | Hold-to-dictate has the microphone | the dictation engine |
 
+A phase is a measurement, not a sentence. `idle` and `capturing` each cover
+two situations a reader would separate, so what an interface says about a
+phase is decided from the phase together with the conversation and passive
+blocks. See `../webui/webui.spec.md`.
+
 `set_phase_if(expected, phase)` moves only when the assistant is still in
 `expected`, so a stage can hand the phase back without overwriting one a
 later stage has already claimed.

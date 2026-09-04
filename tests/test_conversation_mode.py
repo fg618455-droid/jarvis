@@ -160,6 +160,49 @@ class TestTheInterfaceCanSeeTheConversation:
 
         assert get_runtime_state().snapshot()["conversation"]["active"] is False
 
+    def test_a_wake_acknowledgement_taking_over_is_published(self, state_manager) -> None:
+        """A conversation ended by the wake word is still a conversation ended.
+
+        Answering a standalone wake word puts the listener back on one
+        request at a time. An interface still showing the conversation as
+        running would tell the user no wake word is needed while every
+        utterance is being ignored for the want of one.
+        """
+        from jarvis.runtime import get_runtime_state
+
+        state_manager.start_conversation()
+        state_manager.start_command_capture()
+
+        assert state_manager.is_conversation_active is False
+        assert get_runtime_state().snapshot()["conversation"]["active"] is False
+
+    def test_stopping_the_listener_is_published(self, state_manager) -> None:
+        from jarvis.runtime import get_runtime_state
+
+        state_manager.start_conversation()
+        state_manager.stop()
+
+        assert get_runtime_state().snapshot()["conversation"]["active"] is False
+
+    @patch("builtins.print")
+    def test_the_follow_up_window_announces_nothing_during_a_conversation(
+        self, printed, state_manager
+    ) -> None:
+        """A conversation has no countdown, so there is none to announce.
+
+        The window opens after every reply. Saying so during a conversation
+        offers the user a few seconds they were never on, and the same lines
+        are what the control centre's log shows.
+        """
+        state_manager.start_conversation()
+        printed.reset_mock()
+
+        state_manager.schedule_hot_window_activation()
+        time.sleep(0.1)
+
+        assert printed.call_args_list == []
+        assert state_manager.is_conversation_active is True
+
     def test_a_watcher_hears_the_change(self, state_manager) -> None:
         from jarvis.runtime import get_event_bus
 

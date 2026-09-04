@@ -368,6 +368,34 @@ Below 1240px the right rail stops being a rail and folds into a row under
 the deck. There is no height there to share, so the tiles lay out across the
 width and take their own.
 
+### What the phase is called
+
+The runtime publishes one word per phase, and two of those words cover
+situations a reader would never call the same thing. `phase.js` turns a phase
+into the sentence shown, reading it against the two facts the page already
+holds beside it: whether a conversation is open, and whether the passive
+record is running.
+
+| Phase | Situation | Reads as |
+|---|---|---|
+| `idle` | no conversation | waiting for the wake word |
+| `idle` | a conversation is open | in conversation, no wake word needed |
+| `capturing` | a conversation is open | listening |
+| `capturing` | the passive record is on | writing the room down in the background |
+| `capturing` | neither | checking what it heard for the wake word |
+
+`capturing` means voice activity opened the microphone, not that Jarvis was
+addressed. Outside a conversation the utterance is on its way to a wake-word
+check, and to the passive record when that is running, and most of what a
+room says was meant for nobody in particular. Calling that "listening"
+claims an exchange that is not happening, and asking for the wake word
+during a conversation asks for a name that is not needed; both read as the
+assistant having missed the user.
+
+The header, the face's label, and the conversation band take their words from
+that one function, so the same moment cannot be described three ways. A page
+that has lost the daemon says that instead, whatever phase it last heard.
+
 ### Widgets
 
 A widget is a reading and a way into the detail behind it, not a small
