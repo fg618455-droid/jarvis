@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Iterable, Mapping
-from typing import Any, ClassVar, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from jarvis.debug import debug_log
+
+if TYPE_CHECKING:
+    from .approvals import ApprovalStore
 
 
 LEVEL_OFF = "off"
@@ -44,9 +47,13 @@ class SecurityGate:
         *,
         channels: Mapping[str, ConfirmationChannel] | None = None,
         confirm_channels: Iterable[str] | None = None,
+        approvals: "ApprovalStore | None" = None,
     ) -> None:
         self.level = level if level in VALID_LEVELS else LEVEL_CRITICAL
         self._channels = dict(channels or {})
+        # Present only when the user asked to be questioned once per tool.
+        # Absent is the default, and absent means every protected call asks.
+        self.approvals = approvals
         self._confirm_channels = (
             list(confirm_channels)
             if confirm_channels is not None
@@ -84,10 +91,16 @@ class SecurityGate:
                 ),
                 "voice": VoiceConsoleConfirm(timeout_seconds=timeout),
             }
+        approvals = None
+        if getattr(cfg, "security_remember_approvals", False):
+            from .approvals import ApprovalStore
+
+            approvals = ApprovalStore()
         gate = cls(
             level=cfg.security_level,
             channels=channels,
             confirm_channels=cfg.security_confirm_channels,
+            approvals=approvals,
         )
         gate._fingerprint = cls._settings_fingerprint(cfg)
         return gate
@@ -98,6 +111,7 @@ class SecurityGate:
             cfg.security_level,
             tuple(cfg.security_confirm_channels),
             cfg.security_confirmation_timeout_sec,
+            bool(getattr(cfg, "security_remember_approvals", False)),
             bool(cfg.telegram_bot_token),
             cfg.telegram_chat_id,
             cfg.telegram_api_base_url,
@@ -136,7 +150,21 @@ class SecurityGate:
         if not self._requires_confirmation(action_name, action_args):
             return True
 
-        return self._request_confirmation(action_name, action_args)
+        if self.approvals is not None and self.approvals.is_approved(action_name):
+            debug_log(
+                f"security confirmation already given for {action_name}",
+                "security",
+            )
+            return True
+
+        approved = self._request_confirmation(action_name, action_args)
+        # Only a decision the user actually made is worth keeping. A refusal
+        # is not remembered: it would silently block the tool for good with
+        # nothing on screen to explain why it stopped working. A denial for
+        # want of anyone to ask is not their decision at all.
+        if approved and self.approvals is not None:
+            self.approvals.remember(action_name)
+        return approved
 
     def _requires_confirmation(self, action_name: str, action_args: dict[str, Any]) -> bool:
         if self.level == LEVEL_PARANOID:

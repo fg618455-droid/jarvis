@@ -155,6 +155,10 @@ class Settings:
     security_level: str
     security_confirm_channels: list[str]
     security_confirmation_timeout_sec: int
+    # Ask about a protected tool once, then let that approval stand. Keyed by
+    # action name rather than arguments, so approving one deletion approves
+    # every later one: off by default because that is a real widening.
+    security_remember_approvals: bool
     telegram_bot_token: str
     telegram_chat_id: str
     telegram_api_base_url: str
@@ -814,6 +818,7 @@ def get_default_config() -> Dict[str, Any]:
         "security_level": "critical",
         "security_confirm_channels": ["desktop", "web", "telegram", "voice"],
         "security_confirmation_timeout_sec": 60,
+        "security_remember_approvals": False,
         "telegram_bot_token": "",
         "telegram_chat_id": "",
         "telegram_api_base_url": DEFAULT_TELEGRAM_API_BASE_URL,
@@ -1524,6 +1529,7 @@ def load_settings() -> Settings:
         )
     except (TypeError, ValueError):
         memory_reply_first_audio_sec = 10.0
+    security_remember_approvals = bool(merged.get("security_remember_approvals", False))
     security_level = str(merged.get("security_level", "critical")).strip().lower()
     if security_level not in ("off", "critical", "paranoid"):
         security_level = "critical"
@@ -1620,6 +1626,7 @@ def load_settings() -> Settings:
         security_level=security_level,
         security_confirm_channels=security_confirm_channels,
         security_confirmation_timeout_sec=security_confirmation_timeout_sec,
+        security_remember_approvals=security_remember_approvals,
         telegram_bot_token=telegram_bot_token,
         telegram_chat_id=telegram_chat_id,
         telegram_api_base_url=telegram_api_base_url,

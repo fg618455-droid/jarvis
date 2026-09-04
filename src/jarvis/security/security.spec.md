@@ -19,6 +19,35 @@ The default level is `critical`. An unknown level is treated as `critical`.
 Unknown tools return the normal unknown-tool error and do not create a
 confirmation request.
 
+## Remembered approvals
+
+`security_remember_approvals` (off by default) asks about a protected tool
+once and lets that approval stand afterwards. Answering the same dialog for
+every calendar entry is friction that teaches the user to approve without
+reading, which costs more safety than the extra question buys.
+
+It buys that with a real boundary, which is why it is opt-in. The key is the
+action name, not the arguments, so approving `localFiles` for one deletion
+approves every later deletion. `browserInteract.<action>` and
+`systemManager`'s operations are separate action names, so approving the
+outer tool does not approve the consequential actions inside it.
+
+Only an approval is recorded. A refusal is not: remembering a no would block
+the tool for good with nothing on screen to explain why it stopped working,
+and the user is free to change their mind. A denial for want of an available
+channel is not the user's decision either and is likewise never recorded. A
+tool that did not need confirmation at the current level records nothing,
+because no decision was made.
+
+`ApprovalStore` writes `~/.jarvis/security_approvals.json` atomically with
+mode `0o600` where the platform supports POSIX permissions. It holds a plain
+list of action names and no arguments, so the user can read what they have
+allowed and delete the file to be asked everything again. A file that cannot
+be read is an empty set rather than blanket approval, and a file that cannot
+be written costs one extra question next time. The flag is part of the gate's
+settings fingerprint, so turning it off replaces a gate that is already
+running instead of waiting for a restart.
+
 ## Decision semantics
 
 Configured channels are considered in order.

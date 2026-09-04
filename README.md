@@ -260,11 +260,14 @@ Configure the order under **⚙️ Settings → 🔐 Security**. Jarvis skips ch
 - **Telegram** sends Approve and Deny buttons to one authorised chat. Create a bot with BotFather, send the bot a message, then configure the bot token and chat ID. You can use the settings window or the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` environment variables, and a configured value wins over the environment. This option sends the displayed tool name and arguments to whichever Bot API server `telegram_api_base_url` names, which is Telegram's by default. Telegram publishes the Bot API server as software, so pointing that key at your own instance keeps the traffic on your machine.
 - **Voice/console** asks for a random four-digit code. Voice is the weakest option because anyone in the room can hear and repeat the code.
 
+Set `security_remember_approvals` to be asked about a tool once and have that approval stand from then on. It is off by default because it is keyed by tool name rather than arguments: approving one file deletion approves every later one. Only approvals are remembered, never refusals, and deleting `~/.jarvis/security_approvals.json` makes Jarvis ask about everything again.
+
 ```json
 {
   "security_level": "critical",
   "security_confirm_channels": ["desktop", "telegram", "voice"],
   "security_confirmation_timeout_sec": 60,
+  "security_remember_approvals": false,
   "telegram_bot_token": "",
   "telegram_chat_id": "",
   "telegram_api_base_url": "https://api.telegram.org",

@@ -510,6 +510,11 @@ def _build_field_metadata() -> List[FieldMeta]:
       "passive", "int", min_val=1, max_val=1000)
 
     # --- Security ---
+    f("security_remember_approvals", "Remember Approvals",
+      "Ask about a tool once, then let that approval stand. Keyed by tool "
+      "name, not arguments, so one approval covers every later call of that "
+      "tool. Clear it by deleting ~/.jarvis/security_approvals.json",
+      "security", "bool")
     f("security_level", "Confirmation Level",
       "Critical protects sensitive actions; paranoid confirms every tool; off disables protection",
       "security", "choice", choices=[
