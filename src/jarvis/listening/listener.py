@@ -49,6 +49,7 @@ from ..runtime import (
     end_turn_phase,
     get_recorder,
     get_runtime_state,
+    publish_heard,
     set_phase,
     set_phase_if,
 )
@@ -91,6 +92,40 @@ def is_uncertain_language(language_probability, threshold: float) -> bool:
     if not isinstance(language_probability, (int, float)) or isinstance(language_probability, bool):
         return False
     return language_probability < threshold
+
+
+def identify_language(model, audio):
+    """Score how confidently *audio* reads as any one language.
+
+    Naming a language in `whisper_language` skips Whisper's identification
+    pass, and the transcription then reports a probability of 1.00 by
+    definition. That number says nothing about the audio, so the gate above
+    has nothing to judge and every confident hallucination walks through the
+    setting that was supposed to stop it. Asking separately is the only way
+    to get a real number back while the language stays pinned.
+
+    faster-whisper 1.0.3 exposes no public call for this, so this walks the
+    same route its own `transcribe()` takes: extract the features, encode the
+    first window, and read the language head. Reaching past the public API
+    means a build that arranges its internals differently must cost the gate
+    rather than the user's sentence, so anything unexpected returns ``None``
+    and the caller falls open.
+
+    Returns ``(language, probability)`` or ``None``.
+    """
+    try:
+        extractor = model.feature_extractor
+        features = extractor(audio)
+        window = features[:, : extractor.nb_max_frames]
+        token, probability = model.model.detect_language(model.encode(window))[0][0]
+    except Exception as e:
+        debug_log(f"language identification unavailable ({type(e).__name__})", "voice")
+        return None
+
+    if not isinstance(probability, (int, float)) or isinstance(probability, bool):
+        return None
+    language = token[2:-2] if isinstance(token, str) else ""
+    return language, float(probability)
 
 
 # Audio processing imports (optional).
@@ -1353,6 +1388,10 @@ class VoiceListener(threading.Thread):
             # at all.
             trace = recorder.begin(source="voice")
         trace.transcript = trace.transcript or query
+        # What was understood, said the moment the question was accepted as
+        # one. Anything the judge threw away never became a turn and never
+        # reaches a watcher, so the room is not written onto the screen.
+        publish_heard()
         set_phase(Phase.THINKING)
 
         # Set face state to THINKING
@@ -2943,11 +2982,22 @@ class VoiceListener(threading.Thread):
                 min_language_probability = getattr(
                     self.cfg, "whisper_min_language_probability", 0.0
                 )
+                heard_as = detected
+                # A pinned language reports 1.00 whatever it was handed, so
+                # the gate has to ask for a real number separately. Only when
+                # the user armed the gate, and only when there is a transcript
+                # to weigh: the pass costs a quarter of a second on CUDA, and
+                # nobody should pay it for a setting they left alone or for an
+                # utterance already on its way to the bin.
+                if min_language_probability > 0.0 and language and segments_list:
+                    identified = identify_language(self.model, audio)
+                    if identified is not None:
+                        heard_as, language_probability = identified
                 trace.language = detected if isinstance(detected, str) else None
                 trace.language_probability = language_probability
                 if is_uncertain_language(language_probability, min_language_probability):
                     debug_log(
-                        f"utterance filtered (language={detected} at "
+                        f"utterance filtered (language={heard_as} at "
                         f"{language_probability:.2f} < {min_language_probability:.2f})",
                         "voice",
                     )

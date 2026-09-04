@@ -11,6 +11,8 @@ Measured on a German user's microphone: real speech identified as `de` at
 """
 
 import json
+import time
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -66,3 +68,131 @@ class TestTheConfiguredThresholdSurvivesLoading:
         threshold = getattr(cfg, "whisper_min_language_probability", 0.0)
 
         assert is_uncertain_language(0.46, threshold) is False
+
+
+def _listener_gating(whisper_language, threshold, *, detection=("en", 0.41)):
+    """A listener wired far enough to transcribe, with a scripted mic input.
+
+    Whisper is scripted to hand back the hallucination shape: a transcript,
+    a healthy confidence, and — because the language is pinned — a language
+    probability of exactly 1.00. `detection` is what a separate
+    identification pass over the same audio would report; ``None`` scripts a
+    model that offers no way to run one.
+    """
+    import numpy as np
+
+    model = MagicMock()
+    segment = MagicMock()
+    segment.text = "Hallu, Hallu, Jarvis, hvad mastu i gradir?"
+    segment.avg_logprob = -0.2
+    segment.no_speech_prob = 0.0
+    info = MagicMock()
+    info.language = whisper_language or "is"
+    info.language_probability = 1.0
+    model.transcribe.return_value = (iter([segment]), info)
+
+    if detection is None:
+        del model.feature_extractor
+    else:
+        extractor = MagicMock()
+        extractor.return_value = np.zeros((128, 4000), dtype=np.float32)
+        extractor.nb_max_frames = 3000
+        model.feature_extractor = extractor
+        model.model.detect_language.return_value = [
+            [(f"<|{detection[0]}|>", detection[1])]
+        ]
+
+    with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True), \
+            patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False), \
+            patch("jarvis.listening.listener.WhisperModel"):
+        from jarvis.listening.listener import VoiceListener
+
+        cfg = MagicMock()
+        cfg.sample_rate = 16000
+        cfg.vad_enabled = False
+        cfg.echo_tolerance = 0.3
+        cfg.echo_energy_threshold = 2.0
+        cfg.hot_window_seconds = 3.0
+        cfg.voice_collect_seconds = 2.0
+        cfg.voice_max_collect_seconds = 60.0
+        cfg.tune_enabled = False
+        cfg.voice_debug = False
+        cfg.whisper_min_confidence = 0.3
+        cfg.whisper_min_audio_duration = 0.15
+        cfg.whisper_no_speech_threshold = 0.5
+        cfg.whisper_min_language_probability = threshold
+        cfg.whisper_language = whisper_language
+
+        listener = VoiceListener(MagicMock(), cfg, MagicMock(), MagicMock())
+        listener.model = model
+        listener._whisper_backend = "faster-whisper"
+        listener._whisper_device = "cuda"
+        listener._samplerate = 16000
+        listener._process_transcript = MagicMock()
+        listener._utterance_frames = [np.zeros(16000, dtype=np.float32)]
+        listener.echo_detector._utterance_start_time = time.time() - 1.0
+        listener.is_speech_active = True
+
+        return listener, model
+
+
+def _dispatched(listener):
+    """The text the listener passed on, or None if it discarded the utterance."""
+    if not listener._process_transcript.called:
+        return None
+    return listener._process_transcript.call_args[0][0]
+
+
+class TestTheGateHoldsUnderAPinnedLanguage:
+    """Pinning a language must not silently disarm the gate.
+
+    Naming a language skips Whisper's identification pass, so it reports a
+    probability of 1.00 by definition and the gate can never fire. That is
+    exactly the configuration a user reaches for after hearing German come
+    back as Icelandic, and it is the configuration in which the only defence
+    against a confident hallucination stops existing.
+    """
+
+    def test_a_hallucination_is_discarded_even_though_whisper_reported_certainty(self):
+        listener, _model = _listener_gating("de", 0.85)
+
+        listener._finalize_utterance()
+
+        assert _dispatched(listener) is None
+
+    def test_real_speech_in_the_pinned_language_still_gets_through(self):
+        listener, _model = _listener_gating("de", 0.85, detection=("de", 0.99))
+
+        listener._finalize_utterance()
+
+        assert _dispatched(listener) is not None
+
+    def test_the_pass_is_not_paid_when_the_user_did_not_arm_the_gate(self):
+        """The identification pass costs real time on every utterance, so a
+        user on the default threshold must not be charged for a gate they
+        never switched on."""
+        listener, model = _listener_gating("de", 0.0)
+
+        listener._finalize_utterance()
+
+        assert model.model.detect_language.called is False
+        assert _dispatched(listener) is not None
+
+    def test_an_unpinned_language_keeps_using_whispers_own_number(self):
+        """Without a pin Whisper identifies the language anyway and reports a
+        real probability, so a second pass would be paying twice."""
+        listener, model = _listener_gating("", 0.85)
+
+        listener._finalize_utterance()
+
+        assert model.model.detect_language.called is False
+
+    def test_a_model_that_cannot_be_asked_lets_the_utterance_through(self):
+        """Fail open. The pass reaches past faster-whisper's public API, so a
+        build that arranges its internals differently must cost the gate, not
+        the user's sentence."""
+        listener, _model = _listener_gating("de", 0.85, detection=None)
+
+        listener._finalize_utterance()
+
+        assert _dispatched(listener) is not None

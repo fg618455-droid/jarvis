@@ -411,7 +411,7 @@ If the intent judge later rejects the query (and no hot window override applies)
 |---------|---------|-------------|
 | `transcript_buffer_duration_sec` | 120 | Duration (seconds) for rolling ambient speech transcript. Provides conversation context so the intent judge can synthesise a complete query when someone involves Jarvis. Separate from dialogue memory. |
 | `whisper_min_confidence` | 0.3 | Minimum `avg_logprob`-derived confidence score for a transcribed segment. Segments below this are discarded before the intent judge sees them. |
-| `whisper_min_language_probability` | 0.0 | Minimum confidence in Whisper's language identification for the whole utterance. Below this the utterance is discarded before per-segment filtering. Catches the short filler hallucinations ("Thank you.", "Okay.") that room noise produces: those carry `no_speech_prob` of 0.00 and healthy `avg_logprob`, so neither other filter sees them, but Whisper identifies their language at only 0.46-0.76 where real speech reaches 0.9+. The gate compares the probability alone, never the language, so it holds for every language. Fails open on a missing or malformed value, and 0.0 disables it. Inert whenever `whisper_language` names a language, because a pinned language reports a probability of 1.00 by definition. |
+| `whisper_min_language_probability` | 0.0 | Minimum confidence in Whisper's language identification for the whole utterance. Below this the utterance is discarded before per-segment filtering. Catches the short filler hallucinations ("Thank you.", "Okay.") that room noise produces: those carry `no_speech_prob` of 0.00 and healthy `avg_logprob`, so neither other filter sees them, but Whisper identifies their language at only 0.21-0.76 where real speech reaches 0.9+. The gate compares the probability alone, never the language, so it holds for every language. Fails open on a missing or malformed value, and 0.0 disables it. faster-whisper only: the MLX branch reports no per-utterance language probability, so the gate does not run there. See "Identification under a pinned language" for what the gate reads when `whisper_language` is set. |
 | `whisper_language` | `""` | ISO-639-1 code of the language spoken to Jarvis, e.g. `de` or `ja`. Empty means Whisper identifies the language on every utterance. Naming it skips the identification pass and stops Whisper from drifting into another language on noisy input; loanwords from other languages still transcribe correctly, because Whisper handles code-switching inside a given language. Read through `resolve_transcription_language`, which normalises casing and whitespace and treats anything unusable as unset, so a malformed value degrades to identification rather than to silence. The same setting governs dictation. Every call into Whisper is held to it, not only the one that transcribes an utterance: the security-confirmation capture, the warmup decodes, the MLX branch, and the reduced-argument retry that runs when a Whisper build rejects a keyword all pass the same resolved value. One call site that forgets it undoes the setting, and the user has no way to see which one did. |
 | `whisper_vad` | `true` | Runs Whisper's own VAD over the utterance and drops the non-speech parts before decoding. This is the only filter that catches the stock phrase Whisper invents from room noise, because that transcript arrives with a `no_speech_prob` of 0.000, a healthy `avg_logprob` and a confident language identification, so every later filter waves it through. Independent of `vad_enabled`, which gates which audio is collected in the first place. The warmup transcription ignores this setting: filtering its synthetic noise would leave the decoder cold, which is the one thing the warmup exists to prevent. |
 | `whisper_no_speech_threshold` | 0.5 | Hard cutoff on Whisper's `no_speech_prob` field. Any segment at or above this value is discarded **regardless of `avg_logprob`** — Whisper can be confident about a hallucinated phrase even when no real speech is present (e.g. the "MBC 뉴스" hallucination on background noise). This filter runs before the `avg_logprob` check so it catches high-confidence hallucinations that would otherwise survive. Applies to both the faster-whisper and MLX backends. |
@@ -420,6 +420,38 @@ If the intent judge later rejects the query (and no hot window override applies)
 | `wake_acknowledgement` | configured phrase | Spoken acknowledgement for a standalone wake word. |
 | `conversation_mode_acknowledgement` | configured phrase | Spoken acknowledgement when continuous conversation begins. |
 | `memory_lookup_acknowledgement` | empty | Optional phrase spoken once before planner-directed long-term memory retrieval. Empty is silent and language-neutral. |
+
+### Identification under a pinned language
+
+Naming a language in `whisper_language` skips Whisper's identification pass,
+and the transcription then reports a language probability of 1.00 whatever it
+was handed. That number describes the setting, not the audio. Read as a
+confidence it would disarm `whisper_min_language_probability` completely, and
+it disarms it in precisely the configuration a user reaches for after hearing
+one language come back as another — the configuration where a confident
+hallucination has no other filter left to meet. Those arrive with a
+`no_speech_prob` of 0.000 and a healthy `avg_logprob`, so language confidence
+is the only thing that separates them from speech.
+
+So the two settings are read as one request rather than as two that cancel:
+when a language is pinned *and* the gate is armed, the listener asks for a
+language probability in a pass of its own and gates on that. The pinned
+language still governs decoding and still reaches every downstream consumer;
+the pass contributes a confidence, never a language, which is what keeps the
+gate valid in every language.
+
+The pass costs about 270 ms on CUDA against roughly 550 ms for a full
+transcription of the same utterance, so it is charged as narrowly as
+possible: only when the user set a non-zero threshold, and only when the
+transcription actually produced segments. An utterance already bound for the
+bin never pays for the verdict, and a user on the default threshold pays
+nothing at all.
+
+faster-whisper 1.0.3 offers no public call for this, so the pass walks the
+same internal route `transcribe()` takes. Reaching past a public API is a
+promise the library never made: anything unexpected there returns no reading
+and the gate falls open, because a build that arranges its internals
+differently should cost the filter, never the user's sentence.
 
 Note: The intent judge has no enable flag. It is used for contextual wake-name occurrences and hot-window input, while edge-position wake addresses take the deterministic fast path. It falls back to simple wake-word detection when Ollama is unavailable.
 
