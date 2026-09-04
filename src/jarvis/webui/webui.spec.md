@@ -370,27 +370,31 @@ width and take their own.
 
 ### What the phase is called
 
-The runtime publishes one word per phase, and two of those words cover
-situations a reader would never call the same thing. `phase.js` turns a phase
-into the sentence shown, reading it against the two facts the page already
-holds beside it: whether a conversation is open, and whether the passive
-record is running.
+The runtime publishes one word per phase, and outside a conversation two of
+those words describe one wait. `phase.js` turns a phase into the sentence
+shown, reading it against the one fact that changes what it means: whether a
+conversation is open.
 
 | Phase | Situation | Reads as |
 |---|---|---|
 | `idle` | no conversation | waiting for the wake word |
+| `capturing` | no conversation | waiting for the wake word |
 | `idle` | a conversation is open | in conversation, no wake word needed |
 | `capturing` | a conversation is open | listening |
-| `capturing` | the passive record is on | writing the room down in the background |
-| `capturing` | neither | checking what it heard for the wake word |
 
 `capturing` means voice activity opened the microphone, not that Jarvis was
 addressed. Outside a conversation the utterance is on its way to a wake-word
-check, and to the passive record when that is running, and most of what a
-room says was meant for nobody in particular. Calling that "listening"
-claims an exchange that is not happening, and asking for the wake word
-during a conversation asks for a name that is not needed; both read as the
-assistant having missed the user.
+check, and most of what a room says was meant for nobody in particular, so
+the wait the reader is in has not changed and neither does the sentence. A
+room with people in it enters and leaves `capturing` several times a minute;
+a header that renamed the wait each time would flicker between two sentences
+that say the same thing. Whether the room is being written down is the
+recording indicator's job, beside the phase and true for as long as it is on,
+rather than a phrase that appears only while someone happens to be talking.
+
+Asking for the wake word during a conversation is the opposite mistake: it
+names something that is not needed, and reads as the assistant having missed
+the user.
 
 The header, the face's label, and the conversation band take their words from
 that one function, so the same moment cannot be described three ways. A page

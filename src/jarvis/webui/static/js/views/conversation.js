@@ -38,10 +38,6 @@ export async function mount(root) {
     phaseSince: 0,
     stage: "",
     mode: false,
-    /* Whether the room is being written down. The band reads it because
-       `capturing` outside a conversation means the passive record, not a
-       question waiting for an answer. */
-    passive: false,
     lastTotalMs: null,
     /* Turn ids that have been on screen. A turn glows on the reading that
        first brought it in and never again. */
@@ -92,7 +88,6 @@ export async function mount(root) {
   if (status) {
     state.phase = status.phase || state.phase;
     state.phaseSince = status.phase_since || Date.now() / 1000;
-    state.passive = Boolean(status.passive?.enabled);
     state.lastTotalMs = status.last_turn?.total_ms ?? null;
     capture.paintReading();
   }
@@ -107,10 +102,6 @@ export async function mount(root) {
   // ask Jarvis to stop, so the switch follows the runtime rather than the
   // last thing this page clicked.
   const offMode = live.on("conversation", () => refresh().catch(() => {}));
-  const offPassive = live.on("passive", (passive) => {
-    state.passive = Boolean(passive?.enabled);
-    capture.paintReading();
-  });
   const offPhase = live.on("phase", (phase) => {
     state.phase = phase.phase;
     state.phaseSince = phase.phase_since || Date.now() / 1000;
@@ -132,7 +123,6 @@ export async function mount(root) {
     offTurn();
     offDiscard();
     offMode();
-    offPassive();
     offPhase();
     offStage();
     clearInterval(ticking);
@@ -172,10 +162,7 @@ function buildCapture(band, state) {
   function paintReading() {
     const phase = state.phase || "offline";
     phaseDot.dataset.phase = phase;
-    phaseName.textContent = phaseLabel(phase, {
-      conversation: state.mode,
-      passive: state.passive,
-    });
+    phaseName.textContent = phaseLabel(phase, { conversation: state.mode });
     stageName.textContent = state.stage;
 
     // While something is happening, how long it has been happening. When

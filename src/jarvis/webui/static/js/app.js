@@ -199,14 +199,12 @@ function markSettings(current) {
 
 /* ── Header ────────────────────────────────────────────────────────── */
 
-/* Everything a phase has to be read against. The same phase means different
-   things depending on whether a conversation is open and whether the room is
-   being written down, so the words are chosen from all three together. */
+/* Everything a phase has to be read against. A conversation changes what the
+   same phase means, so the words are chosen from the two together. */
 function reading() {
   return {
     connected: state.connected,
     conversation: Boolean(state.status?.conversation?.active),
-    passive: Boolean(state.status?.passive?.enabled),
   };
 }
 

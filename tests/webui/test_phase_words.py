@@ -1,16 +1,19 @@
 """What the header says the assistant is doing, in the reader's terms.
 
-The runtime phase is one word, and the same word covers two situations a
-reader would never call the same thing. `idle` while a conversation runs
-does not mean "waiting for the wake word": nothing needs the wake word
-then. `capturing` outside a conversation does not mean "listening to you":
-the microphone is open to the whole room, and what it hears is checked for
-the wake word, or written down for the passive record, and usually neither
-is addressed to Jarvis.
+The runtime phase is one word, and outside a conversation two of those
+words describe the same wait. `idle` and `capturing` both mean the wake
+word has not been said yet: voice activity opens the microphone for
+whoever is in the room, and what it heard still has to be checked for the
+name. Reading them out as two different sentences turns the header into a
+flicker between them, and neither the flicker nor the second sentence tells
+the reader anything they can act on.
 
-A phase read out in words that no longer fit the situation is how a user
-comes to believe the assistant ignored them, so the words are asserted
-here rather than left to the phase table.
+Inside a conversation the same two words mean something else again, because
+nothing needs the wake word then.
+
+A phase read out in words that do not fit the situation is how a user comes
+to believe the assistant ignored them, so the words are asserted here
+rather than left to the phase table.
 """
 
 from __future__ import annotations
@@ -29,12 +32,15 @@ LANGUAGES = ["en", "de"]
 
 # Everything `idle` and `capturing` can actually mean, as the page sees it.
 READINGS = {
-    "idle-alone": ("idle", {"conversation": False, "passive": False}),
-    "idle-in-conversation": ("idle", {"conversation": True, "passive": False}),
-    "capturing-in-conversation": ("capturing", {"conversation": True, "passive": False}),
-    "capturing-for-the-record": ("capturing", {"conversation": False, "passive": True}),
-    "capturing-for-the-wake-word": ("capturing", {"conversation": False, "passive": False}),
+    "idle-alone": ("idle", {"conversation": False}),
+    "capturing-alone": ("capturing", {"conversation": False}),
+    "idle-in-conversation": ("idle", {"conversation": True}),
+    "capturing-in-conversation": ("capturing", {"conversation": True}),
 }
+
+# The sentences those four readings are allowed to be: waiting for the name,
+# in a conversation that does not need it, and being listened to.
+DISTINCT = 3
 
 
 def _free_port() -> int:
@@ -149,15 +155,26 @@ class TestThePhaseIsSaidAsItIs:
         """Voice detected is not the same as being spoken to."""
         said = _labels(page, served, language)
 
-        assert said["capturing-for-the-record"] != said["capturing-in-conversation"]
-        assert said["capturing-for-the-wake-word"] != said["capturing-in-conversation"]
+        assert said["capturing-alone"] != said["capturing-in-conversation"]
+
+    @pytest.mark.parametrize("language", LANGUAGES)
+    def test_the_wait_for_the_wake_word_reads_the_same_throughout(
+        self, page, served, language
+    ):
+        """Speech in the room does not end that wait, so it does not change
+        what the header says. Two sentences for one situation only flicker."""
+        said = _labels(page, served, language)
+        wake_word = _wake_word_words(page, served, language)
+
+        assert said["idle-alone"] == wake_word
+        assert said["capturing-alone"] == wake_word
 
     @pytest.mark.parametrize("language", LANGUAGES)
     def test_every_situation_reads_differently(self, page, served, language):
-        """Five situations, five sentences: a shared one hides a difference."""
+        """Three situations, three sentences: a shared one hides a difference."""
         said = _labels(page, served, language)
 
-        assert len(set(said.values())) == len(READINGS), said
+        assert len(set(said.values())) == DISTINCT, said
 
     def test_a_dropped_connection_outranks_the_phase(self, page, served):
         """A stale reading is worse than saying the page is on its own."""
@@ -196,12 +213,9 @@ class TestTheHeaderReadsTheSituation:
     header is read back over the stream that carries them.
     """
 
-    def _header(
-        self, page, attached: str, phase: Phase, *, conversation: bool, passive: bool
-    ) -> str:
+    def _header(self, page, attached: str, phase: Phase, *, conversation: bool) -> str:
         state = get_runtime_state()
         state.set_conversation_active(conversation)
-        state.set_passive_enabled(passive)
         state.set_phase(phase)
         page.goto(f"{attached}/#/deck", wait_until="domcontentloaded")
         page.wait_for_function(
@@ -213,34 +227,28 @@ class TestTheHeaderReadsTheSituation:
     def test_it_does_not_ask_for_the_wake_word_during_a_conversation(
         self, live_page, attached
     ):
-        in_conversation = self._header(
-            live_page, attached, Phase.IDLE, conversation=True, passive=False
-        )
-        alone = self._header(
-            live_page, attached, Phase.IDLE, conversation=False, passive=False
-        )
+        in_conversation = self._header(live_page, attached, Phase.IDLE, conversation=True)
+        alone = self._header(live_page, attached, Phase.IDLE, conversation=False)
 
         assert in_conversation != alone
 
-    def test_it_says_the_room_is_written_down_rather_than_listened_to(
-        self, live_page, attached
-    ):
-        for_the_record = self._header(
-            live_page, attached, Phase.CAPTURING, conversation=False, passive=True
-        )
-        spoken_to = self._header(
-            live_page, attached, Phase.CAPTURING, conversation=True, passive=False
-        )
+    def test_it_holds_still_while_the_room_talks_past_it(self, live_page, attached):
+        """Someone speaking near the microphone is not news to the reader.
 
-        assert for_the_record != spoken_to
+        Voice activity moves the phase to `capturing` and back several times
+        a minute in a room with people in it, and the wait it interrupts has
+        not changed: the wake word still has not been said.
+        """
+        waiting = self._header(live_page, attached, Phase.IDLE, conversation=False)
+        overheard = self._header(live_page, attached, Phase.CAPTURING, conversation=False)
+
+        assert overheard == waiting
 
     def test_the_header_follows_a_conversation_started_while_it_watches(
         self, live_page, attached
     ):
         """A conversation can start without this page asking for it."""
-        before = self._header(
-            live_page, attached, Phase.IDLE, conversation=False, passive=False
-        )
+        before = self._header(live_page, attached, Phase.IDLE, conversation=False)
 
         get_runtime_state().set_conversation_active(True)
 
