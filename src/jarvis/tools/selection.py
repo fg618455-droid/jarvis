@@ -339,6 +339,26 @@ def _select_embedding(
 # Strategy: llm
 # ---------------------------------------------------------------------------
 
+def _report_router_gave_up(reason: str) -> None:
+    """Say out loud that the router did not narrow this turn.
+
+    Each fallback is fail-open and harmless once. A router failing on every
+    turn is not: the chat model then sees the whole catalogue each time,
+    the reply engine's zero-tool grounding gate stops activating because a
+    full catalogue reads as a fallback shape rather than a relevance
+    signal, and small chat models drown in the choice. That state is
+    invisible from the outside — every reply still arrives — so it has to
+    announce itself where a person watching the run will see it, not only
+    in the diagnostic log where it has to be gone looking for.
+    """
+    debug_log(f"LLM tool selection gave up: {reason}", "planning")
+    try:
+        print(f"    ⚠️ Tool router gave up ({reason}) — narrowing by keyword instead",
+              flush=True)
+    except Exception:
+        pass
+
+
 def _select_llm(
     query: str,
     builtin_tools: Dict[str, "Tool"],
@@ -470,11 +490,11 @@ def _select_llm(
             max_tokens=50,
         )
     except Exception as e:
-        debug_log(f"LLM tool selection failed: {e}, falling back to keyword strategy", "planning")
+        _report_router_gave_up(f"call failed, {type(e).__name__}")
         return _select_keyword(query, builtin_tools, mcp_tools)
 
     if not resp or not isinstance(resp, str):
-        debug_log("LLM tool selection returned empty, falling back to keyword strategy", "planning")
+        _report_router_gave_up("no answer from the fast tier")
         return _select_keyword(query, builtin_tools, mcp_tools)
 
     # Extract the trailing routing classification, if present, before doing
@@ -484,15 +504,18 @@ def _select_llm(
     # nor "complex" collides with a real tool name (checked against the
     # catalogue via word-boundary matching), so removing every occurrence
     # is safe before the "none" comparison and the tool-token scan.
-    _tool_part = resp
-    if chat_backend_signal is not None:
-        _preference_matches = _CHAT_BACKEND_PREFERENCE_RE.findall(resp)
-        if _preference_matches:
-            # Fail-open by default: the key is only set when the router's
-            # response actually named a preference. Reusing this response
-            # is the entire point — no second classification call is made.
-            chat_backend_signal["preference"] = _preference_matches[-1].lower()
-        _tool_part = _CHAT_BACKEND_PREFERENCE_RE.sub(" ", resp)
+    # The token is always removed, whether or not this caller asked for it.
+    # The router answers the same way either way, so a response like
+    # "none LOCAL" has to read as a positive no-tool decision for every
+    # caller; letting an unrelated argument change how the tool list parses
+    # would make the classification a second, hidden contract.
+    _preference_matches = _CHAT_BACKEND_PREFERENCE_RE.findall(resp)
+    _tool_part = _CHAT_BACKEND_PREFERENCE_RE.sub(" ", resp)
+    if chat_backend_signal is not None and _preference_matches:
+        # Fail-open by default: the key is only set when the router's
+        # response actually named a preference. Reusing this response
+        # is the entire point — no second classification call is made.
+        chat_backend_signal["preference"] = _preference_matches[-1].lower()
 
     resp_lower = _tool_part.strip().strip("|").strip().lower()
     if resp_lower == "none":
@@ -518,7 +541,7 @@ def _select_llm(
     selected = _ensure_always_included(selected, builtin_tools, mcp_tools)
 
     if len(selected) <= len(_ALWAYS_INCLUDED):
-        debug_log("LLM tool selection matched nothing, falling back to keyword strategy", "planning")
+        _report_router_gave_up("named no tool this installation has")
         return _select_keyword(query, builtin_tools, mcp_tools)
 
     debug_log(f"LLM tool selection: {len(selected)}/{len(known)} tools selected", "planning")
