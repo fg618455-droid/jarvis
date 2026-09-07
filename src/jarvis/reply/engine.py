@@ -13,6 +13,7 @@ from ..output.tts import resolve_kokoro_voice_language, resolve_voice_language
 from ..runtime import (
     current_turn,
     mark as telemetry_mark,
+    publish_reply,
     stage as telemetry_stage,
 )
 from ..tools.registry import run_tool_with_retries, generate_tools_description, generate_tools_json_schema, BUILTIN_TOOLS
@@ -35,39 +36,67 @@ from ..llm import (
 # classification prefers. Absent from the map (an unrecognised or missing
 # value) resolves to no preference, i.e. today's unmodified chain order.
 _CHAT_BACKEND_PREFERENCE_TO_PROVIDER = {
-    "local": "ollama",
     "complex": "claude_subscription",
     "hermes": "crew_chat",
 }
 
 
-def _resolve_preferred_chat_provider(cfg, chat_backend_preference):
-    """Decide which route provider (if any) this reply's Tier.CHAT call
-    should try first.
+def pinned_chat_provider(cfg) -> Optional[str]:
+    """The provider this configuration pins every Tier.CHAT reply to.
 
-    A manual ``cfg.chat_backend_override`` (anything other than the default
-    "auto") always wins, regardless of ``chat_backend_preference`` — that is
-    the whole point of a manual override. Under "auto", the router's own
-    per-turn classification (reused from its existing LLM call, not a new
-    one) decides. Returns ``None`` whenever neither applies, which leaves
-    ``RoutedBackend.chat()`` at its existing configured chain order: the
-    fail-open default this feature must never regress.
+    ``None`` means the chain decides, which is the default. Read on its own
+    wherever a turn needs to explain itself after the fact, so the reason
+    for a failure is the same value that caused it.
     """
-    override = str(getattr(cfg, "chat_backend_override", "auto") or "auto").strip().lower()
-    if override and override != "auto":
-        debug_log(f"chat backend override forces provider {override!r}", "llm")
-        return override
+    override = str(
+        getattr(cfg, "chat_backend_override", "auto") or "auto"
+    ).strip().lower()
+    return override if override and override != "auto" else None
+
+
+def _resolve_chat_backend_selection(cfg, chat_backend_preference):
+    """Decide how this reply's Tier.CHAT call picks a backend.
+
+    Returns ``(forced_provider, preferred_provider)``, of which at most one
+    is ever set, because they are different promises to the router:
+
+    - ``forced_provider`` comes from a manual ``cfg.chat_backend_override``.
+      Naming a backend there is a decision about which one is allowed to
+      answer, so it is a pin: that provider answers or the turn fails, with
+      no other route tried. It suppresses automatic classification
+      outright, since someone who chose a backend did not ask for a second
+      opinion from another.
+    - ``preferred_provider`` comes from the router's own per-turn
+      classification (reused from its existing LLM call, not a new one)
+      while the override sits at its "auto" default. That stays a hint: the
+      named provider goes first and the rest of the chain still catches the
+      turn if it cannot answer.
+
+    Both are ``None`` when neither applies, leaving the configured chain
+    order exactly as it is. The router's classification vocabulary is wider
+    than the map above: "local" describes a turn small enough that the
+    cheapest configured route will do, which is the configured chain order
+    already, so it names no provider and resolves to no preference.
+    """
+    override = pinned_chat_provider(cfg)
+    if override:
+        debug_log(
+            f"chat backend override pins provider {override!r}; no other "
+            "route may answer this turn",
+            "llm",
+        )
+        return override, None
 
     provider = _CHAT_BACKEND_PREFERENCE_TO_PROVIDER.get(
         str(chat_backend_preference or "").strip().lower()
     )
-    if provider and provider != "ollama":
+    if provider:
         debug_log(
-            f"automatic chat backend routing selected {provider!r} "
+            f"automatic chat backend routing prefers {provider!r} "
             f"(turn classified as {chat_backend_preference!r})",
             "llm",
         )
-    return provider
+    return None, provider
 
 
 def chat_with_messages(cfg, messages, *, timeout_sec=30.0, extra_options=None,
@@ -89,14 +118,15 @@ def chat_with_messages(cfg, messages, *, timeout_sec=30.0, extra_options=None,
     classification ("local", "complex", or "hermes", from the same LLM call
     that picks the tool allow-list — see
     ``jarvis.tools.selection._select_llm``).
-    Combined with ``cfg.chat_backend_override``, it resolves to a
-    ``preferred_provider`` passed through to ``RoutedBackend.chat()``,
-    which only ever reorders its existing route chain for this one call —
-    the chain's own fail-soft fallback is unchanged, so an unavailable or
-    failing preferred backend still falls through to the normal order.
+    Together with ``cfg.chat_backend_override`` it resolves (see
+    ``_resolve_chat_backend_selection``) to at most one of the two provider
+    arguments ``RoutedBackend.chat()`` takes: a pin, which lets only that
+    backend answer, or a preference, which merely puts it first.
     """
     backend = get_llm_backend(cfg)
-    preferred_provider = _resolve_preferred_chat_provider(cfg, chat_backend_preference)
+    forced_provider, preferred_provider = _resolve_chat_backend_selection(
+        cfg, chat_backend_preference
+    )
     with telemetry_stage("llm"):
         return backend.chat(
             cfg.llm_chat_model, messages,
@@ -106,6 +136,7 @@ def chat_with_messages(cfg, messages, *, timeout_sec=30.0, extra_options=None,
             thinking=thinking,
             on_token=on_token,
             preferred_provider=preferred_provider,
+            forced_provider=forced_provider,
         )
 from .enrichment import (
     extract_search_params_for_memory,
@@ -168,8 +199,23 @@ NO_TOOL_BACKEND_MESSAGE = (
 )
 
 
-def _no_reply_message(backend_exhausted: Optional[str]) -> str:
+# A pinned backend is a fourth reason, and the only one that names a
+# culprit. Saying "every backend failed" would be untrue (the others were
+# never asked) and would send someone looking in the wrong place.
+PINNED_BACKEND_MESSAGE = (
+    "The chat backend is pinned to {provider}, and it did not answer. "
+    "Nothing else was tried, because a pinned backend allows no fallback. "
+    "Check that backend, or set the chat backend override back to automatic."
+)
+
+
+def _no_reply_message(
+    backend_exhausted: Optional[str],
+    forced_provider: Optional[str] = None,
+) -> str:
     """The honest reason this turn produced nothing."""
+    if backend_exhausted and forced_provider:
+        return PINNED_BACKEND_MESSAGE.format(provider=forced_provider)
     if backend_exhausted == "tools":
         return NO_TOOL_BACKEND_MESSAGE
     if backend_exhausted:
@@ -2415,6 +2461,9 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # request it was never asked. "tools" records that the failing call
     # carried a tool schema, which is the narrower and much smaller chain.
     backend_exhausted: Optional[str] = None
+    # The backend this configuration pins every reply to, if any. Read once
+    # here so a failure explains itself with the same value that caused it.
+    _pinned_provider: Optional[str] = pinned_chat_provider(cfg)
     max_turns = cfg.agentic_max_turns
     turn = 0
     malformed_retry_used = False
@@ -2519,16 +2568,22 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
 
         Each turn of the loop is its own stream: a turn that ends in a tool
         call and the turn that finally answers must not share a segmenter, or
-        the answer would inherit the tool turn's half-sentence. Returns
-        ``(None, None)`` when nobody asked for early text, which keeps the
-        request unstreamed and the behaviour exactly as it was.
+        the answer would inherit the tool turn's half-sentence.
+
+        The listener always publishes the reply as it is written, because a
+        reader watching the control centre is waiting on the same answer a
+        listener is. Speech is the extra it does when someone asked for
+        sound. The segmenter decides both: a stream it judges unspeakable is
+        structured output for a parser, which is no better to read than it is
+        to hear.
         """
-        if on_speech_segment is None:
-            return None, None
         segmenter = SpeechSegmenter()
 
         def listener(chunk: str) -> None:
-            for sentence in segmenter.feed(chunk):
+            sentences = segmenter.feed(chunk)
+            if segmenter.is_speakable:
+                publish_reply(chunk)
+            for sentence in sentences:
                 _say(sentence)
 
         return segmenter, listener
@@ -2545,11 +2600,13 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         return _stream_speech()
 
     def _say(sentence: str) -> None:
-        """Hand one finished sentence to the speech path.
+        """Hand one finished sentence to the speech path, if there is one.
 
         Speech is a side effect on the user's behalf: a speech path that
         fails must cost them the sound, never the answer.
         """
+        if on_speech_segment is None:
+            return
         try:
             on_speech_segment(sentence)
         except Exception as e:
@@ -2871,10 +2928,17 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             # Not a quiet model: every enabled, capable, unblocked route in
             # this tier failed, timed out, or is in cooldown. A tool-bearing
             # call walks the shorter "tools" chain, so it runs out first.
+            # Under a pin there is no chain to walk at all, only the one
+            # backend that was named, which is a different fault to report.
             backend_exhausted = "tools" if _called_with_tools else "chat"
             debug_log(
-                f"  ❌ no {backend_exhausted} backend answered: the route "
-                "chain is exhausted for this turn",
+                f"  ❌ no {backend_exhausted} backend answered: "
+                + (
+                    f"pinned backend {_pinned_provider!r} did not answer and "
+                    "no fallback is permitted"
+                    if _pinned_provider
+                    else "the route chain is exhausted for this turn"
+                ),
                 "planning",
             )
             break
@@ -3420,10 +3484,12 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             )
             reply = last_candidate_reply
     if not reply or not reply.strip():
-        reply = in_the_voices_language(cfg, _no_reply_message(backend_exhausted))
+        reply = in_the_voices_language(
+            cfg, _no_reply_message(backend_exhausted, _pinned_provider)
+        )
         debug_log(
-            f"no reply generated (backend_exhausted={backend_exhausted!r}), "
-            "returning error message",
+            f"no reply generated (backend_exhausted={backend_exhausted!r}, "
+            f"pinned_backend={_pinned_provider!r}), returning error message",
             "planning",
         )
 
@@ -3450,7 +3516,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     safe_reply = reply.strip()
     if not safe_reply:
         safe_reply = in_the_voices_language(
-            cfg, _no_reply_message(backend_exhausted)
+            cfg, _no_reply_message(backend_exhausted, _pinned_provider)
         )
         reply = safe_reply
     if safe_reply:

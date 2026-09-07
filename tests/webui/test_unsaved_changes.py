@@ -110,13 +110,35 @@ ONE_SERVER = """async () => {
 }"""
 
 
+def _open_editor(page, served, category, ready):
+    """Open the Settings category that carries an embedded editor.
+
+    Every editor is in Settings now, so every editor is left by Settings'
+    doors: the way back to the deck, another category, the browser's own
+    button, and the language picker. No panel holds unsaved content, which
+    is why none of these are asserted against one.
+    """
+    page.goto(f"{served}/#/settings")
+    page.wait_for_selector(".view-settings .settings-nav", state="visible", timeout=20000)
+    page.locator(".settings-nav").get_by_role("button", name=category).click()
+    page.wait_for_selector(ready, state="visible", timeout=20000)
+
+
 class TestTheMcpEditorIsAskedBeforeItIsLeft:
-    """The editor whose fields are credentials read back masked."""
+    """The editor whose fields are credentials read back masked.
+
+    A change discarded here is not an edit to make again but a secret to go
+    and find again, which is why this editor is the one the rule is measured
+    against.
+    """
 
     def _typed_into(self, page, served):
+        # From the deck, so that going to Settings is a step the browser's own
+        # back button can undo. Landing on Settings directly leaves nothing
+        # behind it, and the back button would leave the page altogether.
         page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
         page.evaluate(ONE_SERVER)
-        _open_panel(page, served, "mcp")
+        _open_editor(page, served, "MCP Servers", ".mcp-list .mcp-server")
         field = page.get_by_label("Command", exact=True).first
         field.fill("uvx --from somewhere-else")
         return field
@@ -125,19 +147,19 @@ class TestTheMcpEditorIsAskedBeforeItIsLeft:
         self._typed_into(page, served)
         _answer(page, leave=False)
 
-        page.locator(".panel-close").click()
-        page.wait_for_timeout(500)
+        page.locator(".settings-back").click()
+        page.wait_for_timeout(600)
 
         assert page.asked, "the editor was left without a word"
-        assert page.locator(".panel").count() == 1, "it left anyway"
-        assert page.evaluate("location.hash") == "#/mcp"
+        assert page.locator(".view-settings").count() == 1, "it left anyway"
+        assert page.evaluate("location.hash") == "#/settings"
 
     def test_what_was_typed_is_still_there_after_refusing(self, page, served):
         self._typed_into(page, served)
         _answer(page, leave=False)
 
-        page.locator(".panel-close").click()
-        page.wait_for_timeout(500)
+        page.locator(".settings-back").click()
+        page.wait_for_timeout(600)
 
         assert page.get_by_label("Command", exact=True).first.input_value() == (
             "uvx --from somewhere-else"
@@ -147,40 +169,11 @@ class TestTheMcpEditorIsAskedBeforeItIsLeft:
         self._typed_into(page, served)
         _answer(page, leave=True)
 
-        page.locator(".panel-close").click()
-        page.wait_for_selector(".panel", state="detached", timeout=20000)
+        page.locator(".settings-back").click()
+        page.wait_for_selector(".deck", timeout=20000)
 
         assert page.asked
         assert page.evaluate("location.hash") == "#/deck"
-
-    def test_escape_outside_a_field_asks_too(self, page, served):
-        """Escape is the reflex the ask exists for."""
-        self._typed_into(page, served)
-        _answer(page, leave=False)
-        page.locator(".panel-title").click()
-
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(500)
-
-        assert page.asked
-        assert page.locator(".panel").count() == 1
-
-    def test_escape_inside_a_field_is_still_left_to_the_field(self, page, served):
-        """The rule already in place, which this one must not contradict.
-
-        In a field, Escape belongs to the field: it never reached the panel
-        before and it must not start reaching it now, or the ask would be
-        raised for a key press that was never a departure.
-        """
-        field = self._typed_into(page, served)
-        _answer(page, leave=False)
-        field.click()
-
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(500)
-
-        assert not page.asked, "a key press inside a field was treated as leaving"
-        assert page.locator(".panel").count() == 1
 
     def test_the_browser_back_button_asks(self, page, served):
         self._typed_into(page, served)
@@ -190,19 +183,7 @@ class TestTheMcpEditorIsAskedBeforeItIsLeft:
         page.wait_for_timeout(600)
 
         assert page.asked
-        assert page.evaluate("location.hash") == "#/mcp"
-
-    def test_another_panel_asks(self, page, served):
-        """Opening something else is leaving this."""
-        self._typed_into(page, served)
-        _answer(page, leave=False)
-
-        # A widget in the left rail: the right one is behind the open panel.
-        page.locator('.widget[data-panel="memory"] .widget-open').click()
-        page.wait_for_timeout(600)
-
-        assert page.asked
-        assert page.evaluate("location.hash") == "#/mcp"
+        assert page.evaluate("location.hash") == "#/settings"
 
 
 class TestQuietWhenThereIsNothingToLose:
@@ -235,7 +216,7 @@ class TestQuietWhenThereIsNothingToLose:
 
     def test_a_change_that_was_typed_back_out_again_asks_nothing(self, page, served):
         """Settings compares with what is stored rather than counting keys."""
-        _open_settings(page, served, category="Advanced")
+        _open_settings(page, served, category="Control Centre")
         field = page.locator(".view-settings .field input[type='text']").first
         was = field.input_value()
         field.fill(f"{was}x")
@@ -249,7 +230,7 @@ class TestQuietWhenThereIsNothingToLose:
         assert page.evaluate("location.hash") == "#/deck"
 
     def test_a_saved_editor_asks_nothing(self, page, served):
-        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
+        page.goto(f"{served}/#/settings", wait_until="domcontentloaded")
         page.evaluate(ONE_SERVER)
         page.evaluate(
             """async () => {
@@ -257,21 +238,21 @@ class TestQuietWhenThereIsNothingToLose:
                 api.saveMcpServers = async () => ({ servers: [] });
             }"""
         )
-        _open_panel(page, served, "mcp")
+        _open_editor(page, served, "MCP Servers", ".mcp-list .mcp-server")
         page.get_by_label("Command", exact=True).first.fill("uvx --from elsewhere")
-        page.get_by_role("button", name="Save").first.click()
+        page.locator(".mcp-bar").get_by_role("button", name="Save").click()
         page.wait_for_selector(".toast", timeout=20000)
         _answer(page, leave=False)
 
-        page.locator(".panel-close").click()
-        page.wait_for_selector(".panel", state="detached", timeout=20000)
+        page.locator(".settings-back").click()
+        page.wait_for_selector(".deck", timeout=20000)
 
         assert not page.asked, "asked about changes that had just been written"
 
 
 class TestSettingsAndTheRouteEditorAreAskedTheSameWay:
     def test_settings_asks_before_its_way_out(self, page, served):
-        _open_settings(page, served, category="Advanced")
+        _open_settings(page, served, category="Control Centre")
         field = page.locator(".view-settings .field input[type='text']").first
         field.fill(f"{field.input_value()}-changed")
         _answer(page, leave=False)
@@ -284,51 +265,57 @@ class TestSettingsAndTheRouteEditorAreAskedTheSameWay:
         assert page.locator(".view-settings").count() == 1
 
     def test_the_route_editor_asks_before_it_is_left(self, page, served):
-        _open_panel(page, served, "llm-routes")
+        _open_editor(page, served, "Providers", ".route-config-list")
         page.get_by_role("button", name="Add route").click()
         page.wait_for_timeout(200)
         _answer(page, leave=False)
 
-        page.locator(".panel-close").click()
+        page.locator(".settings-back").click()
         page.wait_for_timeout(600)
 
         assert page.asked
-        assert page.locator(".panel").count() == 1
-        assert page.evaluate("location.hash") == "#/llm-routes"
+        assert page.locator(".view-settings").count() == 1
+        assert page.evaluate("location.hash") == "#/settings"
 
     def test_reloading_the_route_editor_in_place_asks_too(self, page, served):
         """Reloading is discarding, whichever button asked for it.
 
-        Probing the models and resetting the cooldowns both replace the
-        editor's copy with what is stored, which throws away anything typed
-        into it just as surely as leaving the view does.
+        Either chat-backend selector saves and then replaces the editor's
+        copy with what is stored, which throws away anything typed into it
+        just as surely as leaving the view does.
         """
-        _open_panel(page, served, "llm-routes")
+        page.goto(f"{served}/#/settings", wait_until="domcontentloaded")
         page.evaluate(
             """async () => {
                 const { api } = await import('/static/js/api.js');
-                window.__reset = 0;
-                api.resetLlmRoutes = async () => { window.__reset += 1; return {}; };
+                window.__saved = 0;
+                api.setChatBackendOverride = async () => {
+                    window.__saved += 1;
+                    return {};
+                };
             }"""
         )
+        _open_editor(page, served, "Providers", ".route-config-list")
         page.get_by_role("button", name="Add route").click()
         before = page.locator(".route-config").count()
         _answer(page, leave=False)
 
-        page.get_by_role("button", name="Reset cooldowns").click()
+        page.get_by_label("Chat backend override", exact=True).select_option(
+            "codex_subscription",
+        )
         page.wait_for_timeout(600)
 
         assert page.asked, "the editor was reloaded over what was typed into it"
-        assert page.evaluate("window.__reset") == 0, "it reset anyway"
+        assert page.evaluate("window.__saved") == 0, "it saved anyway"
         assert page.locator(".route-config").count() == before, (
             "the route that was added is gone"
         )
 
     def test_the_route_editor_is_quiet_until_something_is_changed(self, page, served):
-        _open_panel(page, served, "llm-routes")
+        _open_editor(page, served, "Providers", ".route-config-list")
         _answer(page, leave=False)
 
-        page.locator(".panel-close").click()
-        page.wait_for_selector(".panel", state="detached", timeout=20000)
+        page.locator(".settings-back").click()
+        page.wait_for_selector(".deck", timeout=20000)
 
         assert not page.asked, f"asked with nothing changed: {page.asked}"

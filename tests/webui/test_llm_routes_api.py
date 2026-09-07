@@ -53,7 +53,7 @@ def test_get_routes_separates_configured_routes_from_effective_chains(
 
     assert [route["name"] for route in body["configured_routes"]] == ["cloud-chat"]
     assert [route["name"] for route in body["effective_chains"]["chat"]] == [
-        "cloud-chat", "local-chat",
+        "cloud-chat",
     ]
     configured = body["configured_routes"][0]
     assert configured["api_key"].endswith("tial")
@@ -71,13 +71,15 @@ def test_get_routes_exposes_the_schema_for_every_supported_provider(
         "name", "provider", "base_url", "api_key", "api_key_env", "model",
         "tier", "timeout_sec", "enabled", "capabilities",
     ]
+    # Ollama is absent deliberately: FAST and CHAT are the chains that
+    # answer a person, and a local model never does that any more.
     provider = next(field for field in body["route_fields"] if field["key"] == "provider")
     assert {choice["value"] for choice in provider["choices"]} == {
-        "ollama", "openai_compatible", "claude_subscription",
+        "openai_compatible", "claude_subscription",
         "codex_subscription", "crew_chat",
     }
     assert set(body["provider_placeholders"]) == {
-        "ollama", "openai_compatible", "claude_subscription",
+        "openai_compatible", "claude_subscription",
         "codex_subscription", "crew_chat",
     }
 
@@ -177,9 +179,9 @@ def test_put_routes_preserves_order_and_every_schema_field(
     monkeypatch.setenv("JARVIS_CONFIG_PATH", str(path))
     routes = [
         {
-            "name": "ollama-fast", "provider": "ollama",
-            "base_url": "http://127.0.0.1:11434", "api_key": "",
-            "api_key_env": "", "model": "qwen3:1.7b", "tier": "fast",
+            "name": "cloud-fast", "provider": "openai_compatible",
+            "base_url": "https://cloud.example/v1", "api_key": "",
+            "api_key_env": "", "model": "remote-fast", "tier": "fast",
             "timeout_sec": 12.5, "enabled": False,
             "capabilities": ["chat"],
         },
@@ -239,13 +241,115 @@ def test_put_chat_backend_override_persists_and_is_reported_back(
     assert follow_up.get_json()["chat_backend_override"] == "claude_subscription"
 
 
+def test_routes_report_a_tier_with_nothing_in_it(api_client, tmp_path, monkeypatch):
+    """No local model backstops FAST or CHAT any more, so an empty tier is
+    a silent loss of function: the fixture configures CHAT only, and FAST
+    work (tool routing, the intent judge, the planner) has nothing to run
+    on. The page must be able to show that rather than look healthy."""
+    _write_config(tmp_path, monkeypatch)
+
+    payload = api_client.get("/api/llm/routes").get_json()
+
+    assert payload["empty_tiers"] == ["fast"]
+
+
+def test_a_fully_configured_pair_of_chains_reports_no_empty_tier(
+    api_client, tmp_path, monkeypatch
+):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({
+        "_config_version": 5,
+        "llm_routes": [
+            {
+                "name": "cloud-fast", "provider": "openai_compatible",
+                "base_url": "https://cloud.example/v1", "api_key": "",
+                "api_key_env": "", "model": "remote-fast", "tier": "fast",
+                "timeout_sec": 4.0, "enabled": True,
+                "capabilities": ["chat", "stream", "tools"],
+            },
+            {
+                "name": "cloud-chat", "provider": "openai_compatible",
+                "base_url": "https://cloud.example/v1", "api_key": "",
+                "api_key_env": "", "model": "remote-chat", "tier": "chat",
+                "timeout_sec": 4.0, "enabled": True,
+                "capabilities": ["chat", "stream", "tools"],
+            },
+        ],
+    }))
+    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(path))
+    monkeypatch.setenv("JARVIS_LLM_ROUTE_STATE_PATH", str(tmp_path / "s.json"))
+
+    payload = api_client.get("/api/llm/routes").get_json()
+
+    assert payload["empty_tiers"] == []
+
+
+def test_routes_report_an_unbacked_pin(api_client, tmp_path, monkeypatch):
+    """A pin onto a provider with no route can only ever fail, every turn.
+    The page has to be able to say so, because the alternative is a user
+    watching identical failures with no way to tell a broken backend from
+    one that was never configured."""
+    _write_config(tmp_path, monkeypatch)
+    api_client.put(
+        "/api/llm/routes/chat-backend-override",
+        json={"chat_backend_override": "crew_chat"},
+    )
+
+    payload = api_client.get("/api/llm/routes").get_json()
+
+    assert payload["chat_backend_override"] == "crew_chat"
+    assert payload["chat_backend_override_backed"] is False
+
+
+def test_routes_report_a_backed_pin(api_client, tmp_path, monkeypatch):
+    _write_config(tmp_path, monkeypatch)
+    api_client.put(
+        "/api/llm/routes/chat-backend-override",
+        json={"chat_backend_override": "openai_compatible"},
+    )
+
+    payload = api_client.get("/api/llm/routes").get_json()
+
+    assert payload["chat_backend_override_backed"] is True
+
+
+def test_an_automatic_chain_is_never_reported_as_an_unbacked_pin(
+    api_client, tmp_path, monkeypatch
+):
+    _write_config(tmp_path, monkeypatch)
+
+    payload = api_client.get("/api/llm/routes").get_json()
+
+    assert payload["chat_backend_override"] == "auto"
+    assert payload["chat_backend_override_backed"] is True
+
+
+def test_put_chat_backend_override_refuses_a_provider_that_cannot_reply(
+    api_client, tmp_path, monkeypatch
+):
+    """Pinning is exact now, so an unpinnable name has to be refused where
+    it is typed. Accepting it would store a pin that can only ever produce
+    "that backend did not answer", every turn, with no way to tell that
+    apart from a backend that is genuinely down."""
+    path = _write_config(tmp_path, monkeypatch)
+
+    response = api_client.put(
+        "/api/llm/routes/chat-backend-override",
+        json={"chat_backend_override": "ollama"},
+    )
+
+    assert response.status_code == 400
+    assert "ollama" in response.get_json()["error"]
+    assert "chat_backend_override" not in json.loads(path.read_text())
+
+
 def test_put_chat_backend_override_blank_resets_to_auto(
     api_client, tmp_path, monkeypatch
 ):
     path = _write_config(tmp_path, monkeypatch)
     api_client.put(
         "/api/llm/routes/chat-backend-override",
-        json={"chat_backend_override": "ollama"},
+        json={"chat_backend_override": "claude_subscription"},
     )
 
     response = api_client.put(

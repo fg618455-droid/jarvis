@@ -190,7 +190,9 @@ class TestNeverThePrivateLane:
         from jarvis.llm import Tier, get_llm_backend
 
         cfg = self._settings([], llm_provider="claude_subscription")
-        assert get_llm_backend(cfg).routes_for(Tier.CHAT)[0].provider == "ollama"
+        # Not a single-endpoint provider, and no local model steps in for it
+        # either: without a configured route there is simply nothing to try.
+        assert get_llm_backend(cfg).routes_for(Tier.CHAT) == ()
 
     def test_claude_subscription_is_not_an_embedding_provider(self):
         from jarvis.llm import get_embedding_backend

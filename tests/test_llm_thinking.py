@@ -197,7 +197,31 @@ class TestIntentJudgeThinking:
 class TestDictationThinking:
     """Dictation engine respects the thinking config."""
 
-    def test_llm_clean_dictation_sends_think_false(self):
+    @staticmethod
+    def _cfg():
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            llm_routes=[{
+                "name": "remote-chat",
+                "provider": "openai_compatible",
+                "base_url": "https://cloud.invalid/v1",
+                "api_key": "",
+                "api_key_env": "",
+                "model": "remote-model",
+                "tier": "chat",
+                "timeout_sec": 5.0,
+                "enabled": True,
+                "capabilities": ["chat", "stream", "tools"],
+            }],
+            ollama_base_url="http://127.0.0.1:11434",
+            ollama_chat_model="local-memory-model",
+            llm_chat_model="remote-model",
+            fast_model="remote-model",
+            llm_provider="ollama",
+        )
+
+    def _clean(self, thinking):
         from src.jarvis.dictation.dictation_engine import _llm_clean_dictation
 
         with patch("requests.post") as mock_post:
@@ -206,22 +230,31 @@ class TestDictationThinking:
             mock_resp.json.return_value = {"response": "cleaned"}
             mock_post.return_value = mock_resp
 
-            _llm_clean_dictation("um hello", "http://localhost:11434", thinking=False)
-            payload = mock_post.call_args[1].get("json") or mock_post.call_args[0][1] if len(mock_post.call_args[0]) > 1 else mock_post.call_args[1]["json"]
-            assert payload["think"] is False
+            _llm_clean_dictation("um hello", self._cfg(), thinking=thinking)
+
+            assert mock_post.call_args is not None, "no request was made"
+            url = mock_post.call_args[0][0]
+            payload = mock_post.call_args[1]["json"]
+            return url, payload
+
+    def test_llm_clean_dictation_sends_think_false(self):
+        _url, payload = self._clean(False)
+
+        assert payload["think"] is False
 
     def test_llm_clean_dictation_sends_think_true(self):
-        from src.jarvis.dictation.dictation_engine import _llm_clean_dictation
+        _url, payload = self._clean(True)
 
-        with patch("requests.post") as mock_post:
-            mock_resp = MagicMock()
-            mock_resp.status_code = 200
-            mock_resp.json.return_value = {"response": "cleaned"}
-            mock_post.return_value = mock_resp
+        assert payload["think"] is True
 
-            _llm_clean_dictation("um hello", "http://localhost:11434", thinking=True)
-            payload = mock_post.call_args[1].get("json") or mock_post.call_args[0][1] if len(mock_post.call_args[0]) > 1 else mock_post.call_args[1]["json"]
-            assert payload["think"] is True
+    def test_dictated_speech_is_cleaned_on_the_local_model(self):
+        """Dictation is private speech being tidied, not a question being
+        answered. It must not travel to the remote reply chain just because
+        that chain is what answers conversations."""
+        url, payload = self._clean(False)
+
+        assert "127.0.0.1" in url
+        assert payload["model"] == "local-memory-model"
 
     def test_engine_stores_thinking(self):
         from src.jarvis.dictation.dictation_engine import DictationEngine

@@ -17,6 +17,7 @@ import { holdingUnsaved } from "../unsaved.js";
    and nothing else, which is what a form builder without the editor shows. */
 const EMBEDS = {
   "llm-routes": () => import("./llm.js").then((module) => module.mountRoutes),
+  "mcp-servers": () => import("./mcp.js").then((module) => module.mountEditor),
 };
 
 export async function mount(root) {
@@ -101,20 +102,7 @@ export async function mount(root) {
   function control(field) {
     if (field.type === "bool") {
       const box = el("input", { type: "checkbox", checked: Boolean(field.value) });
-      box.addEventListener("change", () => {
-        if (
-          field.key === "passive_capture_enabled" &&
-          box.checked &&
-          !field.value
-        ) {
-          const provider = payload.fields.find((item) => item.key === "llm_provider")?.value || "";
-          if (!window.confirm(t("passive.enableConfirm", { provider }))) {
-            box.checked = false;
-            return;
-          }
-        }
-        record(field, box.checked, box);
-      });
+      box.addEventListener("change", () => record(field, box.checked, box));
       return el("label", { class: "check" }, [box, field.label]);
     }
 

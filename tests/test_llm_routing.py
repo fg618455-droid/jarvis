@@ -292,7 +292,7 @@ def test_disabled_or_incapable_routes_are_not_selected(tmp_path):
     assert router.streaming("chat", "system", "user") == "local answer"
 
 
-def test_factory_preserves_config_order_and_keeps_local_fallback():
+def test_factory_preserves_config_order():
     from jarvis.llm.factory import get_llm_backend
 
     settings = SimpleNamespace(
@@ -316,7 +316,7 @@ def test_factory_preserves_config_order_and_keeps_local_fallback():
     )
 
     routes = get_llm_backend(settings).routes_for(Tier.CHAT)
-    assert [route.name for route in routes] == ["cloud", "local-chat"]
+    assert [route.name for route in routes] == ["cloud"]
 
 
 def test_environment_credential_is_resolved_without_entering_route_state(monkeypatch, tmp_path):
@@ -455,39 +455,15 @@ def _local(routes, tier):
     )
 
 
-def test_a_disabled_route_leaves_the_local_chain_as_if_it_were_absent():
-    """A route the user switched off must not reshape the local fallback.
-
-    Otherwise switching a remote route off silently swaps the fast tier onto
-    the big chat model and clamps every local call to the short fallback
-    timeout, which turns each classification pass into a guaranteed miss.
-    """
+def test_a_disabled_route_leaves_its_tier_with_nothing_to_try():
+    """Switching off the only route in a tier empties that tier. Nothing is
+    substituted for it: a chain the user emptied stays empty, and the turn
+    reports that rather than answering from somewhere unasked."""
     from jarvis.llm.factory import get_llm_backend
 
-    with_disabled = get_llm_backend(_settings_with_route(enabled=False)).routes
-    without_any = get_llm_backend(SimpleNamespace(
-        llm_routes=[],
-        ollama_base_url="http://127.0.0.1:11434",
-        ollama_chat_model="big-chat-model",
-        llm_chat_model="big-chat-model",
-        fast_model="tiny-fast-model",
-        llm_provider="ollama",
-    )).routes
+    routes = get_llm_backend(_settings_with_route(enabled=False)).routes
 
-    for tier in (Tier.FAST, Tier.CHAT):
-        disabled_local = _local(with_disabled, tier)
-        plain_local = _local(without_any, tier)
-        assert disabled_local.model == plain_local.model
-        assert disabled_local.timeout_sec == plain_local.timeout_sec
-
-
-def test_the_local_fast_route_runs_the_explicit_local_fallback_model():
-    """A remote effective FAST name must never be sent to local Ollama."""
-    from jarvis.llm.factory import get_llm_backend
-
-    routes = get_llm_backend(_settings_with_route()).routes
-
-    assert _local(routes, Tier.FAST).model == "tiny-fast-model"
+    assert [route for route in routes if route.tier is Tier.CHAT and route.enabled] == []
 
 
 def test_route_models_remain_authoritative_for_the_effective_fast_chain():
@@ -496,23 +472,19 @@ def test_route_models_remain_authoritative_for_the_effective_fast_chain():
     settings = _settings_with_route(tier="fast", model="remote-fast-model")
     routes = get_llm_backend(settings).routes_for(Tier.FAST)
 
-    assert routes[0].model == "remote-fast-model"
-    assert _local(routes, Tier.FAST).model == "tiny-fast-model"
+    assert [route.model for route in routes] == ["remote-fast-model"]
     assert resolve_model(settings, Tier.FAST) == "cloud-fast-effective"
 
 
-def test_a_local_fallback_gets_room_to_load_a_cold_model():
+def test_the_private_route_gets_room_to_load_a_cold_model():
     """Ollama evicts models, so a first call pays a page-in of many seconds.
-
-    A fallback timeout shorter than that load turns the local route into a
-    route that can never answer.
-    """
+    A timeout shorter than that load turns the memory route into a route
+    that can never answer."""
     from jarvis.llm.factory import get_llm_backend
 
     routes = get_llm_backend(_settings_with_route()).routes
 
-    assert _local(routes, Tier.FAST).timeout_sec >= 30.0
-    assert _local(routes, Tier.CHAT).timeout_sec >= 30.0
+    assert _local(routes, Tier.PRIVATE).timeout_sec >= 30.0
 
 
 def test_a_local_route_carries_the_configured_model_residency():
@@ -521,8 +493,7 @@ def test_a_local_route_carries_the_configured_model_residency():
 
     routes = get_llm_backend(_settings_with_route()).routes
 
-    for tier in (Tier.FAST, Tier.CHAT):
-        assert _local(routes, tier).keep_alive == OLLAMA_KEEP_ALIVE
+    assert _local(routes, Tier.PRIVATE).keep_alive == OLLAMA_KEEP_ALIVE
 
 
 def test_low_power_mode_hands_the_gpu_back_between_turns():
@@ -533,7 +504,7 @@ def test_low_power_mode_hands_the_gpu_back_between_turns():
 
     routes = get_llm_backend(settings).routes
 
-    assert _local(routes, Tier.FAST).keep_alive == LOW_POWER_OLLAMA_KEEP_ALIVE
+    assert _local(routes, Tier.PRIVATE).keep_alive == LOW_POWER_OLLAMA_KEEP_ALIVE
 
 
 def test_a_remote_route_leaves_residency_to_its_own_server():

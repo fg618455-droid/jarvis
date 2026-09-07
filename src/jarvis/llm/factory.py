@@ -29,12 +29,11 @@ _CREW_CHAT = "crew_chat"
 _DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 _ROUTER_CACHE: dict[int, tuple[weakref.ReferenceType[Any], RoutedBackend]] = {}
 
-# Ceilings for the loopback Ollama routes. Ollama evicts a model once its
-# keep-alive lapses, so the next call pays a page-in that runs into double
-# digits of seconds for a 7B weight set. The local route is always last in
-# its chain — there is nothing to fall forward to — so a ceiling shorter than
-# a cold load would not buy speed, it would guarantee the route can never
-# answer. The caller's own timeout still governs; these are only the maximum.
+# Ceilings for a route this factory builds rather than reads from a route
+# entry, which carries its own `timeout_sec`. Generous, because a cold model
+# page-in runs into double digits of seconds for a 7B weight set and a
+# ceiling below that would guarantee the route can never answer. The
+# caller's own timeout still governs; these are only the maximum.
 _LOCAL_FAST_TIMEOUT_SEC = 60.0
 _LOCAL_CHAT_TIMEOUT_SEC = 180.0
 
@@ -53,30 +52,27 @@ def _resolve_provider(value: Any) -> str:
     return _OLLAMA
 
 
-def _resolve_route_provider(value: Any) -> str:
+ROUTE_PROVIDERS = (
+    _OPENAI_COMPATIBLE,
+    _CLAUDE_SUBSCRIPTION,
+    _CODEX_SUBSCRIPTION,
+    _CREW_CHAT,
+)
+
+
+def _resolve_route_provider(value: Any) -> Optional[str]:
     """Resolve a provider name for one ``llm_routes`` chain entry.
 
-    Unlike :func:`_resolve_provider` (used for the single-endpoint
-    ``llm_provider``/``embedding_provider`` settings), this also accepts
-    ``claude_subscription``, ``codex_subscription``, and ``crew_chat`` are
-    CHAT-chain-only
-    alternatives, never a blanket single-endpoint choice, because the
-    single-endpoint path also serves the FAST tier and embeddings, and a
-    cloud subscription or crew relay call has no place answering either —
-    FAST needs a warm, low-latency local model, and embeddings must stay on
-    loopback Ollama regardless of billing model.
+    Ollama is deliberately absent. FAST and CHAT are the two chains that
+    answer a person, and a local model never answers one: it serves
+    PRIVATE memory work and embeddings, which this factory appends itself.
+    An entry naming any other provider (including one left in a config file
+    from an earlier release) resolves to ``None`` and is dropped, rather
+    than quietly becoming something else that then talks to the user.
     """
-    if isinstance(value, str):
-        v = value.strip().lower()
-        if v in (
-            _OLLAMA,
-            _OPENAI_COMPATIBLE,
-            _CLAUDE_SUBSCRIPTION,
-            _CODEX_SUBSCRIPTION,
-            _CREW_CHAT,
-        ):
-            return v
-    return _OLLAMA
+    if isinstance(value, str) and value.strip().lower() in ROUTE_PROVIDERS:
+        return value.strip().lower()
+    return None
 
 
 def _str_attr(settings: Any, name: str, default: str = "") -> str:
@@ -128,6 +124,8 @@ def get_llm_backend(settings: Any) -> LLMBackend:
             if tier is Tier.PRIVATE:
                 continue
             provider = _resolve_route_provider(raw.get("provider"))
+            if provider is None:
+                continue
             if provider == _CODEX_SUBSCRIPTION and tier is not Tier.CHAT:
                 continue
             base_url = str(raw.get("base_url", "") or "").strip()
@@ -177,75 +175,37 @@ def get_llm_backend(settings: Any) -> LLMBackend:
         routes = [route for route in routes if route not in codex_chat_routes]
         routes.extend(codex_chat_routes)
 
-    configured_ollama_url = _str_attr(
-        settings, "ollama_base_url", _DEFAULT_OLLAMA_URL
-    ).rstrip("/")
     private_ollama_url = _loopback_ollama_url(settings)
     ollama_chat = _str_attr(settings, "ollama_chat_model") or _str_attr(
         settings, "llm_chat_model"
     )
-    # ``fast_model`` names the first effective route for tier selection;
-    # ``local_fast_model`` is the model the appended Ollama candidate runs.
-    # Falling back to the old attribute keeps hand-built Settings doubles and
-    # pre-v6 callers compatible without reintroducing ambiguity for loaded
-    # configuration, which always supplies local_fast_model.
-    local_fast_model = (
-        _str_attr(settings, "local_fast_model")
-        or _str_attr(settings, "fast_model")
-        or ollama_chat
-    )
-    fast_model = _str_attr(settings, "fast_model") or local_fast_model
     # Every Ollama request renews the model's residency, so an idle stretch
     # between conversations never costs the next reply a cold page-in.
     keep_alive = ollama_keep_alive(settings)
 
-    # A route the user switched off is inert. It stays in the chain so the
-    # settings UI can still show it, but it does not get to decide whether the
-    # local chain is a fallback or the only path there is.
-    active_routes = [route for route in routes if route.enabled]
-
-    if active_routes:
-        local_defaults = {
-            Tier.FAST: Route(
-                "local-fast", _OLLAMA, private_ollama_url, "", local_fast_model,
-                Tier.FAST, _LOCAL_FAST_TIMEOUT_SEC, keep_alive=keep_alive,
-            ),
-            Tier.CHAT: Route(
-                "local-chat", _OLLAMA, private_ollama_url, "", ollama_chat,
-                Tier.CHAT, _LOCAL_CHAT_TIMEOUT_SEC, keep_alive=keep_alive,
-            ),
-        }
-        allow_local_fallback = bool(
-            getattr(settings, "local_llm_fallback_enabled", True)
-        )
-        for tier in (Tier.FAST, Tier.CHAT):
-            tier_routes = [route for route in active_routes if route.tier is tier]
-            if not any(RoutedBackend._is_local(route) for route in tier_routes):
-                if allow_local_fallback:
-                    routes.append(local_defaults[tier])
-    else:
+    # FAST and CHAT are exactly what `llm_routes` configures, with one
+    # exception: a single-endpoint OpenAI-compatible server, which is a
+    # whole configuration rather than a fallback bolted onto one. Neither
+    # tier is ever backfilled with a local model. Both answer a person, and
+    # a machine that cannot reach a configured backend should say so rather
+    # than substitute a small local one whose reply reads like the real
+    # thing. Ollama's roles are below: PRIVATE and embeddings.
+    if not any(route.enabled for route in routes):
         provider = _resolve_provider(getattr(settings, "llm_provider", None))
         if provider == _OPENAI_COMPATIBLE:
-            base_url = _str_attr(settings, "llm_base_url") or configured_ollama_url
+            base_url = _str_attr(settings, "llm_base_url")
             api_key = _str_attr(settings, "llm_api_key")
-            chat_model = (
-                _str_attr(settings, "llm_chat_model")
-                or _str_attr(settings, "fast_model")
-                or ollama_chat
+            chat_model = _str_attr(settings, "llm_chat_model") or _str_attr(
+                settings, "fast_model"
             )
-            routes.extend((
-                Route("configured-fast", provider, base_url, api_key, fast_model,
-                      Tier.FAST, _LOCAL_FAST_TIMEOUT_SEC),
-                Route("configured-chat", provider, base_url, api_key, chat_model,
-                      Tier.CHAT, _LOCAL_CHAT_TIMEOUT_SEC),
-            ))
-        else:
-            routes.extend((
-                Route("local-fast", _OLLAMA, configured_ollama_url, "", local_fast_model,
-                      Tier.FAST, _LOCAL_FAST_TIMEOUT_SEC, keep_alive=keep_alive),
-                Route("local-chat", _OLLAMA, configured_ollama_url, "", ollama_chat,
-                      Tier.CHAT, _LOCAL_CHAT_TIMEOUT_SEC, keep_alive=keep_alive),
-            ))
+            fast_model = _str_attr(settings, "fast_model") or chat_model
+            if base_url and chat_model:
+                routes.extend((
+                    Route("configured-fast", provider, base_url, api_key, fast_model,
+                          Tier.FAST, _LOCAL_FAST_TIMEOUT_SEC),
+                    Route("configured-chat", provider, base_url, api_key, chat_model,
+                          Tier.CHAT, _LOCAL_CHAT_TIMEOUT_SEC),
+                ))
     routes.append(Route(
         "local-private", _OLLAMA, private_ollama_url, "", ollama_chat, Tier.PRIVATE,
         180.0, keep_alive=keep_alive,
@@ -311,25 +271,16 @@ def describe_model_topology(settings: Any) -> dict[str, dict[str, Any]]:
     local_chat = _str_attr(settings, "ollama_chat_model") or _str_attr(
         settings, "llm_chat_model"
     )
-    local_fast = (
-        _str_attr(settings, "local_fast_model")
-        or _str_attr(settings, "fast_model")
-        or local_chat
-    )
     local_embedding = _str_attr(settings, "ollama_embed_model") or _str_attr(
         settings, "embedding_model"
     )
-    # PRIVATE work and embeddings are always local. The FAST and CHAT
-    # fallbacks only exist while `local_llm_fallback_enabled` is on, so
-    # reporting them unconditionally would show a local chat model to
-    # someone running a deliberately remote-only chain.
+    # The two jobs Ollama has, and the whole list. Both keep private data on
+    # this machine, and neither is a reply path, so nothing here can turn
+    # into an answer the user reads.
     local = {
         "private": {"model": local_chat, "provider": _OLLAMA},
         "embedding": {"model": local_embedding, "provider": _OLLAMA},
     }
-    if bool(getattr(settings, "local_llm_fallback_enabled", True)):
-        local["fast_fallback"] = {"model": local_fast, "provider": _OLLAMA}
-        local["chat_fallback"] = {"model": local_chat, "provider": _OLLAMA}
     return {"effective": effective, "local": local}
 
 

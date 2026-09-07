@@ -429,25 +429,6 @@ a:hover {
 .meter.warn > span { background: var(--warn); }
 .meter.bad > span { background: var(--bad); }
 
-/* ── Stage bar ───────────────────────────────────────────────────────── */
-
-.stagebar {
-  display: flex;
-  height: 22px;
-  border-radius: var(--r-sm);
-  overflow: hidden;
-  background: var(--surface-3);
-}
-
-.stagebar > span {
-  min-width: 2px;
-  transition: opacity var(--t-fast);
-}
-
-.stagebar > span:hover {
-  opacity: 0.7;
-}
-
 /* ── Tables ──────────────────────────────────────────────────────────── */
 
 table {

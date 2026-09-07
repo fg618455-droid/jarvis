@@ -202,8 +202,11 @@ class RoutedBackend(LLMBackend):
         a promoted route that is unavailable or fails still falls through
         to the normal chain rather than ending the turn. No match for
         ``preferred_provider`` in ``routes`` (or no preference at all)
-        returns the input order unchanged — the fail-open case a caller
-        forcing an unconfigured provider depends on."""
+        returns the input order unchanged.
+
+        This is the soft half of backend selection, used by the automatic
+        per-turn classification. A caller that means "this backend or
+        nothing" wants ``forced_provider`` instead."""
         if not preferred_provider:
             return routes
         preferred = [route for route in routes if route.provider == preferred_provider]
@@ -248,6 +251,48 @@ class RoutedBackend(LLMBackend):
             "llm",
         )
 
+    def _pinned_candidates(self, tier: Tier, capability: str, provider: str):
+        """The routes a pinned provider may answer this call from.
+
+        Pinning removes the rest of the chain rather than reordering it, so
+        an empty result ends the turn instead of falling through. Every
+        route of the pinned provider stays in play: two entries onto one
+        backend are two ways of reaching the thing that was pinned, not a
+        fallback away from it.
+
+        The one shape that is not a refusal: the pinned provider is present
+        and healthy but advertises no native tool schema. Answering from
+        another provider would break the pin and refusing would fail every
+        tool turn, so this raises :class:`ToolsNotSupportedError`, the
+        signal the reply engine already answers by re-asking this same
+        backend with markdown-fenced tools.
+        """
+        candidates = [
+            route for route in self._available(tier, capability)
+            if route.provider == provider
+        ]
+        if candidates:
+            return candidates
+        if capability == "tools" and any(
+            route.provider == provider for route in self._available(tier, "chat")
+        ):
+            debug_log(
+                f"pinned chat backend {provider!r} takes no native tool schema; "
+                "asking the caller for text-based tool calling instead of "
+                "leaving the pinned backend",
+                "llm",
+            )
+            raise ToolsNotSupportedError(
+                f"pinned chat backend {provider!r} advertises no native tools"
+            )
+        debug_log(
+            f"pinned chat backend {provider!r} has no enabled, unblocked "
+            f"{tier.value} route advertising {capability!r}; the turn ends here "
+            "because a pin allows no fallback",
+            "llm",
+        )
+        return []
+
     def _run(
         self,
         model: str,
@@ -255,13 +300,17 @@ class RoutedBackend(LLMBackend):
         *,
         capability: str = "chat",
         preferred_provider: str | None = None,
+        forced_provider: str | None = None,
         deadline: RequestDeadline | None = None,
     ):
         tier = self._tier(model)
-        candidates = self._ordered_for_preference(
-            list(self._available(tier, capability)), preferred_provider,
-        )
-        if not candidates:
+        if forced_provider:
+            candidates = self._pinned_candidates(tier, capability, forced_provider)
+        else:
+            candidates = self._ordered_for_preference(
+                list(self._available(tier, capability)), preferred_provider,
+            )
+        if not candidates and not forced_provider:
             # Not the same as a chain whose routes all failed: nothing was
             # asked, so no route is marked and the walk leaves no trace of
             # itself. A tool-bearing call sees only the routes advertising
@@ -409,16 +458,25 @@ class RoutedBackend(LLMBackend):
 
     def chat(self, chat_model, messages, timeout_sec=30.0, extra_options=None,
              tools=None, thinking=False, on_token=None, preferred_provider=None,
-             deadline: RequestDeadline | None = None):
+             forced_provider=None, deadline: RequestDeadline | None = None):
         # A route that cannot stream still answers, it just answers all at
         # once — so falling back through the chain never depends on whether
         # the caller wanted its text early.
+        #
+        # The two provider arguments are different promises, and a caller
+        # picks exactly one:
         #
         # ``preferred_provider`` promotes routes of that provider to the
         # front of this one call's attempt order (see
         # ``_ordered_for_preference``); it never removes the rest of the
         # chain, so a promoted route that is missing or fails still falls
         # through exactly as it would with no preference at all.
+        #
+        # ``forced_provider`` is a pin: only that provider's routes may
+        # answer, and if none of them do the call returns ``None`` with the
+        # rest of the chain untouched (see ``_pinned_candidates``). A pin
+        # takes precedence, because someone who named one backend did not
+        # ask for a second opinion from another.
         deadline = deadline or RequestDeadline.after(
             self._walk_budget(timeout_sec), clock=self._clock
         )
@@ -440,7 +498,8 @@ class RoutedBackend(LLMBackend):
         return self._run(
             chat_model, invoke,
             capability="tools" if tools else "chat",
-            preferred_provider=preferred_provider,
+            preferred_provider=None if forced_provider else preferred_provider,
+            forced_provider=forced_provider,
             deadline=deadline,
         )
 

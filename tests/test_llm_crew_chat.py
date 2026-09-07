@@ -283,8 +283,9 @@ class TestNeverThePrivateLane:
         )
         backend = get_llm_backend(cfg)
 
-        chat_route = backend.routes_for(Tier.CHAT)[0]
-        assert chat_route.provider == "ollama"
+        # Not a single-endpoint provider, and no local model steps in for it
+        # either: without a configured route there is nothing to try.
+        assert backend.routes_for(Tier.CHAT) == ()
 
     def test_crew_chat_is_not_selectable_as_the_embedding_provider(self):
         from types import SimpleNamespace

@@ -179,7 +179,7 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 - **Knowledge Graph Memory** - Self-organising memory that learns from conversations, auto-splits by topic, and surfaces relevant knowledge automatically
 - **Natural Voice** - Address Jarvis at either end of your sentence, then follow up without repeating the wake word after the reply finishes
 - **Starts Talking Sooner** - Jarvis speaks each sentence as it finishes writing it, instead of waiting for the whole answer. Long replies begin about a second earlier; short ones are unchanged, because there is nothing to overlap
-- **Conversation Mode** - Ask for it out loud in any language, or turn it on in the Control Centre's Conversation panel, and the follow-up window stays open: no question needs the wake word until you ask Jarvis to stop. The header says so wherever you are while it runs.
+- **Conversation Mode** - Ask for it out loud in any language, or press the button on the Control Centre's dock, under the face, and the follow-up window stays open: no question needs the wake word until you ask Jarvis to stop. The header says so wherever you are while it runs.
 - **Fast Stop** - Use the tray action `⚡ Stop Now (Skip Diary)` to release local model resources quickly when you need your machine back immediately.
 - **Dictation Mode** - Free, offline alternative to WisprFlow — hold a hotkey, speak, release to paste text into any app
 - **MCP Integration** - Connect to thousands of external tools (Home Assistant, GitHub, Slack, etc.)
@@ -209,11 +209,11 @@ Most users won't need to change anything. Open **⚙️ Settings** from the tray
 <details>
 <summary><strong>Passive Capture</strong></summary>
 
-Passive Capture is off by default. When enabled under **📝 Passive Capture**, it preserves text that speech recognition already produced as a readable room transcript. It does not add another microphone stream and never stores audio. The header shows **recording everything** in the Control Centre while the switch is on.
+Passive Capture is off by default. When enabled by the switch on the Control Centre's Passive record view, which names the backend that will see the room's text before it starts, it preserves text that speech recognition already produced as a readable room transcript. It does not add another microphone stream and never stores audio. The header shows **recording everything** in the Control Centre while the switch is on.
 
 Transcript text is stored as heard in the local SQLite database. Before ambient lines reach the configured LLM backend, credentials are redacted and the text is fenced as untrusted data. Useful plans, decisions, appointments, and events can be folded into the diary as explicitly overheard information. Addressed speech is not digested again. If `llm_provider` points at a remote server, that server sees the redacted ambient text, so the interface names the configured backend before enabling capture.
 
-The Conversation view can delete one line, one UTC day, or the whole passive record. Whole-record deletion also clears the live rolling buffer. Deleting transcript lines does not remove content already folded into the diary or knowledge graph; those stores have separate delete controls in Memory.
+The Passive record view can delete one line, one UTC day, or the whole passive record. Whole-record deletion also clears the live rolling buffer. Deleting transcript lines does not remove content already folded into the diary or knowledge graph; those stores have separate delete controls in Memory.
 
 ```json
 {

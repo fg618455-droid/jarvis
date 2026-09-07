@@ -103,27 +103,15 @@ function paintModels(container, system) {
     ]),
   );
 
-  const effective = system.models?.effective || {};
-  const effectiveRows = ["fast", "chat", "private"]
-    .filter((tier) => effective[tier])
-    .map((tier) => ({ tier, ...effective[tier] }));
-  container.append(el("section", { class: "model-block effective-models" }, [
-    el("h3", { text: t("system.effectiveRoutes") }),
-    table(
-      [
-        { label: t("system.tier"), render: (entry) => entry.tier.toUpperCase() },
-        { label: t("system.model"), render: (entry) => entry.model },
-        { label: t("system.provider"), render: (entry) => entry.provider },
-        { label: t("system.location"), render: (entry) => chip(t(`system.${entry.location}`)) },
-      ],
-      effectiveRows,
-    ),
-  ]));
-
+  /* Which routes the three chains resolved to is the LLM routes panel's
+     reading, and it is the same reading: shown in both places, the two would
+     be taken at different moments and disagree about which endpoint is
+     answering. This view is about this machine, so it holds what is true of
+     this machine — what runs locally, and what is actually resident. */
   const local = system.models?.local || {};
+  /* Memory and embeddings, which is the whole of what runs locally. Neither
+     answers a conversation, so nothing here can appear in a reply. */
   const localRoles = [
-    ["fast_fallback", t("system.fastFallback")],
-    ["chat_fallback", t("system.chatFallback")],
     ["private", t("system.privateModel")],
     ["embedding", t("system.embeddingModel")],
   ];

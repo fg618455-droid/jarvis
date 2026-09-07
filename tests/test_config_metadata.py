@@ -185,18 +185,17 @@ class TestProviderSettings:
             assert field.section == section
 
     def test_the_local_models_are_still_reachable(self):
-        """Ollama is PRIVATE work and embeddings, not a provider window.
-
-        It keeps a home because those two jobs are still its, and a setting
-        that leaves the interface altogether is one nobody can change.
+        """Ollama is PRIVATE work and embeddings, and answers no
+        conversation. It is still a provider, and a setting that leaves the
+        interface altogether is one nobody can change, so it keeps a
+        section beside the chains rather than a window of its own.
         """
         for key in (
-            "local_llm_fallback_enabled", "ollama_chat_model", "local_fast_model",
-            "ollama_embed_model", "ollama_base_url",
+            "ollama_chat_model", "ollama_embed_model", "ollama_base_url",
         ):
             field = self._field(key)
             assert field is not None, key
-            assert field.category == "advanced", key
+            assert field.category == "providers", key
             assert field.section == "Local Ollama", key
 
 

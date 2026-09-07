@@ -292,3 +292,36 @@ def publish_progress(name: str) -> None:
         "stage": name,
         "elapsed_ms": trace.elapsed_ms(),
     })
+
+
+def publish_heard() -> None:
+    """Tell watchers what was understood, before any answer exists.
+
+    A finished turn carries the question and the answer together, which is
+    a record rather than a conversation: it puts the user's own words on
+    screen only once the reply they are waiting for has been written. This
+    says them at the moment the turn was accepted instead.
+    """
+    trace = _recorder.current()
+    if trace is None or not trace.transcript:
+        return
+    get_event_bus().publish("heard", {
+        "turn_id": trace.turn_id,
+        "source": trace.source,
+        "text": trace.transcript,
+        "started_at": trace.started_at,
+    })
+
+
+def publish_reply(delta: str) -> None:
+    """Tell watchers the next piece of the answer as it is written.
+
+    Called from the reply path per chunk, so it does what the rest of this
+    module does: nothing at all outside a turn, and nothing that can raise
+    into the caller. The whole reply still arrives with the finished turn,
+    which is what a page that missed a piece is reconciled against.
+    """
+    trace = _recorder.current()
+    if trace is None or not delta:
+        return
+    get_event_bus().publish("reply", {"turn_id": trace.turn_id, "delta": delta})

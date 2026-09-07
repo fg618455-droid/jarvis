@@ -24,11 +24,15 @@ const DECK = "deck";
 const SETTINGS = "settings";
 
 /* Addresses that used to be pages of their own. The face and the overview
-   are the deck now; the rest are panels on it, so they keep their names. */
+   are the deck now; so are the conversation and the gate, which happen on
+   the stage under the face rather than behind a widget. The rest are panels,
+   so they keep their names. */
 const ALIASES = {
   "": DECK,
   overview: DECK,
   visualizer: DECK,
+  conversation: DECK,
+  security: DECK,
   llm: "llm-routes",
 };
 

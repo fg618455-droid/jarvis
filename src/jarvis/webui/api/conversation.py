@@ -18,7 +18,14 @@ from jarvis.listening.conversation_mode import (
     conversation_mode_active,
     set_conversation_mode,
 )
-from jarvis.runtime import Phase, get_recorder, get_runtime_state, set_phase, set_phase_if
+from jarvis.runtime import (
+    Phase,
+    get_recorder,
+    get_runtime_state,
+    publish_heard,
+    set_phase,
+    set_phase_if,
+)
 
 
 bp = Blueprint("conversation", __name__, url_prefix="/api")
@@ -96,6 +103,10 @@ def chat() -> Response:
     state = get_runtime_state()
     trace = recorder.begin(source="text")
     trace.transcript = text
+    # Every watcher hears the question, not only the browser that asked it:
+    # a turn typed on the deck belongs in the desktop chat window's view of
+    # the same conversation, and the other way round.
+    publish_heard()
     set_phase(Phase.THINKING)
 
     database = None

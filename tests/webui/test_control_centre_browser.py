@@ -29,12 +29,10 @@ from jarvis.webui.server import WebUIConfig, WebUIMode, WebUIServer
 # Every detail the deck can open, plus the one destination that replaces it.
 VIEWS = [
     "memory",
-    "conversation",
     "passive",
     "tools",
     "mcp",
     "briefing",
-    "security",
     "system",
     "settings",
     "llm-routes",
@@ -324,6 +322,8 @@ class TestLlmRouteLayout:
                       crew_chat: { base_url: 'crew-chat', model: 'crew-chat' },
                     },
                     chat_backend_override: 'auto', crew_chat_agent: '',
+                    chat_backend_override_backed: true, empty_tiers: [],
+                    ...(window.__llmExtra || {}),
                 });
                 api.saveLlmRoutes = async (routes) => {
                     window.__savedRoutes = routes;
@@ -333,6 +333,48 @@ class TestLlmRouteLayout:
             }"""
         )
         open_view(page, served, "llm-routes")
+
+    def _open_the_editor(self, page, served):
+        """The routes are edited in exactly one place, and this is it."""
+        self._open_with_routes(page, served)
+        page.goto(f"{served}/#/settings")
+        page.wait_for_selector(".settings-nav button", state="visible", timeout=20000)
+        page.locator(".settings-nav").get_by_role("button", name="Providers").click()
+        page.wait_for_selector(".route-config-list", timeout=20000)
+
+    def test_a_pin_with_no_route_behind_it_is_called_out(self, page, served):
+        """A pin allows no fallback, so an unbacked one fails every reply.
+        The page has to say so, or the user sees only identical failures
+        with no way to tell a broken backend from an unconfigured one."""
+        page.add_init_script(
+            "window.__llmExtra = { chat_backend_override: 'crew_chat',"
+            " chat_backend_override_backed: false };"
+        )
+        self._open_the_editor(page, served)
+
+        text = page.locator(".settings-layout").inner_text()
+        assert "Unbacked pin" in text
+        assert "Crew chat (Hermes)" in text
+
+    def test_a_backed_pin_is_not_called_out(self, page, served):
+        page.add_init_script(
+            "window.__llmExtra = { chat_backend_override: 'crew_chat',"
+            " chat_backend_override_backed: true };"
+        )
+        self._open_the_editor(page, served)
+
+        assert "Unbacked pin" not in page.locator(".settings-layout").inner_text()
+
+    def test_a_tier_with_no_route_is_called_out(self, page, served):
+        """Nothing is appended behind FAST, so an empty one silently
+        downgrades tool routing and the wake-word judge."""
+        page.add_init_script("window.__llmExtra = { empty_tiers: ['fast'] };")
+        self._open_with_routes(page, served)
+
+        fast = page.locator(".llm-chain").nth(0)
+        chat = page.locator(".llm-chain").nth(1)
+        assert "Nothing configured" in fast.inner_text()
+        assert "Nothing configured" not in chat.inner_text()
 
     def test_route_details_wrap_within_each_chain_card(self, page, served):
         self._open_with_routes(page, served)
@@ -355,7 +397,7 @@ class TestLlmRouteLayout:
         assert private.get_by_text("local", exact=True).is_visible()
 
     def test_editor_keeps_every_operational_route_field(self, page, served):
-        self._open_with_routes(page, served)
+        self._open_the_editor(page, served)
 
         route = page.locator(".route-config").first
         assert route.get_by_label("API Key Environment").input_value() == "GROQ_API_KEY"
@@ -367,7 +409,7 @@ class TestLlmRouteLayout:
     def test_schema_editor_round_trips_changes_without_rebuilding_runtime_routes(
         self, page, served,
     ):
-        self._open_with_routes(page, served)
+        self._open_the_editor(page, served)
         route = page.locator(".route-config").first
         route.get_by_label("Name", exact=True).fill("renamed-groq")
         route.get_by_label("Enabled").check()
@@ -385,7 +427,7 @@ class TestLlmRouteLayout:
     def test_provider_choice_updates_placeholders_and_chat_only_constraint(
         self, page, served,
     ):
-        self._open_with_routes(page, served)
+        self._open_the_editor(page, served)
         page.get_by_role("button", name="+ Add route").click()
         added = page.locator(".route-config").last
         added.get_by_label("Protocol").select_option("codex_subscription")
@@ -394,6 +436,82 @@ class TestLlmRouteLayout:
         assert added.get_by_label("Model", exact=True).get_attribute("placeholder") == "gpt-5.6-sol"
         assert added.get_by_label("Tier").input_value() == "chat"
         assert added.get_by_label("Tier").is_disabled()
+
+
+class TestAnEmbeddedEditorWearsTheFormItLandedIn:
+    """One window, not a form that changes hands halfway down.
+
+    The Providers category is a description, then an editor that is not built
+    from config keys, then fields that are. Left to its own devices the editor
+    arrived as bare buttons hard against the description and headings set in a
+    different face from the ones below it, which reads as two designs sharing
+    a scroll region.
+    """
+
+    def _providers(self, page, served):
+        page.goto(f"{served}/#/settings", wait_until="domcontentloaded")
+        page.wait_for_selector(".settings-nav button", state="visible", timeout=20000)
+        page.locator(".settings-nav").get_by_role("button", name="Providers").click()
+        page.wait_for_selector(".settings-layout .route-config-list", timeout=20000)
+
+    def test_its_headings_are_set_like_the_fields_below_it(self, page, served):
+        self._providers(page, served)
+
+        measured = page.evaluate(
+            """() => {
+                const of = (node) => {
+                    const style = getComputedStyle(node);
+                    return {
+                        size: style.fontSize,
+                        weight: style.fontWeight,
+                        transform: style.textTransform,
+                        tag: node.tagName,
+                    };
+                };
+                const embedded = document.querySelector(
+                    '.settings-embed .settings-section');
+                const native = [...document.querySelectorAll('.settings-section')]
+                    .find((node) => !node.closest('.settings-embed'));
+                return { embedded: of(embedded), native: of(native) };
+            }"""
+        )
+
+        assert measured["embedded"] == measured["native"], (
+            f"the embedded editor is set differently from the form around it: "
+            f"{measured}"
+        )
+
+    def test_there_is_air_between_the_description_and_the_editor(self, page, served):
+        self._providers(page, served)
+
+        gap = page.evaluate(
+            """() => {
+                const note = document.querySelector('.settings-note');
+                const embed = document.querySelector('.settings-embed');
+                return Math.round(embed.getBoundingClientRect().top
+                    - note.getBoundingClientRect().bottom);
+            }"""
+        )
+
+        assert gap >= 12, f"the editor starts {gap}px under the description"
+
+    def test_what_the_editor_lists_keeps_its_own_frame(self, page, served):
+        """A route being edited is an object in a list, not a section of a
+        form, so flattening the editor onto the panel must not flatten it."""
+        self._providers(page, served)
+        page.locator(".settings-layout").get_by_role(
+            "button", name="+ Add route",
+        ).click()
+        page.wait_for_selector(".route-config", timeout=20000)
+
+        framed = page.evaluate(
+            """() => {
+                const style = getComputedStyle(document.querySelector('.route-config'));
+                return style.borderTopWidth !== '0px' && style.borderTopStyle !== 'none';
+            }"""
+        )
+
+        assert framed, "a route in the editor lost the frame that separates it"
 
 
 class TestSettingsCoherence:
@@ -410,7 +528,7 @@ class TestSettingsCoherence:
         assert nav.get_by_role("button", name="Piper TTS").count() == 0
 
         nav.get_by_role("button", name="Providers").click()
-        page.wait_for_selector(".settings-layout .route-config-card", timeout=20000)
+        page.wait_for_selector(".settings-layout .route-config-list", timeout=20000)
         assert page.get_by_role("heading", name="Timeouts").is_visible()
         assert page.get_by_role("heading", name="Thinking and behaviour").is_visible()
 
@@ -434,11 +552,9 @@ class TestSettingsCoherence:
         page.wait_for_selector(".settings-nav button", state="visible")
         page.locator(".settings-nav").get_by_role("button", name="Providers").click()
 
-        page.wait_for_selector(".settings-layout .route-config-card", timeout=20000)
-        panel = page.locator(".settings-layout .route-config-card")
-        assert panel.get_by_role("button", name="+ Add route").is_visible()
+        page.wait_for_selector(".settings-layout .route-config-list", timeout=20000)
         assert page.locator(".settings-layout").get_by_role(
-            "button", name="Probe models",
+            "button", name="+ Add route",
         ).is_visible()
         assert page.get_by_role("link", name="Open LLM routes").count() == 0
 
@@ -453,10 +569,10 @@ class TestSettingsCoherence:
         """
         page.goto(f"{served}/#/settings", wait_until="domcontentloaded")
         page.wait_for_selector(".settings-nav button", state="visible")
-        page.locator(".settings-nav").get_by_role("button", name="Advanced").click()
+        page.locator(".settings-nav").get_by_role("button", name="Providers").click()
 
         assert page.get_by_role("heading", name="Local Ollama").is_visible()
-        for label in ("Embedding Model", "Ollama URL"):
+        for label in ("Memory Model", "Embedding Model", "Ollama URL"):
             assert page.get_by_text(label, exact=True).is_visible(), label
 
     def test_cloud_provider_chain_is_editable_without_raw_json(self, page, served):
@@ -620,7 +736,16 @@ class TestStandaloneShell:
 
 
 class TestSystemModelTruth:
-    def test_remote_effective_local_fallback_and_residency_are_distinct(self, page, served):
+    """What runs on this machine, and nothing that is read somewhere else.
+
+    Which routes the three chains resolved to is the LLM routes panel's
+    reading. Shown here as well, the two would be taken at different moments
+    and disagree about which endpoint is answering, so this view holds only
+    what is true of this machine: the local roles, and what is actually
+    resident in Ollama beside the graphics memory it is using.
+    """
+
+    def test_local_memory_and_residency_are_distinct(self, page, served):
         page.route("**/api/system", lambda route: route.fulfill(json={
             "gpu": {"name": "GPU", "used_mb": 4096, "total_mb": 8192},
             "models": {
@@ -631,9 +756,7 @@ class TestSystemModelTruth:
                              "provider": "openai_compatible", "location": "remote"},
                 },
                 "local": {
-                    "fast_fallback": {"model": "local-fast", "provider": "ollama"},
-                    "chat_fallback": {"model": "local-chat", "provider": "ollama"},
-                    "private": {"model": "local-chat", "provider": "ollama"},
+                    "private": {"model": "local-memory", "provider": "ollama"},
                     "embedding": {"model": "local-embed", "provider": "ollama"},
                 },
                 "resident": [{"name": "resident-now", "size": "4 GB",
@@ -648,15 +771,20 @@ class TestSystemModelTruth:
         page.goto(served, wait_until="domcontentloaded")
         open_view(page, served, "system")
 
-        effective = page.locator(".effective-models")
         local = page.locator(".local-models")
         resident = page.locator(".resident-models")
-        assert "remote-chat" in effective.inner_text()
-        assert "remote" in effective.inner_text()
-        assert "local-fast" in local.inner_text()
+        assert page.locator(".effective-models").count() == 0, (
+            "the routes are read here as well as in the panel that owns them"
+        )
+        assert "local-memory" in local.inner_text()
         assert "local-embed" in local.inner_text()
+        # The local table is memory and embeddings. A reply-shaped role here
+        # would read as a second model answering alongside the remote one.
+        assert "fallback" not in local.inner_text().lower()
         assert "resident-now" in resident.inner_text()
         assert "4 GB / 8 GB" in resident.inner_text()
+        # A remote route model consumes no graphics memory here, so it must
+        # never be listed as though it did.
         assert "remote-chat" not in resident.inner_text()
 
 
@@ -999,185 +1127,14 @@ class TestMissionControl:
         assert page.locator("main script").count() == 0
 
 
-class TestTheConversationIsTheConversationView:
-    """The exchange is what this view is for.
-
-    It reads live because the daemon already publishes what it is doing and
-    how long it has been doing it. Nothing here invents a state it cannot
-    see, and nothing that moves is the only thing saying what it says.
-    """
-
-    def _turn(self, turn_id, at, said, replied, total_ms=1900.0):
-        return {
-            "turn_id": turn_id, "started_at": at, "source": "voice",
-            "language": "de", "language_probability": 0.98,
-            "total_ms": total_ms, "transcript": said, "reply": replied,
-            "error": None, "tools": [],
-            "stages": [{"name": "stt", "duration_ms": 400.0},
-                       {"name": "llm", "duration_ms": 1500.0}],
-        }
-
-    TURNS = None
-
-    def _open(self, page, served, turns=None):
-        turns = turns if turns is not None else [
-            self._turn(1, 1_755_800_000, "Wie ist das Wetter", "Vierzehn Grad und bewölkt."),
-            self._turn(2, 1_755_800_100, "Und morgen", "Morgen wird es trocken."),
-        ]
-        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
-        page.evaluate(
-            """async (turns) => {
-                const { api } = await import('/static/js/api.js');
-                api.conversation = async () => ({
-                    turns, discarded: {}, conversation_mode: false,
-                });
-                api.voiceStatus = async () => ({ ingress: false, sample_rate: 16000 });
-                window.__push = async (kind, data) => {
-                    const { live } = await import('/static/js/sse.js');
-                    live._emit(kind, data);
-                };
-            }""",
-            turns,
-        )
-        open_view(page, served, "conversation")
-        return turns
-
-    def test_the_exchange_is_the_first_thing_you_see(self, page, served):
-        """It used to sit below the passive record, thousands of pixels down."""
-        self._open(page, served)
-
-        top = page.locator(".dialogue").bounding_box()["y"]
-
-        assert top < 800, f"the conversation starts {top}px down the page"
-        assert not page.console_errors
-
-    def test_the_exchange_is_the_only_thing_that_scrolls(self, page, served):
-        """Two nested scrollers means every gesture has two answers."""
-        self._open(page, served)
-
-        page_scrolls = page.evaluate(
-            "() => document.documentElement.scrollHeight > window.innerHeight + 1"
-        )
-
-        assert not page_scrolls
-        assert page.evaluate(
-            "() => { const d = document.querySelector('.dialogue');"
-            "  return getComputedStyle(d).overflowY; }"
-        ) == "auto"
-
-    def test_the_band_follows_the_phase_the_daemon_publishes(self, page, served):
-        self._open(page, served)
-
-        page.evaluate(
-            """() => window.__push('phase', {
-                phase: 'thinking', phase_since: Date.now() / 1000, phase_seconds: 0,
-            })"""
-        )
-        page.wait_for_timeout(200)
-
-        assert "thinking" in page.locator(".voice-phase").inner_text()
-        assert page.locator(".voice-phase-dot").get_attribute("data-phase") == "thinking"
-
-    def test_the_band_names_the_stage_a_turn_has_reached(self, page, served):
-        self._open(page, served)
-
-        page.evaluate(
-            """() => {
-                window.__push('phase', {
-                    phase: 'tool', phase_since: Date.now() / 1000, phase_seconds: 0,
-                });
-                window.__push('stage', {
-                    turn_id: 9, stage: 'tool:getWeather', elapsed_ms: 820,
-                });
-            }"""
-        )
-        page.wait_for_timeout(200)
-
-        assert "tool:getWeather" in page.locator(".voice-phase").inner_text()
-
-    def test_a_turn_reads_as_an_exchange_rather_than_a_row(self, page, served):
-        self._open(page, served)
-
-        assert page.locator(".turn").count() == 2
-        assert page.get_by_text("Wie ist das Wetter", exact=True).is_visible()
-        assert page.get_by_text("Vierzehn Grad und bewölkt.", exact=True).is_visible()
-        assert page.locator(".turn-said").count() == 2
-        assert page.locator(".turn-reply").count() == 2
-
-    def test_the_newest_turn_sits_at_the_bottom_next_to_the_composer(self, page, served):
-        self._open(page, served)
-
-        said = page.locator(".turn-said").all_inner_texts()
-
-        assert said == ["Wie ist das Wetter", "Und morgen"]
-
-    def test_only_a_turn_that_arrived_while_watching_is_marked(self, page, served):
-        turns = self._open(page, served)
-        # A first load marks nothing, or everything would be marked.
-        assert page.locator(".turn.arrived").count() == 0
-
-        landed = self._turn(3, 1_755_800_200, "Danke", "Gern geschehen.")
-        page.evaluate(
-            """async ([turns, landed]) => {
-                const { api } = await import('/static/js/api.js');
-                api.conversation = async () => ({
-                    turns: [...turns, landed], discarded: {}, conversation_mode: false,
-                });
-                window.__push('turn', landed);
-            }""",
-            [turns, landed],
-        )
-        page.wait_for_timeout(400)
-
-        assert page.locator(".turn").count() == 3
-        assert page.locator(".turn.arrived").count() == 1
-
-    def test_what_was_said_is_rendered_as_text(self, page, served):
-        self._open(page, served, [
-            self._turn(1, 1_755_800_000,
-                       "<script>alert(1)</script> read my notes",
-                       "<img src=x onerror=alert(1)> here they are"),
-        ])
-
-        assert page.get_by_text(
-            "<script>alert(1)</script> read my notes", exact=True
-        ).is_visible()
-        assert page.locator("main img").count() == 0
-        assert page.locator("main script").count() == 0
-
-    def test_the_microphone_says_in_words_what_the_meter_shows(self, page, served):
-        """A reader who wants no motion still learns whether it is capturing."""
-        self._open(page, served)
-
-        assert page.locator(".voice-mic-state").inner_text().strip()
-
-    def test_a_reader_who_asked_for_less_motion_gets_no_level_meter(
-        self, browser, served,
-    ):
-        for preference, expected in (("reduce", False), ("no-preference", True)):
-            context = browser.new_context(reduced_motion=preference)
-            opened = context.new_page()
-            opened.goto(served, wait_until="domcontentloaded")
-            try:
-                allowed = opened.evaluate(
-                    """async () => {
-                        const ui = await import('/static/js/ui.js');
-                        return ui.motionAllowed();
-                    }"""
-                )
-                assert allowed is expected, preference
-            finally:
-                context.close()
-
-
 class TestTheMicrophoneReachesTheDaemon:
-    """The one path here that rendering a page cannot prove.
+    """The one path on the stage that rendering a page cannot prove.
 
-    Everything else on the Conversation view is a reading being painted.
-    This is a capture opening, a socket carrying frames to the listener's
-    own ingress, and a level measured from those same frames. It runs
-    against the real server with a synthetic microphone, because a stub
-    would prove only that the stub was called.
+    Everything else there is a reading being painted. This is a capture
+    opening, a socket carrying frames to the listener's own ingress, and a
+    level measured from those same frames. It runs against the real server
+    with a synthetic microphone, because a stub would prove only that the
+    stub was called.
     """
 
     def _open(self, browser, served):
@@ -1187,7 +1144,7 @@ class TestTheMicrophoneReachesTheDaemon:
         page.console_errors = []
         page.on("pageerror", lambda error: page.console_errors.append(str(error)))
         page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
-        # Standalone nothing is listening, so the view would refuse to open
+        # Standalone nothing is listening, so the dock would refuse to open
         # the microphone at all. The socket it opens is the real one.
         page.evaluate(
             """async () => {
@@ -1195,7 +1152,7 @@ class TestTheMicrophoneReachesTheDaemon:
                 api.voiceStatus = async () => ({ ingress: true, sample_rate: 16000 });
             }"""
         )
-        open_view(page, served, "conversation")
+        page.wait_for_selector(".face-mic", timeout=20000)
         return context, page
 
     def test_opening_it_streams_and_the_level_follows_what_it_hears(
@@ -1203,38 +1160,36 @@ class TestTheMicrophoneReachesTheDaemon:
     ):
         context, page = self._open(browser, served)
         try:
-            page.locator(".voice-mic").click()
+            page.locator(".face-mic").click()
             # Permission, a worklet, a socket and the first frame of audio all
             # have to happen before there is a level to read, and how long that
             # takes is a property of the machine rather than of the interface.
             # Waiting for the level itself fails only if one never arrives.
             page.wait_for_function(
                 """() => {
-                    const bar = document.querySelector('.voice-level > span');
-                    return bar && bar.style.height && bar.style.height !== '0%';
+                    const bar = document.querySelector('.face-mic-level > span');
+                    return bar && parseFloat(bar.style.height) > 0;
                 }""",
                 timeout=30000,
             )
-
-            assert page.locator(".voice-mic").get_attribute("aria-pressed") == "true"
-            # The state is in words, not only in the meter.
-            assert page.locator(".voice-mic-state").inner_text().strip()
+            assert page.locator(".face-mic").get_attribute("aria-pressed") == "true"
             assert not page.console_errors
         finally:
             context.close()
 
-    def test_leaving_the_view_lets_the_microphone_go(self, browser, served):
+    def test_leaving_the_page_lets_the_microphone_go(self, browser, served):
         """A capture the user cannot see is a capture they cannot stop."""
         context, page = self._open(browser, served)
         try:
-            page.locator(".voice-mic").click()
-            page.wait_for_selector('.voice-mic[aria-pressed="true"]', timeout=30000)
+            page.locator(".face-mic").click()
+            page.wait_for_selector('.face-mic[aria-pressed="true"]', timeout=30000)
 
+            page.goto(f"{served}/#/settings")
+            page.wait_for_selector(".view-settings", timeout=20000)
             page.goto(f"{served}/#/deck")
-            page.wait_for_selector(".panel", state="detached", timeout=20000)
+            page.wait_for_selector(".face-mic", timeout=20000)
 
-            open_view(page, served, "conversation")
-            assert page.locator(".voice-mic").get_attribute("aria-pressed") == "false"
+            assert page.locator(".face-mic").get_attribute("aria-pressed") == "false"
             assert not page.console_errors
         finally:
             context.close()
@@ -1244,9 +1199,9 @@ class TestPassiveRecordHasItsOwnHome:
     """The record of everything overheard is not the conversation.
 
     It is a privacy surface with its own switch and its own delete paths,
-    and it grows without limit. Left on the Conversation view it pushed the
-    exchange itself off the bottom of the page, which is the one thing that
-    view exists to show.
+    and it grows without limit. Sat beside the exchange it pushed the
+    exchange itself off the bottom of the page, which is the one thing the
+    stage exists to show.
     """
 
     LINES = [
@@ -1276,9 +1231,9 @@ class TestPassiveRecordHasItsOwnHome:
         )
         open_view(page, served, "passive")
 
-    def test_the_conversation_view_no_longer_carries_the_record(self, page, served):
-        page.goto(served, wait_until="domcontentloaded")
-        open_view(page, served, "conversation")
+    def test_the_stage_does_not_carry_the_record(self, page, served):
+        page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
+        page.wait_for_selector(".face-stage[data-stage]", timeout=20000)
 
         assert page.locator(".passive-day").count() == 0
         assert not page.console_errors
@@ -1574,3 +1529,31 @@ class TestEveryFieldSaysWhatItIs:
             f"{view}: {len(found['unnamed'])} of {found['total']} fields are "
             f"unnamed: {found['unnamed']}"
         )
+
+
+class TestNothingPaintsTheWordNull:
+    """`append` turns a null child into the text "null" on the page.
+
+    Every list of children built with a conditional entry has to drop the
+    empty one rather than hand it to the DOM, and the one that reads worst is
+    the backend selectors: a warning that is not being shown leaves the word
+    sitting under the control it was meant to describe.
+    """
+
+    def test_the_providers_window_says_nothing_where_it_has_nothing_to_say(
+        self, page, served,
+    ):
+        page.goto(f"{served}/#/settings", wait_until="domcontentloaded")
+        page.wait_for_selector(".settings-nav button", state="visible", timeout=20000)
+        page.locator(".settings-nav").get_by_role("button", name="Providers").click()
+        page.wait_for_selector(".settings-layout .route-config-list", timeout=20000)
+
+        stray = page.evaluate(
+            """() => [...document.querySelectorAll('.settings-embed *')]
+                .flatMap((node) => [...node.childNodes])
+                .filter((node) => node.nodeType === 3
+                    && ['null', 'undefined'].includes(node.textContent.trim()))
+                .length"""
+        )
+
+        assert stray == 0, "an absent child was painted as the word it is not"

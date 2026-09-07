@@ -1,23 +1,77 @@
 /* MCP servers: connecting one, and seeing whether it answered.
 
    An MCP server is a command line, an environment, and a name. All three are
-   edited here as named controls rather than as raw JSON, the same way the
-   LLM route editor works and for the same reason: a text area holding a
+   edited as named controls rather than as raw JSON, the same way the LLM
+   route editor works and for the same reason: a text area holding a
    configuration object is a way of asking someone to get the commas right.
 
    Two facts sit side by side on every card and are never merged. What is
-   *configured* is what this page writes; what is *connected* is what the
+   *configured* is what Settings writes; what is *connected* is what the
    running daemon actually managed to launch and ask. A server saved a moment
    ago is configured and not connected, and saying so is the whole point:
    the alternative is a page that reports success for a command that does not
-   exist on this machine. */
+   exist on this machine.
+
+   Those two facts are also why this module has two halves. The editor is in
+   Settings, next to everything else that writes `config.json`; the panel on
+   the deck is the reading, and changes nothing. One editor at one address,
+   because two would disagree the moment one of them was left open. */
 
 import { api } from "../api.js";
 import { t } from "../i18n.js";
 import { chip, clear, el, empty, toast } from "../ui.js";
 import { holdingUnsaved } from "../unsaved.js";
 
+/* The panel: what is configured, and what answered. Discovery happens when
+   the daemon starts, so before any pass has run "not connected" would be a
+   guess rather than a reading, and the card says that instead. */
 export async function mount(root) {
+  const payload = await api.mcpServers();
+  const list = el("div", { class: "mcp-list" });
+
+  root.append(
+    el("div", { class: "view-head" }, [
+      el("h1", { text: t("mcp.title") }),
+      el("p", { text: t("mcp.lead") }),
+    ]),
+    list,
+  );
+
+  if (!payload.servers.length) {
+    list.append(empty(t("mcp.none")));
+    return;
+  }
+
+  for (const server of payload.servers) {
+    list.append(
+      el("section", { class: "card mcp-server" }, [
+        el("header", {}, [
+          el("h2", { text: server.name || t("mcp.unnamed") }),
+          el("span", { class: "aside" }, [
+            chip(
+              server.connected
+                ? t("mcp.connectedCount", { n: server.tool_count })
+                : payload.discovered ? t("mcp.notConnected") : t("mcp.notDiscovered"),
+              server.connected ? "ok" : "warn",
+            ),
+          ]),
+        ]),
+        el("code", { class: "mcp-launch", text: [server.command, ...(server.args || [])].join(" ") }),
+        // The names, never the values: a credential is writable and is not
+        // readable, and this half of the module does not write.
+        Object.keys(server.env || {}).length
+          ? el("div", { class: "mcp-env-names" }, [
+              el("span", { class: "mcp-label", text: t("mcp.env") }),
+              el("span", { text: Object.keys(server.env).join(", ") }),
+            ])
+          : null,
+      ]),
+    );
+  }
+}
+
+/* The editor, which Settings mounts inside the MCP servers category. */
+export async function mountEditor(root) {
   let payload = await api.mcpServers();
   /* The edited copy. Everything is edited in the page and written in one
      go, because a server is only coherent once its command, its arguments,
@@ -35,11 +89,6 @@ export async function mount(root) {
     disabled: true,
     onclick: () => save(),
   });
-
-  const head = el("div", { class: "view-head" }, [
-    el("h1", { text: t("mcp.title") }),
-    el("p", { text: t("mcp.lead") }),
-  ]);
 
   const bar = el("div", { class: "mcp-bar" }, [
     el("button", {
@@ -59,7 +108,7 @@ export async function mount(root) {
     saveButton,
   ]);
 
-  root.append(head, bar, list);
+  root.append(bar, list);
   paint();
 
   // What is typed here is credentials, read back masked once written. The

@@ -49,24 +49,18 @@
   padding-right: var(--s1);
 }
 
-/* The right rail is the last exchange over the readings underneath it, and
-   the exchange takes its own height whether or not there has been a turn.
-   It is three lines that do not wrap, so it is the same three lines tall
-   either way: given a share of the rail it would be a tall box holding one
-   line of text, which is the hole this rail was packed to close with a
-   border drawn round it. The readings take the whole slack instead, and
-   because the exchange never changes size the rail never rearranges itself
-   the first time anyone speaks. */
+/* The right rail is how the machine is wired, and every reading in it is one
+   number, so the whole rail is tiles. What was last said is not here: it is
+   in the exchange on the stage, with the conversation it belongs to. */
 .deck-rail-right {
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 
-/* The readings at the foot of the rail: too small to deserve a card each,
-   too different to merge into one. They take the room the exchange does not,
-   in an equal share each, exactly as the cards opposite do — and in one
-   column, because five shares of a rail is a card's worth of height apiece
-   and two columns of that is a grid of boxes rather than a rail of
-   readings. */
+/* The readings in that rail: too small to deserve a card each, too different
+   to merge into one. They take an equal share of it, exactly as the cards
+   opposite do — and in one column, because five shares of a rail is a card's
+   worth of height apiece and two columns of that is a grid of boxes rather
+   than a rail of readings. */
 .widget-tiles {
   display: grid;
   grid-template-columns: 1fr;
@@ -237,14 +231,21 @@
   font-size: var(--fs-lg);
 }
 
-/* ── The face ────────────────────────────────────────────────────────── */
+/* ── The stage ───────────────────────────────────────────────────────── */
 
-/* Two bands: the face in the room above, the dock standing on the floor. The
-   stage used to centre everything together and leave two hundred pixels of
-   dead air under the dock, which read as the page having stopped early. */
+/* The face in the room above, the dock standing on the floor, and between
+   them the band that changes. The stage used to centre everything together
+   and leave two hundred pixels of dead air under the dock, which read as the
+   page having stopped early.
+
+   Two states, one attribute apart. At rest the face is the largest thing on
+   the page and one line under it carries the readings that would otherwise
+   cost four panels to find. Once something has been said that line has been
+   answered, so the conversation takes the room and the face gives it up.
+   Only one of the two is ever in the layout: a band held open for the other
+   would be the hole this arrangement exists to close. */
 .face-stage {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
   position: relative;
@@ -259,12 +260,54 @@
   overflow: hidden;
 }
 
+/* portrait · glance · gate · dock */
+.face-stage[data-stage="resting"] {
+  grid-template-rows: minmax(0, 1fr) auto auto auto;
+}
+
+/* portrait · exchange · gate · dock.
+   The face keeps the slack and the exchange takes what it needs up to its
+   own bound, so a conversation two turns old sits against the dock instead
+   of hanging under a band of empty room. Past that bound it scrolls, and the
+   face has already given up its scale to make the space. */
+.face-stage[data-stage="talking"] {
+  grid-template-rows: minmax(0, 1fr) auto auto auto;
+}
+
+.face-stage[data-stage="talking"] .face-exchange {
+  max-height: 46vh;
+}
+
+.face-stage[data-stage="resting"] .face-exchange,
+.face-stage[data-stage="talking"] .stage-glance {
+  display: none;
+}
+
 .face-portrait {
   display: grid;
   justify-items: center;
   align-content: center;
   gap: var(--s4);
   min-height: 0;
+}
+
+/* In conversation the face keeps its proportions and gives up its scale: it
+   is still the thing being spoken to, and it is no longer the thing being
+   read. The drawing is made at whatever width this settles on, so there is
+   nothing else to tell it. */
+.face-stage[data-stage="talking"] .face-portrait {
+  gap: var(--s2);
+}
+
+.face-stage[data-stage="talking"] .face-shell {
+  width: auto;
+  height: min(var(--face-size), 30vh);
+}
+
+.face-stage[data-stage="talking"] .face-name {
+  font-size: var(--fs-base);
+  letter-spacing: 0.24em;
+  padding-left: 0.24em;
 }
 
 /* The shell owns how large the face is, and the canvas simply fills it. The
@@ -305,6 +348,253 @@
 
 .face-state {
   min-height: 1.4em;
+}
+
+/* ── The glance ──────────────────────────────────────────────────────── */
+
+/* The readings that matter, on one line under the face, and only while
+   nothing has been said. A start screen that is a circle and a text box says
+   the assistant is running and nothing about whether anything needs you.
+
+   One row that wraps rather than a grid: there are four of these and they
+   are read across, not compared down a column. */
+.stage-glance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: center;
+  gap: var(--s2);
+  width: min(680px, 100%);
+  justify-self: center;
+  margin-top: var(--s4);
+}
+
+/* A reading with a panel behind it is a button and a reading without one is
+   plain text, so they are given the same shape here and told apart by
+   whether they respond to a pointer. */
+.stage-reading {
+  display: grid;
+  gap: var(--s0);
+  justify-items: center;
+  align-content: center;
+  min-width: 0;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  text-align: center;
+}
+
+button.stage-reading {
+  cursor: pointer;
+  transition: border-color var(--t-fast), color var(--t-fast);
+}
+
+button.stage-reading:hover {
+  border-color: var(--accent-line);
+}
+
+.stage-reading-label {
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+
+.stage-reading-value {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s1);
+  min-width: 0;
+  max-width: 22ch;
+  font-size: var(--fs-sm);
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── The exchange ────────────────────────────────────────────────────── */
+
+/* What is being said, between the face and the thing you type into. It is
+   the only thing on the stage that scrolls: two scrollers would give every
+   gesture two possible answers and slide the dock out of reach. */
+.face-exchange {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: var(--s3);
+  width: min(680px, 100%);
+  justify-self: center;
+  min-height: 0;
+  padding: var(--s3) var(--s1) var(--s1);
+  overflow-y: auto;
+  /* The scrollbar sits outside the text rather than over it. */
+  scrollbar-gutter: stable;
+}
+
+.exchange-turn {
+  display: grid;
+  gap: var(--s1);
+  flex: none;
+}
+
+/* Arriving from below, the way it arrived in the conversation. The older
+   turns are pushed up rather than the new one dropped in from nowhere. */
+.exchange-turn.rising {
+  animation: exchange-rise var(--t-view);
+}
+
+@keyframes exchange-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+.exchange-line {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  gap: var(--s2);
+  align-items: baseline;
+}
+
+/* Who said it, in a fixed column so the two lines of one exchange read as a
+   dialogue rather than as two paragraphs that happen to be adjacent. */
+.exchange-who {
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+  text-align: right;
+}
+
+.exchange-line[data-who="jarvis"] .exchange-who {
+  color: var(--accent);
+}
+
+.exchange-said,
+.exchange-reply {
+  min-width: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.exchange-said {
+  color: var(--fg-dim);
+}
+
+.exchange-reply {
+  color: var(--fg);
+}
+
+.exchange-turn[data-failed="true"] .exchange-reply {
+  color: var(--bad);
+}
+
+/* Jarvis is still writing. Three marks rather than a word, because the word
+   would be replaced by the answer and read as the first thing it said. */
+.exchange-writing {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.exchange-writing span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.35;
+  animation: exchange-writing 1.1s ease-in-out infinite;
+}
+
+.exchange-writing span:nth-child(2) { animation-delay: 0.18s; }
+.exchange-writing span:nth-child(3) { animation-delay: 0.36s; }
+
+@keyframes exchange-writing {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+
+/* ── The gate ────────────────────────────────────────────────────────── */
+
+/* What Jarvis is waiting to be allowed to do, immediately over the thing you
+   type into: the last place the eye rests before it answers. A request runs
+   out on its own, so one that was never seen reads afterwards exactly like
+   one that was refused. */
+.stage-gate {
+  display: grid;
+  gap: var(--s2);
+  width: min(680px, 100%);
+  justify-self: center;
+  margin-top: var(--s3);
+}
+
+.stage-gate[hidden] {
+  display: none;
+}
+
+.gate-request {
+  display: grid;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--r);
+  background: var(--warn-soft);
+}
+
+.gate-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.gate-asks {
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+
+.gate-action {
+  font-family: var(--mono);
+  color: var(--fg);
+}
+
+.gate-left {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--warn);
+}
+
+/* What the tool was asked to do, as text and never as markup: it arrives
+   from a model. Bounded, because an argument list is sometimes long and the
+   two buttons under it must stay on screen. */
+.gate-args {
+  max-height: 8em;
+  margin: 0;
+  padding: var(--s2);
+  border-radius: var(--r-sm);
+  background: var(--surface-inset);
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.gate-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s2);
 }
 
 /* ── Speaking to it ──────────────────────────────────────────────────── */
@@ -358,6 +648,40 @@
 }
 
 .face-dock .dock-button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* How loud what the microphone is sending is, beside the button that opened
+   it. It fills from the bottom, so a quiet room is a mark rather than an
+   empty slot, and it takes no room in the row when the microphone is shut.
+   Nothing is carried by it alone: whether the microphone is open is on the
+   button, in its pressed state and in its accessible name. */
+.face-mic-level {
+  display: flex;
+  align-items: flex-end;
+  width: 4px;
+  height: 38px;
+  flex: none;
+  border-radius: var(--r-pill);
+  background: var(--surface-inset);
+  overflow: hidden;
+}
+
+.face-mic-level > span {
+  width: 100%;
+  height: 0;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  transition: height var(--t-fast) linear;
+}
+
+/* Holding the follow-up window open is a state of the conversation rather
+   than an action on it, so the button carries it in the accent the way the
+   microphone does, and gives up its own shape for the round one the dock
+   uses. It reads as pressed for as long as the mode is on. */
+.face-dock .face-conversation[aria-pressed="true"] {
   background: var(--accent-soft);
   border-color: var(--accent-line);
   color: var(--accent);
@@ -517,18 +841,6 @@
   display: none;
 }
 
-/* The conversation scrolls its own exchange and keeps its composer in
-   place. Left to the panel's scrollbar it would have two scrollers, so
-   every gesture would have two possible answers and the composer would
-   slide out of reach: the exact fault the view was built to avoid. The
-   panel therefore stops scrolling and hands the whole height over. */
-.panel-body-conversation {
-  overflow: hidden;
-}
-
-.panel-body-conversation > .view-conversation {
-  height: 100%;
-}
 
 /* ── Settings as its own place ───────────────────────────────────────── */
 

@@ -32,7 +32,6 @@ CSS = Path(__file__).resolve().parents[2] / "src/jarvis/webui/static/css"
 
 # Every panel that mounts a view module into the deck.
 PANELS = [
-    "conversation",
     "memory",
     "tools",
     "mcp",
@@ -40,7 +39,6 @@ PANELS = [
     "llm-routes",
     "logs",
     "crew",
-    "security",
     "passive",
     "briefing",
 ]
@@ -143,23 +141,6 @@ class TestAPanelShowsTheWholeView:
 
 class TestTheContainerPicksTheLayout:
     """The same window, two container widths, two layouts."""
-
-    def test_the_live_band_folds_in_a_panel_and_unfolds_in_a_wide_container(
-        self, page, served
-    ):
-        columns = "() => getComputedStyle(document.querySelector('.voice')).gridTemplateColumns"
-
-        _open(page, served, "conversation")
-        narrow = page.evaluate(columns)
-        _widen_the_panel(page)
-        wide = page.evaluate(columns)
-
-        assert len(narrow.split()) == 1, (
-            f"three readings side by side in a panel: {narrow}"
-        )
-        assert len(wide.split()) == 3, (
-            f"the wide form did not come back in a wide container: {wide}"
-        )
 
     def test_a_table_stacks_in_a_panel_and_is_a_table_in_a_wide_container(
         self, page, served

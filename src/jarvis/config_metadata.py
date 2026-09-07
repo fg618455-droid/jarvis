@@ -42,7 +42,7 @@ LLM_ROUTE_FIELD_METADATA = (
     FieldMeta("name", "Name", "Display name for this route", "llm_routes", "str",
               default_value="New route"),
     FieldMeta("provider", "Protocol", "Wire protocol used by the endpoint", "llm_routes", "choice",
-              choices=[("openai_compatible", "OpenAI-compatible"), ("ollama", "Ollama"),
+              choices=[("openai_compatible", "OpenAI-compatible"),
                        ("claude_subscription", "Claude subscription"),
                        ("codex_subscription", "Codex subscription"),
                        ("crew_chat", "Crew chat")],
@@ -68,11 +68,6 @@ LLM_ROUTE_FIELD_METADATA = (
 # endpoint/model placeholders, but storing explicit values keeps every route
 # in one stable schema and lets the factory reject malformed network routes.
 LLM_ROUTE_PROVIDER_PLACEHOLDERS = {
-    "ollama": {
-        "base_url": "http://127.0.0.1:11434",
-        "model": "qwen2.5:7b",
-        "api_key_env": "",
-    },
     "openai_compatible": {
         "base_url": "https://provider.example/v1",
         "model": "provider-model-id",
@@ -122,22 +117,29 @@ CLOUD_TTS_PROVIDER_FIELD_METADATA = (
 # theme can restyle and neither of which depends on the reader's font vendor
 # for its colour. There are also more categories here than there are obvious
 # pictures for them, so a pictograph per label ends up repeating itself.
+#
+# Order is what a reader walks down, so it runs from what answers a question
+# to what carries it, then to what the assistant knows, then to the machine
+# around it. A category is a subject rather than a level of difficulty:
+# nothing is filed under "advanced", because that says how hard a setting is
+# rather than what it is about, and the reader looking for the Ollama URL has
+# no way to know it was considered difficult.
 CATEGORIES = [
     ("providers", "Providers"),
     ("speech_input", "Speech Input"),
     ("speech_recognition", "Speech Recognition"),
     ("speech_output", "Speech Output"),
-    ("timing", "Timing & Windows"),
     ("memory", "Memory & Dialogue"),
     ("school", "School"),
     ("passive", "Passive Capture"),
     ("security", "Security"),
-    ("location", "Location"),
-    ("features", "Features"),
-    ("webui", "Control Centre"),
+    ("channels", "Channels"),
     ("crew", "Mission Control"),
     ("mcps", "MCP Servers"),
-    ("advanced", "Advanced"),
+    ("features", "Features"),
+    ("location", "Location"),
+    ("timing", "Timing & Windows"),
+    ("webui", "Control Centre"),
 ]
 
 
@@ -155,6 +157,14 @@ CATEGORY_DETAILS = {
             "explicit probe."
         ),
         "embed": "llm-routes",
+    },
+    "mcps": {
+        "description": (
+            "External tool servers, each a command line, an environment and a "
+            "name. Tools are discovered when the daemon starts, so a server "
+            "saved here is reachable after a restart."
+        ),
+        "embed": "mcp-servers",
     },
 }
 
@@ -253,6 +263,19 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("intent_judge_thinking_enabled", "Intent Judge Thinking Mode",
       "Let the intent judge think before classifying (adds latency to wake detection)",
       "providers", "bool", section="Thinking and behaviour")
+
+    # Ollama runs memory work and embeddings, and nothing a user talks to. It
+    # is still a provider, and this is where someone looking for one comes, so
+    # it is a section of this window rather than a window of its own.
+    model_choices = [(mid, info["name"]) for mid, info in SUPPORTED_CHAT_MODELS.items()]
+    f("ollama_chat_model", "Memory Model",
+      "Local model that writes and summarises memory. Never answers a "
+      "conversation: replies come from the configured routes alone",
+      "providers", "choice", choices=model_choices, section="Local Ollama")
+    f("ollama_embed_model", "Embedding Model", "Model for text embeddings",
+      "providers", "str", section="Local Ollama")
+    f("ollama_base_url", "Ollama URL", "Ollama server base URL",
+      "providers", "str", section="Local Ollama")
 
     # --- Text-to-Speech ---
     f("tts_enabled", "Enable TTS", "Enable text-to-speech output",
@@ -414,274 +437,277 @@ def _build_field_metadata() -> List[FieldMeta]:
       "Maximum single utterance duration",
       "speech_input", "int", min_val=1000, max_val=60000, step=1000, suffix="ms",
       section="Voice activity and endpointing")
+    f("echo_tolerance", "Echo Tolerance",
+      "Time tolerance for echo detection",
+      "speech_input", "float", min_val=0.0, max_val=2.0, step=0.05, suffix="s",
+      section="Hearing itself")
+
     # --- Timing & Windows ---
     f("hot_window_enabled", "Hot Window",
       "Enable wake-word-free follow-up after responses",
-      "timing", "bool")
+      "timing", "bool", section="Follow-up window")
     f("hot_window_seconds", "Hot Window Duration",
       "Duration of follow-up window",
-      "timing", "float", min_val=1.0, max_val=30.0, step=0.5, suffix="s")
+      "timing", "float", min_val=1.0, max_val=30.0, step=0.5, suffix="s",
+      section="Follow-up window")
     f("wake_command_timeout_seconds", "Wake Request Timeout",
       "Time to wait for one request after a standalone wake word",
-      "timing", "float", min_val=1.0, max_val=60.0, step=0.5, suffix="s")
-    f("wake_acknowledgement", "Wake Acknowledgement",
-      "Spoken acknowledgement after a standalone wake word",
-      "timing", "str")
-    f("conversation_mode_acknowledgement", "Conversation Acknowledgement",
-      "Spoken acknowledgement when continuous conversation starts",
-      "timing", "str")
+      "timing", "float", min_val=1.0, max_val=60.0, step=0.5, suffix="s",
+      section="Follow-up window")
     f("transcript_buffer_duration_sec", "Transcript Buffer",
       "Duration of rolling transcript history for intent judging",
-      "timing", "float", min_val=10, max_val=600, step=10, suffix="s")
+      "timing", "float", min_val=10, max_val=600, step=10, suffix="s",
+      section="Follow-up window")
     f("simple_reply_first_audio_sec", "Reply First Audio Budget",
       "Shared deadline for a reply that does not require long-term memory",
-      "timing", "float", min_val=0.5, max_val=60, step=0.5, suffix="s")
+      "timing", "float", min_val=0.5, max_val=60, step=0.5, suffix="s",
+      section="Reply budgets")
     f("memory_reply_first_audio_sec", "Memory Reply First Audio Budget",
       "Shared deadline after the planner requests long-term memory",
-      "timing", "float", min_val=1, max_val=120, step=0.5, suffix="s")
+      "timing", "float", min_val=1, max_val=120, step=0.5, suffix="s",
+      section="Reply budgets")
+    f("wake_acknowledgement", "Wake Acknowledgement",
+      "Spoken acknowledgement after a standalone wake word",
+      "timing", "str", section="What it says while you wait")
+    f("conversation_mode_acknowledgement", "Conversation Acknowledgement",
+      "Spoken acknowledgement when continuous conversation starts",
+      "timing", "str", section="What it says while you wait")
     f("memory_lookup_acknowledgement", "Memory Lookup Acknowledgement",
       "Optional phrase spoken before long-term memory retrieval; empty stays silent",
-      "timing", "str")
+      "timing", "str", section="What it says while you wait")
 
     # --- Memory & Dialogue ---
     f("dialogue_memory_timeout", "Memory & Diary Window",
       "Duration for dialogue memory and forced diary updates",
-      "memory", "float", min_val=30, max_val=3600, step=30, suffix="s")
+      "memory", "float", min_val=30, max_val=3600, step=30, suffix="s",
+      section="Recall")
     f("memory_enrichment_max_results", "Enrichment Results",
       "Max memory results for context enrichment",
-      "memory", "int", min_val=1, max_val=50)
+      "memory", "int", min_val=1, max_val=50, section="Recall")
     f("memory_enrichment_source", "Enrichment Source",
       "Which memory system enriches replies: all (diary + graph), diary only, or graph only",
-      "memory", "choice", choices=[("diary", "Diary only"), ("graph", "Graph only"), ("all", "All (diary + graph)")])
+      "memory", "choice", choices=[("diary", "Diary only"), ("graph", "Graph only"), ("all", "All (diary + graph)")],
+      section="Recall")
     f("remio_memory_enabled", "Remio Memory",
       "Search the local Remio knowledge base during planner-directed memory retrieval",
-      "memory", "bool")
+      "memory", "bool", section="Recall")
     f("obsidian_vault_path", "Obsidian Vault Path",
       "Absolute path to your Obsidian vault. Empty disables both reading and writing to it",
-      "memory", "str", nullable=True)
+      "memory", "str", nullable=True, section="Obsidian vault")
     f("obsidian_memory_folder", "Obsidian Memory Folder",
       "Vault-relative folder Jarvis mirrors its knowledge graph into; the only path it may write to",
-      "memory", "str")
+      "memory", "str", section="Obsidian vault")
     f("obsidian_write_mode", "Obsidian Write Mode",
       "off never writes, dry_run computes and logs the plan without writing, on applies it",
-      "memory", "choice", choices=[("off", "Off"), ("dry_run", "Dry run (plan only)"), ("on", "On")])
+      "memory", "choice", choices=[("off", "Off"), ("dry_run", "Dry run (plan only)"), ("on", "On")],
+      section="Obsidian vault")
     f("obsidian_read_enabled", "Obsidian Reading",
       "Index the vault as a third memory-enrichment source alongside diary and graph",
-      "memory", "bool")
+      "memory", "bool", section="Obsidian vault")
     f("obsidian_read_max_results", "Obsidian Results",
       "Vault snippets injected per enrichment pass",
-      "memory", "int", min_val=1, max_val=20)
+      "memory", "int", min_val=1, max_val=20, section="Obsidian vault")
     f("obsidian_index_max_file_kb", "Obsidian File Size Limit",
       "Files larger than this are skipped by the vault indexer",
-      "memory", "int", min_val=16, max_val=8192, step=16, suffix="KB")
+      "memory", "int", min_val=16, max_val=8192, step=16, suffix="KB",
+      section="Obsidian vault")
     f("tool_carryover_max_turns", "Tool Carryover Turns",
       "How many prior replies' tool results to keep visible for follow-up questions",
-      "memory", "int", min_val=0, max_val=10)
+      "memory", "int", min_val=0, max_val=10, section="Tools across turns")
     f("tool_carryover_per_entry_chars", "Tool Carryover Length",
       "Chars kept per carried-over tool result (UNTRUSTED fence markers preserved)",
-      "memory", "int", min_val=200, max_val=8000, step=100)
+      "memory", "int", min_val=200, max_val=8000, step=100,
+      section="Tools across turns")
     f("agentic_max_turns", "Agentic Max Turns",
       "Maximum turns in agentic tool-use loops",
-      "memory", "int", min_val=1, max_val=30)
+      "memory", "int", min_val=1, max_val=30, section="Tools across turns")
 
     # --- School ---
     f("morning_briefing_enabled", "Morning Briefing",
       "Speak one short School memory summary after the configured time each day. Off by default",
-      "school", "bool")
+      "school", "bool", section="Morning briefing")
     f("morning_briefing_time", "Briefing Time",
       "Local time after which today's school briefing may be spoken, in 24-hour HH:MM format",
-      "school", "str")
+      "school", "str", section="Morning briefing")
 
     # --- Passive Capture ---
-    f("passive_capture_enabled", "Enable Passive Capture",
-      "Keep a text-only record of speech already transcribed near the microphone. Off by default",
-      "passive", "bool")
+    # Whether the record is running is not here. That switch names the model
+    # backend the room's text will reach and asks before it starts, and a
+    # plain checkbox beside it would be the same switch with the question
+    # taken out. It lives on the passive record itself; what is left here is
+    # how the record behaves once it is on.
     f("passive_capture_retention_days", "Retention",
       "Days to keep passive transcript lines. Zero keeps them until manual deletion",
-      "passive", "int", min_val=0, max_val=3650, suffix="days")
+      "passive", "int", min_val=0, max_val=3650, suffix="days",
+      section="The record")
     f("passive_capture_min_words", "Minimum Words",
       "Utterances shorter than this are not written to the passive record",
-      "passive", "int", min_val=0, max_val=100)
+      "passive", "int", min_val=0, max_val=100, section="The record")
     f("passive_digest_interval_min", "Digest Interval",
       "Minutes between passes that fold useful overheard speech into memory",
-      "passive", "float", min_val=0.01, max_val=1440, step=1, suffix="min")
+      "passive", "float", min_val=0.01, max_val=1440, step=1, suffix="min",
+      section="Digest into memory")
     f("passive_digest_max_lines", "Lines per Digest",
       "Maximum passive transcript lines sent to one ambient digest pass",
-      "passive", "int", min_val=1, max_val=1000)
+      "passive", "int", min_val=1, max_val=1000, section="Digest into memory")
 
     # --- Security ---
-    f("security_remember_approvals", "Remember Approvals",
-      "Ask about a tool once, then let that approval stand. Keyed by tool "
-      "name, not arguments, so one approval covers every later call of that "
-      "tool. Clear it by deleting ~/.jarvis/security_approvals.json",
-      "security", "bool")
     f("security_level", "Confirmation Level",
       "Critical protects sensitive actions; paranoid confirms every tool; off disables protection",
       "security", "choice", choices=[
           ("critical", "Critical (recommended)"),
           ("paranoid", "Paranoid"),
           ("off", "Off"),
-      ])
+      ], section="The gate")
+    f("security_remember_approvals", "Remember Approvals",
+      "Ask about a tool once, then let that approval stand. Keyed by tool "
+      "name, not arguments, so one approval covers every later call of that "
+      "tool. Clear it by deleting ~/.jarvis/security_approvals.json",
+      "security", "bool", section="The gate")
+    # Which channels may ask is the gate's own rule. What each of those
+    # channels needs to work is a channel's business and lives with it.
     f("security_confirm_channels", "Confirmation Channels",
       "Channels tried in order when an action needs approval: desktop, web, telegram, voice",
-      "security", "list")
+      "security", "list", section="How it asks")
     f("security_confirmation_timeout_sec", "Confirmation Timeout",
       "Maximum time to wait for a decision",
-      "security", "int", min_val=5, max_val=300, suffix="s")
+      "security", "int", min_val=5, max_val=300, suffix="s",
+      section="How it asks")
+
+    # --- Channels ---
+    # Telegram is a way of reaching Jarvis and of being reached by it. The
+    # gate is one of the things that uses it, which does not make it part of
+    # the confirmation policy.
     f("telegram_bot_token", "Telegram Bot Token",
       "Bot token for mobile confirmations; leave empty to disable Telegram",
-      "security", "password", nullable=True)
+      "channels", "password", nullable=True, section="Telegram")
     f("telegram_chat_id", "Telegram Chat ID",
       "Only decisions from this chat are accepted; leave empty to disable Telegram",
-      "security", "str", nullable=True)
+      "channels", "str", nullable=True, section="Telegram")
     f("telegram_api_base_url", "Telegram API Host",
       "Bot API server to call; point it at a self-hosted instance to keep confirmations local",
-      "security", "str")
+      "channels", "str", section="Telegram")
     f("telegram_chat_enabled", "Telegram Conversation",
       "Let the configured chat talk to Jarvis, not just approve actions; a message runs tools on this machine",
-      "security", "bool")
+      "channels", "bool", section="Telegram")
 
     # --- Location ---
     f("location_enabled", "Enable Location",
       "Allow location-aware responses",
-      "location", "bool")
+      "location", "bool", section="Detection")
     f("location_auto_detect", "Auto-Detect",
       "Automatically detect location from IP",
-      "location", "bool")
+      "location", "bool", section="Detection")
     f("location_cache_minutes", "Cache Duration",
       "Minutes to cache location data",
-      "location", "int", min_val=1, max_val=1440, step=5, suffix="min")
+      "location", "int", min_val=1, max_val=1440, step=5, suffix="min",
+      section="Detection")
     f("location_ip_address", "IP Address Override",
       "Manual IP for geolocation (leave empty for auto)",
-      "location", "str", nullable=True)
+      "location", "str", nullable=True, section="Detection")
     f("location_cgnat_resolve_public_ip", "CGNAT Resolve",
       "Resolve public IP when behind CGNAT",
-      "location", "bool")
+      "location", "bool", section="Detection")
     f("location_manual_city", "Manual City Override",
       "Set your real city to skip IP geolocation (fixes ISPs that register your address under the wrong town)",
-      "location", "str", nullable=True)
+      "location", "str", nullable=True, section="Telling it where you are")
     f("location_manual_region", "Manual Region Override",
       "Optional state/region shown alongside the manual city",
-      "location", "str", nullable=True)
+      "location", "str", nullable=True, section="Telling it where you are")
     f("location_manual_country", "Manual Country Override",
       "Set your real country to skip IP geolocation",
-      "location", "str", nullable=True)
+      "location", "str", nullable=True, section="Telling it where you are")
     f("location_manual_timezone", "Manual Timezone Override",
       "IANA timezone (e.g. Asia/Bangkok) to use alongside the manual location",
-      "location", "str", nullable=True)
+      "location", "str", nullable=True, section="Telling it where you are")
 
     # --- Features ---
     f("web_search_enabled", "Web Search",
       "Enable web search tool",
-      "features", "bool")
+      "features", "bool", section="The web")
     f("brave_search_api_key", "Brave Search API Key",
       "Optional. When set, Brave is used as the primary fallback if DuckDuckGo "
       "is blocked. Free tier: 2,000 queries/month at api.search.brave.com.",
-      "features", "password", nullable=True)
+      "features", "password", nullable=True, section="The web")
     f("wikipedia_fallback_enabled", "Wikipedia Fallback",
       "Use Wikipedia as a last-resort source when other search engines fail. "
       "No key, no account, privacy-light.",
-      "features", "bool")
-    f("low_power_mode", "Low Power Mode",
-      "Reduce background LLM residency and skip LLM startup warmup",
-      "features", "bool")
+      "features", "bool", section="The web")
     f("computer_interaction_enabled", "Computer Interaction",
       "Opt in to bounded semantic browser and Windows application control. "
       "Consequential actions still require individual confirmation",
-      "features", "bool")
+      "features", "bool", section="This computer")
     f("system_management_enabled", "System Management",
       "Opt in to structured package, broader file and named Windows settings management. "
       "Mutating actions still require individual confirmation",
-      "features", "bool")
-    f("tune_enabled", "Startup Tune",
-      "Play startup sound",
-      "features", "bool")
+      "features", "bool", section="This computer")
     f("dictation_enabled", "Dictation Mode",
       "Hold a hotkey to record speech, release to paste transcription into any app",
-      "features", "bool")
+      "features", "bool", section="Dictation")
     f("dictation_hotkey", "Dictation Hotkey",
       "Key combination to hold for dictation. Double-tap for hands-free mode.",
-      "features", "choice", choices=_dictation_hotkey_choices())
+      "features", "choice", choices=_dictation_hotkey_choices(),
+      section="Dictation")
     f("dictation_filler_removal", "Filler Word Removal",
       "Use the local LLM to remove filler words (um, uh, like) from dictation output",
-      "features", "bool")
+      "features", "bool", section="Dictation")
     f("dictation_thinking_enabled", "Dictation Thinking Mode",
       "Let the LLM think when cleaning dictation (adds latency after each dictation)",
-      "features", "bool")
+      "features", "bool", section="Dictation")
     f("dictation_custom_dictionary", "Custom Dictionary",
       "Correction rules for dictation. Use 'wrong -> right' format (e.g. 'Jarvice -> Jarvis')",
-      "features", "list")
+      "features", "list", section="Dictation")
+    f("low_power_mode", "Low Power Mode",
+      "Reduce background LLM residency and skip LLM startup warmup",
+      "features", "bool", section="This machine")
+    f("tune_enabled", "Startup Tune",
+      "Play startup sound",
+      "features", "bool", section="This machine")
 
     # --- Control Centre ---
     f("webui_enabled", "Enable Control Centre",
       "Serve the local control centre while the daemon runs",
-      "webui", "bool")
+      "webui", "bool", section="Serving it")
+    f("webui_open_browser", "Open on Start",
+      "Open the control centre in your browser when the daemon starts",
+      "webui", "bool", section="Serving it")
     f("webui_port", "Port",
       "TCP port the control centre listens on",
-      "webui", "int", min_val=1024, max_val=65535)
+      "webui", "int", min_val=1024, max_val=65535, section="Reaching it")
     f("webui_bind_host", "Bind Address",
       "127.0.0.1 keeps it on this machine. 0.0.0.0 reaches it from your phone "
       "on the same network and then requires the access token below.",
-      "webui", "str")
+      "webui", "str", section="Reaching it")
     f("webui_token", "Access Token",
       "Required once the bind address leaves loopback. Empty mints a fresh "
       "token at every start and prints it to the console.",
-      "webui", "password", nullable=True)
-    f("webui_open_browser", "Open on Start",
-      "Open the control centre in your browser when the daemon starts",
-      "webui", "bool")
+      "webui", "password", nullable=True, section="Reaching it")
 
     # --- Mission Control ---
     f("crew_api_url", "Crew API URL",
       "Base URL of the NAS-hosted crew activity endpoint, e.g. "
       "http://192.168.178.113:8643. Empty hides the Mission Control view",
-      "crew", "str", nullable=True)
+      "crew", "str", nullable=True, section="The endpoint")
     f("crew_api_key", "Crew API Key",
       "Shared key the NAS endpoint expects in its X-Crew-Key header",
-      "crew", "password", nullable=True)
+      "crew", "password", nullable=True, section="The endpoint")
     f("crew_agents", "Crew Roster",
       "The agents Mission Control shows, one per line, in display order. An "
       "agent with nothing in the activity log is shown as quiet rather than "
       "hidden. Agents that log work without being listed are still shown",
-      "crew", "list")
+      "crew", "list", section="The roster")
     f("crew_telegram_chat_id", "Crew Telegram Chat ID",
       "Chat ID of the crew's Telegram group, used by askCrew to delegate a "
-      "task. Sent with the bot configured under Security → Telegram, which "
+      "task. Sent with the bot configured under Channels → Telegram, which "
       "must also be a member of that group. Empty disables askCrew",
-      "crew", "str", nullable=True)
+      "crew", "str", nullable=True, section="Delegating to it")
     f("crew_handoff_enabled", "Automatic Crew Handoff",
       "Hand a slow local reply to the crew on its own, once it has run past "
       "the deadline, instead of only when askCrew is explicitly requested. "
       "Still asks for confirmation like any askCrew call, and that wait is "
       "not yet bounded to the deadline, so a delegation with nobody free to "
       "confirm can sit at the full confirmation timeout before it gives up",
-      "crew", "bool")
-    # --- Advanced ---
-    # Ollama is what PRIVATE work and embeddings run on, and the fallback a
-    # remote-only chain can be given if its owner wants one. That is a
-    # smaller job than the provider window, so it is settled here rather
-    # than standing in front of the chains that actually answer.
-    model_choices = [(mid, info["name"]) for mid, info in SUPPORTED_CHAT_MODELS.items()]
-    f("local_llm_fallback_enabled", "Local Chat/Fast Fallback",
-      "Append a local Ollama route to FAST and CHAT when the configured chain "
-      "has no local entry. Off keeps a remote-only chain remote-only. Memory "
-      "(PRIVATE) and embeddings stay local either way",
-      "advanced", "bool", section="Local Ollama")
-    f("ollama_chat_model", "Chat Model", "Local model used by that fallback",
-      "advanced", "choice", choices=model_choices, section="Local Ollama")
-    f("local_fast_model", "Local Fast Fallback",
-      "Small Ollama model used after configured FAST routes fail. Route models "
-      "remain authoritative for effective FAST requests",
-      "advanced", "choice", choices=[("", "Automatic (recommended)")] + model_choices,
-      section="Local Ollama")
-    f("ollama_embed_model", "Embedding Model", "Model for text embeddings",
-      "advanced", "str", section="Local Ollama")
-    f("ollama_base_url", "Ollama URL", "Ollama server base URL",
-      "advanced", "str", section="Local Ollama")
-    f("echo_tolerance", "Echo Tolerance",
-      "Time tolerance for echo detection",
-      "advanced", "float", min_val=0.0, max_val=2.0, step=0.05, suffix="s",
-      section="Behaviour")
+      "crew", "bool", section="Delegating to it")
 
     return fields
 

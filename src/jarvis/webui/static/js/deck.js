@@ -12,7 +12,10 @@
    pages; they only needed somewhere else to be. */
 
 import { api } from "./api.js";
+import { createExchange, followLive } from "./exchange.js";
 import { mountFace } from "./face.js";
+import { createGate } from "./gate.js";
+import { createGlance } from "./glance.js";
 import { t } from "./i18n.js";
 import { createMic } from "./mic.js";
 import { live } from "./sse.js";
@@ -20,13 +23,15 @@ import { el, icon, ICONS, toast } from "./ui.js";
 import { buildWidget, WIDGETS } from "./widgets.js";
 
 /* The detail behind each widget. A panel name is an address, so these are
-   also the hashes the interface answers to. */
+   also the hashes the interface answers to.
+
+   Talking to the assistant is not one of them, and neither is answering it.
+   Both happen on the stage, under the face, because both are the
+   conversation rather than a reading about it. */
 const PANEL_VIEWS = {
-  conversation: () => import("./views/conversation.js"),
   memory: () => import("./views/memory.js"),
   tools: () => import("./views/tools.js"),
   mcp: () => import("./views/mcp.js"),
-  security: () => import("./views/security.js"),
   system: () => import("./views/system.js"),
   "llm-routes": () => import("./views/llm.js"),
   logs: () => import("./views/logs.js"),
@@ -61,25 +66,105 @@ export function mountDeck(root, { onOpenPanel } = {}) {
 
   /* ── The face ───────────────────────────────────────────────────── */
 
+  /* How often the meter beside the button is repainted. Fast enough to read
+     as a voice rather than as a bar that moves occasionally, and it runs only
+     while the microphone is actually open. */
+  const LEVEL_MS = 60;
+  let levelTimer = null;
+
   const mic = createMic({
     onState: (state) => {
-      face.micButton.setAttribute("aria-pressed", state === "listening" ? "true" : "false");
+      const open = state !== "idle";
+      face.micButton.setAttribute("aria-pressed", open ? "true" : "false");
+      if (!face.micLevel) return;
+      if (open && !levelTimer) {
+        levelTimer = setInterval(() => {
+          face.micLevel.firstChild.style.height = `${(mic.level * 100).toFixed(1)}%`;
+        }, LEVEL_MS);
+      } else if (!open && levelTimer) {
+        clearInterval(levelTimer);
+        levelTimer = null;
+        face.micLevel.firstChild.style.height = "0%";
+      }
     },
     onError: () => toast(t("conversation.micRefused"), "bad"),
   });
 
   const face = mountFace(stage, {
     onSend: async (text) => {
+      /* On screen before the request is made, because that is the only
+         moment at which this page knows something the daemon does not, and
+         waiting out a whole turn to show what you just typed reads as a
+         page that swallowed it. */
+      const sent = exchange.pending(text);
+      face.setConversing(true);
       try {
         await api.chat(text, false);
       } catch (error) {
         // 409 is the daemon saying a turn is already running, which is a
         // fact about the assistant rather than a failure of the page.
+        sent.failed();
         toast(error.status === 409 ? t("conversation.busy") : error.message, "bad");
       }
     },
-    onMicToggle: () => mic.toggle(),
+    // A microphone that would not open has already been reported by
+    // `onError` above. Left uncaught, the same failure arrives a second time
+    // as an unhandled rejection, which is a page error rather than a fact
+    // about the assistant.
+    onMicToggle: () => mic.toggle().catch(() => {}),
+    onConversationToggle: async () => {
+      try {
+        await api.setConversationMode(!conversing);
+      } catch {
+        // 409: nothing is listening, so there is no follow-up window to
+        // hold open. The button says nothing changed by not changing.
+        toast(t("conversation.modeNoListener"), "bad");
+      }
+    },
   });
+
+  /* Whether the follow-up window is being held open. Read from the runtime
+     rather than from the last thing this page clicked, because the mode also
+     ends on its own when the user asks Jarvis to stop. */
+  let conversing = false;
+  function paintConversationMode(active) {
+    conversing = Boolean(active);
+    face.conversationButton.setAttribute("aria-pressed", conversing ? "true" : "false");
+  }
+
+  /* ── The exchange ───────────────────────────────────────────────── */
+
+  /* What is being said, in the band the face keeps for it. It follows the
+     daemon rather than this page: a turn spoken into the microphone, one
+     typed in the desktop chat window and one typed here all arrive the same
+     way, so the deck shows the conversation rather than its own half of it. */
+  const exchange = createExchange(face.exchangeSlot);
+  const offExchange = followLive(exchange, live);
+  /* Anything at all in the exchange is what turns the stage over from the
+     face to the conversation. It is set from here rather than inside the
+     exchange because this is where all three ways in already meet: seeded
+     history, a turn the daemon announced, and a message typed on this page. */
+  const offSpoke = [
+    live.on("heard", () => face.setConversing(true)),
+    live.on("turn", () => face.setConversing(true)),
+  ];
+  /* The last few turns, so a page opened mid-conversation does not read as
+     one that has never been used. */
+  api.conversation(6).then((payload) => {
+    exchange.seed(payload.turns);
+    if ((payload.turns || []).length) face.setConversing(true);
+  }).catch(() => {});
+
+  /* ── The glance, and the gate ───────────────────────────────────── */
+
+  /* What is worth knowing before anything has been said, and what the
+     assistant is waiting to be allowed to do. Both stand on the stage: one
+     answers the question a start screen should answer, the other asks the
+     only question that stops a turn. */
+  const glance = createGlance(face.glanceSlot, {
+    onOpenPanel: (panel) => onOpenPanel(panel),
+  });
+  const gate = createGate(face.gateSlot, { live });
 
   /* ── The widgets ────────────────────────────────────────────────── */
 
@@ -140,6 +225,12 @@ export function mountDeck(root, { onOpenPanel } = {}) {
     const wakeWord = snapshot.status?.audio?.wake_word;
     if (wakeWord) face.setName(wakeWord.charAt(0).toUpperCase() + wakeWord.slice(1));
 
+    try {
+      glance.update(snapshot);
+    } catch (error) {
+      console.error("the glance failed to paint", error);
+    }
+
     for (const widget of built) {
       try {
         widget.update(snapshot);
@@ -147,6 +238,12 @@ export function mountDeck(root, { onOpenPanel } = {}) {
         console.error("a widget failed to paint", error);
       }
     }
+
+    /* Every card is built empty and filled from the first reading, so what a
+       rail is actually showing is only true from here on. Said on the deck
+       itself, so that anything measuring the layout has one honest signal
+       rather than watching whichever card it guessed would fill last. */
+    root.dataset.painted = "true";
   }
 
   /* Mission Control reaches a machine that is often asleep, and the daemon
@@ -165,7 +262,11 @@ export function mountDeck(root, { onOpenPanel } = {}) {
   const offPhase = live.on("phase", () => face.poll());
   const offStatus = live.on("status", (status) => {
     snapshot.status = status;
+    paintConversationMode(status?.conversation?.active);
     paint();
+  });
+  const offConversation = live.on("conversation", (conversation) => {
+    paintConversationMode(conversation?.active);
   });
   const offTurn = live.on("turn", (turn) => {
     if (snapshot.status) snapshot.status.last_turn = turn;
@@ -316,6 +417,11 @@ export function mountDeck(root, { onOpenPanel } = {}) {
       offStatus();
       offTurn();
       offPassive();
+      offConversation();
+      offExchange();
+      offSpoke.forEach((stop) => stop());
+      if (levelTimer) clearInterval(levelTimer);
+      gate.destroy();
       // The face paints itself and polls for its own reading, so removing the
       // node it drew into is not enough to stop either.
       face.destroy();

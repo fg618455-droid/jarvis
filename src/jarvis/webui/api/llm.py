@@ -15,6 +15,7 @@ from jarvis.config_metadata import (
 )
 from jarvis.debug import debug_log
 from jarvis.llm import ProviderError, RoutedBackend, Tier, get_llm_backend
+from jarvis.llm.factory import ROUTE_PROVIDERS
 from jarvis.llm.route_state import RouteStateStore
 from jarvis.tools.builtin.ask_crew import AGENT_THREADS
 
@@ -81,8 +82,39 @@ def _payload() -> dict[str, Any]:
         "route_fields": [_route_field_payload(field) for field in LLM_ROUTE_FIELD_METADATA],
         "provider_placeholders": LLM_ROUTE_PROVIDER_PLACEHOLDERS,
         "chat_backend_override": override,
+        # Whether the pinned provider has an enabled CHAT route to answer
+        # from. A pin allows no fallback, so an unbacked one fails every
+        # turn identically, and the page needs to be able to distinguish
+        # "this backend is broken" from "this backend was never configured".
+        # An automatic chain is never unbacked: it pins nothing.
+        "chat_backend_override_backed": _pin_is_backed(backend, override),
+        # Reply tiers with no enabled route at all. Nothing is appended
+        # behind FAST or CHAT any more, so an empty one is a capability
+        # that is simply gone rather than one running on a slower model.
+        "empty_tiers": _empty_tiers(backend),
         "crew_chat_agent": crew_chat_agent,
     }
+
+
+def _empty_tiers(backend: Any) -> list[str]:
+    if not isinstance(backend, RoutedBackend):
+        return []
+    return [
+        tier.value
+        for tier in (Tier.FAST, Tier.CHAT)
+        if not any(route.enabled for route in backend.routes_for(tier))
+    ]
+
+
+def _pin_is_backed(backend: Any, override: str) -> bool:
+    if override == "auto":
+        return True
+    if not isinstance(backend, RoutedBackend):
+        return False
+    return any(
+        route.provider == override and route.enabled
+        for route in backend.routes_for(Tier.CHAT)
+    )
 
 
 def _route_field_payload(meta) -> dict[str, Any]:
@@ -127,10 +159,7 @@ def _normalise_routes(raw_routes: Any, existing: list[dict[str, Any]]) -> list[d
         base_url = str(raw.get("base_url", "") or "").strip().rstrip("/")
         model = str(raw.get("model", "") or "").strip()
         tier = str(raw.get("tier", "") or "").strip().lower()
-        if provider not in (
-            "ollama", "openai_compatible", "claude_subscription",
-            "codex_subscription", "crew_chat",
-        ):
+        if provider not in ROUTE_PROVIDERS:
             raise ValueError(f"route {index + 1} has an unsupported protocol")
         existing_route = None
         try:
@@ -207,14 +236,24 @@ def replace_routes() -> Response:
 
 @bp.route("/chat-backend-override", methods=["PUT"])
 def set_chat_backend_override() -> Response:
-    """Force a specific Tier.CHAT route provider for every reply, or reset
-    to "auto" (the default) so automatic per-turn classification and the
-    configured chain order decide instead. Not validated against currently
-    configured routes: a provider named here with no matching route is the
-    same ordinary "unavailable, fall through to the normal chain" case
-    RoutedBackend already handles at call time, not a config error."""
+    """Pin every Tier.CHAT reply to one route provider, or reset to "auto"
+    (the default) so automatic per-turn classification and the configured
+    chain order decide instead.
+
+    A pin is exact: the named provider answers or the turn fails, with no
+    other route tried. That makes the name itself worth checking here. It is
+    validated against the protocols a route can be configured for, not
+    against the routes currently configured: pinning a provider before
+    adding its route is a reasonable order to work in, and that case reports
+    itself honestly as an unbacked pin. A protocol that cannot exist at all
+    never will."""
     body = request.get_json(silent=True) or {}
     value = str(body.get("chat_backend_override", "") or "").strip().lower() or "auto"
+    if value != "auto" and value not in ROUTE_PROVIDERS:
+        return jsonify(error=(
+            f"'{value}' cannot answer a chat turn. Choose 'auto' or one of: "
+            f"{', '.join(sorted(ROUTE_PROVIDERS))}."
+        )), 400
     path = resolve_config_path()
     config = _load_json(path) or {}
     config["chat_backend_override"] = value

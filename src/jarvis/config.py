@@ -105,17 +105,11 @@ class Settings:
     llm_api_key: str
     llm_chat_model: str
     llm_routes: list[Dict[str, Any]]
-    # Whether a loopback Ollama route is appended to Tier.FAST and Tier.CHAT
-    # when the configured chain has no local entry for them. Off means a
-    # remote-only chain stays remote-only: if every configured route fails,
-    # the turn fails rather than quietly waking a local model. Tier.PRIVATE
-    # and embeddings are unaffected and always stay local.
-    local_llm_fallback_enabled: bool
     # "auto" (default) lets automatic per-turn classification and the
-    # configured chain order decide; a specific provider name (e.g.
-    # "ollama", "claude_subscription") forces every reply's Tier.CHAT call
-    # to try that route first, falling back to the normal chain if it is
-    # unavailable. See src/jarvis/llm/llm.spec.md, "Chat backend selection".
+    # configured chain order decide. A route provider name (e.g.
+    # "claude_subscription") pins every reply's Tier.CHAT call to that
+    # provider: it answers or the turn fails, with no other route tried.
+    # See src/jarvis/llm/llm.spec.md, "Chat backend selection".
     chat_backend_override: str
     embedding_provider: str  # "" (= same as llm_provider) | "ollama" | "openai_compatible"
     embedding_base_url: str
@@ -264,8 +258,9 @@ class Settings:
 
     # Effective FAST route model, used for tier selection and prompt sizing.
     # With configured routes this is the first enabled FAST route's model.
-    # ``local_fast_model`` below is deliberately separate: it is the model
-    # an appended loopback Ollama fallback actually runs.
+    # ``local_fast_model`` below is deliberately separate: it names the small
+    # local model the setup wizard provisions and budgets VRAM against, and
+    # never a route. FAST is answered by configured routes alone.
     fast_model: str
     local_fast_model: str
     # Fast-tier timing control. The authoritative context list lives in
@@ -970,13 +965,10 @@ def get_default_config() -> Dict[str, Any]:
         # DEFAULT_FAST_MODEL on the Ollama chat path, the chat model on an
         # OpenAI-compatible provider.
         "fast_model": "",
-        # Explicit loopback Ollama model appended after configured FAST routes.
-        # Empty on disk follows DEFAULT_FAST_MODEL and future default upgrades.
+        # The small local model the setup wizard provisions and budgets VRAM
+        # for. Empty on disk follows DEFAULT_FAST_MODEL and future default
+        # upgrades.
         "local_fast_model": "",
-        # Whether FAST and CHAT fall back to a loopback Ollama route when the
-        # configured chain has no local entry. PRIVATE and embeddings stay
-        # local regardless.
-        "local_llm_fallback_enabled": True,
         "intent_judge_timeout_sec": 6.0,
         "intent_judge_thinking_enabled": False,  # Enable thinking for intent judge (adds latency to wake detection)
 
@@ -1114,9 +1106,6 @@ def load_settings() -> Settings:
     ollama_embed_model = str(merged.get("ollama_embed_model"))
     ollama_chat_model = str(merged.get("ollama_chat_model"))
 
-    local_llm_fallback_enabled = bool(
-        merged.get("local_llm_fallback_enabled", True)
-    )
     llm_routes: list[Dict[str, Any]] = []
     raw_routes = merged.get("llm_routes", [])
     if isinstance(raw_routes, list):
@@ -1331,11 +1320,11 @@ def load_settings() -> Settings:
     system_management_enabled = bool(merged.get("system_management_enabled", False))
     echo_tolerance = float(merged.get("echo_tolerance", 0.3))
 
-    # The local fallback and the effective routed FAST name are different
-    # facts. The route name is passed only as the tier-carrying public model;
-    # RoutedBackend invokes each candidate's own model, including the local
-    # fallback below. Route-less legacy OpenAI-compatible configs retain their
-    # provider model semantics.
+    # The provisioned local model and the effective routed FAST name are
+    # different facts. The route name is passed only as the tier-carrying
+    # public model; RoutedBackend invokes each candidate's own model.
+    # Route-less legacy OpenAI-compatible configs retain their provider model
+    # semantics.
     local_fast_model = str(merged.get("local_fast_model", "") or "").strip()
     if not local_fast_model:
         local_fast_model = DEFAULT_FAST_MODEL
@@ -1599,7 +1588,6 @@ def load_settings() -> Settings:
         llm_api_key=llm_api_key,
         llm_chat_model=llm_chat_model,
         llm_routes=llm_routes,
-        local_llm_fallback_enabled=local_llm_fallback_enabled,
         chat_backend_override=chat_backend_override,
         embedding_provider=embedding_provider,
         embedding_base_url=embedding_base_url,

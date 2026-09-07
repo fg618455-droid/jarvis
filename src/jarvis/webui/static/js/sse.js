@@ -56,6 +56,8 @@ class LiveStream {
       "status",
       "phase",
       "stage",
+      "heard",
+      "reply",
       "turn",
       "discarded",
       "passive",

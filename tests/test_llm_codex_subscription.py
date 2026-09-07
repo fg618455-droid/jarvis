@@ -375,7 +375,7 @@ class TestFactoryRouting:
         router = get_llm_backend(self._settings(routes))
 
         assert [r.name for r in router.routes_for(Tier.CHAT)] == [
-            "fast-cloud", "codex-first-in-config", "local-chat"
+            "fast-cloud", "codex-first-in-config"
         ]
         assert all(
             r.provider != "codex_subscription"
@@ -393,7 +393,7 @@ class TestFactoryRouting:
             embedding_provider="codex_subscription",
         )
 
-        assert get_llm_backend(cfg).routes_for(Tier.CHAT)[0].provider == "ollama"
+        assert get_llm_backend(cfg).routes_for(Tier.CHAT) == ()
         assert isinstance(get_embedding_backend(cfg), OllamaBackend)
 
     def test_route_metadata_offers_codex_without_a_settings_duplicate(self):

@@ -64,35 +64,66 @@ The settings window uses a sidebar navigation pattern: a fixed-width `QListWidge
 
 ## Categories (Sidebar Order)
 
-1. Local AI & Behaviour
+The order is `CATEGORIES` in `jarvis.config_metadata`, and both settings
+surfaces walk it unchanged: it runs from what answers a question, through what
+carries it, to what the assistant knows and the machine around it.
+
+1. Providers
 2. Speech Input
 3. Speech Recognition
 4. Speech Output
-5. Timing & Windows
-6. Memory & Dialogue
-7. School
-8. Passive Capture
-9. Security
-10. Location
-11. Features (includes web search, Wikipedia fallback, low-power mode, startup tune, and dictation toggles)
-12. Control Centre
-13. Mission Control
-14. MCP Servers
-15. Advanced
+5. Memory & Dialogue
+6. School
+7. Passive Capture
+8. Security
+9. Channels
+10. Mission Control
+11. MCP Servers
+12. Features
+13. Location
+14. Timing & Windows
+15. Control Centre
 
-### Local AI & Behaviour
+A category with no fields and no page of its own is skipped rather than shown
+empty. Nothing is filed under a category named for how difficult it is: that
+says how hard a setting was thought to be rather than what it is about, and the
+reader looking for the Ollama URL has no way to know it was considered hard.
 
-This category exposes only the local Ollama pipeline, grouped into **Local
-models**, **Timeouts**, and **Thinking and behaviour**. `ollama_chat_model` is
-the local CHAT fallback and PRIVATE model, `local_fast_model` is the separate
-FAST fallback, and `ollama_embed_model` handles local embeddings.
+### Providers
+
+**Timeouts** and **Thinking and behaviour** are what is true of a reply
+whichever route produced it. **Local Ollama** is the local endpoint:
+`ollama_chat_model` is the PRIVATE model, which writes memory and tidies
+dictation, `ollama_embed_model` handles local embeddings, and
+`ollama_base_url` is the server both reach. Neither answers a conversation:
+FAST and CHAT are served by configured routes alone, so no local model is
+offered here as a reply model.
 
 Effective FAST/CHAT providers, endpoint credentials, route models,
 `chat_backend_override`, and `crew_chat_agent` are not duplicated here. The
-category links to the control centre's authoritative LLM Routes editor. Legacy
+control centre's route editor is the one place they are edited. Legacy
 single-endpoint keys remain supported by config loading and are preserved when
 already present, but a general-settings save cannot silently reconstruct or
 overwrite them.
+
+### Security and Channels
+
+Security is the gate: which level is in force, whether an approval is
+remembered, which channels may ask, and how long a request waits. Channels is
+what each of those ways of reaching Jarvis needs in order to work, which today
+is the **Telegram** bot token, chat, host, and whether that chat may talk to
+Jarvis rather than only approve actions. The gate uses Telegram; that does not
+make Telegram part of the confirmation policy, and filing its credentials
+under Security hides them from anyone setting up a chat.
+
+### Passive Capture
+
+Whether the record is running is not a field here. That switch names the model
+backend the room's text will reach and asks before it starts; a checkbox beside
+it would be the same switch with the question taken out, and whichever of the
+two was used last is the one the other misreports. It lives on the passive
+record itself in the control centre. What this category holds is how the record
+behaves once it is on.
 
 ### Speech pipeline
 
@@ -113,17 +144,9 @@ never enter either settings form or `config.json`.
 ### Features
 
 The Features category exposes user-facing runtime toggles that do not need a
-dedicated page:
-
-- `web_search_enabled`
-- `brave_search_api_key`
-- `wikipedia_fallback_enabled`
-- `low_power_mode`
-- `tune_enabled`
-- `dictation_enabled`
-- `dictation_hotkey`
-- `dictation_filler_removal`
-- `dictation_custom_dictionary`
+dedicated page, in four sections: **The web** (search and its fallbacks),
+**This computer** (the two opt-ins for acting on the machine), **Dictation**,
+and **This machine** (`low_power_mode`, `tune_enabled`).
 
 `low_power_mode` is a boolean toggle. When enabled, the voice listener skips
 LLM startup warmup and the Ollama keep-alive windows used by warmup and the

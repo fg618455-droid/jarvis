@@ -59,17 +59,12 @@ def _openai_cfg() -> _Cfg:
     "module_path, fn_name, cfg_factory, expected_backend_module",
     [
         # Reply path
-        ("src.jarvis.reply.planner", "call_llm_direct", _ollama_cfg, "ollama"),
         ("src.jarvis.reply.planner", "call_llm_direct", _openai_cfg, "openai_compatible"),
-        ("src.jarvis.reply.evaluator", "call_llm_direct", _ollama_cfg, "ollama"),
         ("src.jarvis.reply.evaluator", "call_llm_direct", _openai_cfg, "openai_compatible"),
-        ("src.jarvis.reply.enrichment", "call_llm_direct", _ollama_cfg, "ollama"),
         ("src.jarvis.reply.enrichment", "call_llm_direct", _openai_cfg, "openai_compatible"),
         # Memory path
-        ("src.jarvis.memory.graph_ops", "call_llm_direct", _ollama_cfg, "ollama"),
         ("src.jarvis.memory.graph_ops", "call_llm_direct", _openai_cfg, "openai_compatible"),
         # Builtin tools
-        ("src.jarvis.tools.builtin.nutrition.log_meal", "call_llm_direct", _ollama_cfg, "ollama"),
         ("src.jarvis.tools.builtin.nutrition.log_meal", "call_llm_direct", _openai_cfg, "openai_compatible"),
     ],
 )
@@ -109,12 +104,48 @@ def test_call_llm_direct_wrapper_dispatches_via_factory(
         assert result == "openai-result"
 
 
+@pytest.mark.parametrize(
+    "module_path",
+    [
+        "src.jarvis.reply.planner",
+        "src.jarvis.reply.evaluator",
+        "src.jarvis.reply.enrichment",
+        "src.jarvis.memory.graph_ops",
+        "src.jarvis.tools.builtin.nutrition.log_meal",
+    ],
+)
+def test_a_route_less_ollama_config_reaches_no_reply_backend(module_path: str):
+    """Ollama is not a reply provider. A configuration that names it and
+    configures no routes has nothing to answer with, and the wrapper must
+    return empty rather than reaching for the local model behind the
+    caller's back."""
+    import importlib
+    mod = importlib.import_module(module_path)
+    cfg = _ollama_cfg()
+
+    from src.jarvis.llm.ollama import OllamaBackend
+    from src.jarvis.llm.openai_compatible import OpenAICompatibleBackend
+
+    with patch.object(OllamaBackend, "direct", return_value="ollama-result") as ollama_direct, \
+         patch.object(OpenAICompatibleBackend, "direct", return_value="openai-result") as openai_direct:
+        result = mod.call_llm_direct(
+            cfg=cfg,
+            chat_model=cfg.llm_chat_model,
+            system_prompt="sys",
+            user_content="user",
+            timeout_sec=1.0,
+        )
+
+    assert not ollama_direct.called
+    assert not openai_direct.called
+    assert not result
+
+
 # ── chat() wrapper (engine) ────────────────────────────────────────────────
 
 @pytest.mark.parametrize(
     "cfg_factory, expected_backend_module",
     [
-        (_ollama_cfg, "ollama"),
         (_openai_cfg, "openai_compatible"),
     ],
 )
@@ -142,30 +173,30 @@ def test_engine_chat_with_messages_dispatches_via_factory(cfg_factory, expected_
 
 # ── weather extractor (uses get_llm_backend directly, no local wrapper) ────
 
-@pytest.mark.parametrize(
-    "cfg_factory, expected_backend_module",
-    [
-        (_ollama_cfg, "ollama"),
-        (_openai_cfg, "openai_compatible"),
-    ],
-)
-def test_weather_place_extractor_dispatches_via_factory(cfg_factory, expected_backend_module: str):
+def test_weather_place_extractor_dispatches_via_factory():
     from src.jarvis.tools.builtin import weather as weather_mod
     from src.jarvis.llm.ollama import OllamaBackend
     from src.jarvis.llm.openai_compatible import OpenAICompatibleBackend
 
-    cfg = cfg_factory()
+    cfg = _openai_cfg()
 
     with patch.object(OllamaBackend, "direct", return_value="London") as ollama_direct, \
          patch.object(OpenAICompatibleBackend, "direct", return_value="London") as openai_direct:
         weather_mod._extract_place_from_user_text("weather in london please", cfg)
 
-    if expected_backend_module == "ollama":
-        assert ollama_direct.called
-        assert not openai_direct.called
-    else:
-        assert openai_direct.called
-        assert not ollama_direct.called
+    assert openai_direct.called
+    assert not ollama_direct.called
+
+
+def test_weather_place_extractor_reaches_no_local_model():
+    """The extractor runs on the FAST tier, which has no local route."""
+    from src.jarvis.tools.builtin import weather as weather_mod
+    from src.jarvis.llm.ollama import OllamaBackend
+
+    with patch.object(OllamaBackend, "direct", return_value="London") as ollama_direct:
+        weather_mod._extract_place_from_user_text("weather in london please", _ollama_cfg())
+
+    assert not ollama_direct.called
 
 
 def test_factory_always_returns_one_routing_code_path():
@@ -175,7 +206,7 @@ def test_factory_always_returns_one_routing_code_path():
     assert isinstance(get_llm_backend(_openai_cfg()), RoutedBackend)
 
 
-def test_configured_routes_are_split_by_tier_and_end_locally():
+def test_configured_routes_are_split_by_tier_and_nothing_is_appended():
     from src.jarvis.llm import Tier, get_llm_backend
 
     cfg = _ollama_cfg()
@@ -202,8 +233,9 @@ def test_configured_routes_are_split_by_tier_and_end_locally():
 
     backend = get_llm_backend(cfg)
 
-    assert [route.name for route in backend.routes_for(Tier.CHAT)] == ["chat-cloud", "local-chat"]
-    assert [route.name for route in backend.routes_for(Tier.FAST)] == ["fast-cloud", "local-fast"]
+    assert [route.name for route in backend.routes_for(Tier.CHAT)] == ["chat-cloud"]
+    assert [route.name for route in backend.routes_for(Tier.FAST)] == ["fast-cloud"]
+    # Memory keeps its local route; the two reply chains never gain one.
     assert [route.provider for route in backend.routes_for(Tier.PRIVATE)] == ["ollama"]
 
 

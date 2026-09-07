@@ -163,10 +163,17 @@ class TestWriting:
         assert "mcps" not in _stored(client)
 
     def test_settings_this_endpoint_does_not_own_survive(self, client):
+        # Read before the write rather than compared with a number: the
+        # version this file ends up at is whatever the migration chain says,
+        # and pinning it here fails every time a migration is added without
+        # anything about this endpoint having changed.
+        before = _stored(client)
+
         _put(client, [])
 
-        assert _stored(client)["whisper_language"] == "de"
-        assert _stored(client)["_config_version"] == 3
+        after = _stored(client)
+        assert after["whisper_language"] == "de"
+        assert after["_config_version"] == before["_config_version"]
 
     def test_a_server_with_no_command_is_refused(self, client):
         response = _put(client, [{"name": "broken", "command": "  ", "args": []}])

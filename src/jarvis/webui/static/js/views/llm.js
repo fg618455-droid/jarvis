@@ -1,12 +1,25 @@
-/* LLM routes: schema-driven configuration beside effective runtime chains. */
+/* LLM routes, in the two halves they are actually made of.
+
+   Configuring a chain and watching one run are different questions asked at
+   different times, and one editor reachable from two addresses is one editor
+   too many: whichever door you did not come through is the one showing a
+   stale copy of what you just typed.
+
+   So the routes are configured in exactly one place, Settings → Providers,
+   and the panel on the deck is the reading: which routes the three chains
+   actually resolved to, how each is doing, and the two controls that ask the
+   endpoints rather than change them. */
 
 import { api } from "../api.js";
 import { t } from "../i18n.js";
 import { chip, clear, el, empty, toast } from "../ui.js";
 import { holdingUnsaved } from "../unsaved.js";
 
+/* Pinning is exact: the chosen backend answers or the turn fails. Only a
+   protocol a route can actually be configured for belongs here, and a local
+   model is not one of them. */
 const CHAT_BACKEND_CHOICES = [
-  "auto", "ollama", "claude_subscription", "codex_subscription", "crew_chat",
+  "auto", "claude_subscription", "codex_subscription", "crew_chat",
 ];
 const CREW_CHAT_AGENTS = [
   "", "jarvis", "dev", "research", "assistant", "schule", "scribe", "reach",
@@ -15,51 +28,31 @@ const CHAT_ONLY_PROVIDERS = new Set([
   "claude_subscription", "codex_subscription", "crew_chat",
 ]);
 
+/* The panel: what the three chains resolved to, and nothing that writes a
+   configuration file. Probing and clearing cooldowns stay here because both
+   are questions about the running system rather than changes to it, and this
+   is the view they answer. */
 export async function mount(root) {
-  root.append(el("div", { class: "view-head" }, [
+  const head = el("div", { class: "view-head" }, [
     el("h1", { text: t("llm.title") }),
     el("p", { text: t("llm.lead") }),
-  ]));
-  return mountRoutes(root);
-}
-
-/* The routes themselves, without the heading that names the page they are
-   usually on. Settings carries this too, because the category named after
-   the providers is where someone looking for the providers goes; a heading
-   there would be the second one on a panel that already has its own. */
-export async function mountRoutes(root) {
+  ]);
   const actions = el("div", { class: "actions" });
-  const backendCard = el("section", { class: "card" });
   const chains = el("div", { class: "grid" });
-  const editorCard = el("section", { class: "card route-config-card" });
-  root.append(actions, backendCard, chains, editorCard);
-
-  let payload = null;
-  /* The editor holds a copy of the routes and writes them in one go, so
-     until Save is pressed a change lives in the page and nowhere else. A
-     reload replaces that copy with what is stored, which is what refresh
-     does, so it is also what clears this. */
-  let edited = false;
+  head.append(actions);
+  root.append(head, chains);
 
   async function refresh() {
-    payload = await api.llmRoutes();
-    edited = false;
-    paintBackendSelectors(backendCard, payload, refresh, mayDiscard);
-    paintChains(chains, payload.effective_chains || payload.chains || {});
-    paintEditor(editorCard, payload, refresh, () => { edited = true; });
-  }
-
-  /* Reloading replaces the editor's copy with what is stored, so anything
-     that reloads throws away what is typed into it. Every control that does
-     asks first, for the same reason leaving the view does. */
-  function mayDiscard() {
-    return !edited || window.confirm(t("unsaved.discardConfirm"));
+    const payload = await api.llmRoutes();
+    paintChains(
+      chains, payload.effective_chains || payload.chains || {},
+      payload.empty_tiers || [],
+    );
   }
 
   const probe = el("button", {
     class: "btn", type: "button", text: t("llm.probe"),
     onclick: async () => {
-      if (!mayDiscard()) return;
       probe.disabled = true;
       try {
         const result = await api.probeLlmRoutes();
@@ -76,13 +69,45 @@ export async function mountRoutes(root) {
   const reset = el("button", {
     class: "btn", type: "button", text: t("llm.reset"),
     onclick: async () => {
-      if (!mayDiscard()) return;
       await api.resetLlmRoutes();
       toast(t("llm.resetDone"));
       await refresh();
     },
   });
   actions.append(probe, reset);
+
+  await refresh();
+}
+
+/* The editor, which Settings mounts inside the Providers category. It wears
+   the surface it landed on: its parts are sections of that form, set in the
+   same heading as the fields under them, rather than cards drawn inside a
+   card. */
+export async function mountRoutes(root) {
+  const backend = el("div", { class: "settings-group" });
+  const editor = el("div", { class: "settings-group" });
+  root.append(backend, editor);
+
+  let payload = null;
+  /* The editor holds a copy of the routes and writes them in one go, so
+     until Save is pressed a change lives in the page and nowhere else. A
+     reload replaces that copy with what is stored, which is what refresh
+     does, so it is also what clears this. */
+  let edited = false;
+
+  async function refresh() {
+    payload = await api.llmRoutes();
+    edited = false;
+    paintBackendSelectors(backend, payload, refresh, mayDiscard);
+    paintEditor(editor, payload, refresh, () => { edited = true; });
+  }
+
+  /* Reloading replaces the editor's copy with what is stored, so anything
+     that reloads throws away what is typed into it. Every control that does
+     asks first, for the same reason leaving the view does. */
+  function mayDiscard() {
+    return !edited || window.confirm(t("unsaved.discardConfirm"));
+  }
 
   await refresh();
 
@@ -204,8 +229,8 @@ function paintEditor(container, currentPayload, refresh, touch) {
   });
 
   container.append(
-    el("header", {}, [el("h2", { text: t("llm.editor") })]),
-    el("p", { class: "aside", text: t("llm.editorLead") }),
+    el("h3", { class: "settings-section", text: t("llm.editor") }),
+    el("p", { class: "settings-lead", text: t("llm.editorLead") }),
     list,
     el("div", { class: "actions" }, [add, save]),
   );
@@ -322,25 +347,56 @@ function paintBackendSelectors(container, currentPayload, refresh, mayDiscard) {
     }
   });
 
+  /* A pin allows no fallback, so a pin onto a provider with no route is not
+     a preference that quietly does nothing any more: it is every reply
+     failing, identically, until someone notices. Say it here, beside the
+     control that caused it. */
+  const unbacked = currentPayload.chat_backend_override_backed === false
+    ? el("p", { class: "aside bad", role: "status" }, [
+      chip(t("llm.backendUnbackedTag"), "warn"),
+      ` ${t("llm.backendUnbacked", {
+        provider: t(`llm.backend.${currentPayload.chat_backend_override}`),
+      })}`,
+    ])
+    : null;
+
+  // Filtered rather than appended straight: `append` turns a null into the
+  // word "null" on the page, and there is nothing to say when the pin is
+  // backed.
   container.append(
-    el("header", {}, [el("h2", { text: t("llm.backendTitle") })]),
-    el("p", { class: "aside", text: t("llm.backendLead") }),
-    el("div", { class: "field-row" }, [
-      el("label", {}, [el("span", { text: t("llm.backendOverride") }), overrideSelect]),
-      el("label", {}, [el("span", { text: t("llm.crewChatAgent") }), agentSelect]),
-    ]),
+    ...[
+      el("h3", { class: "settings-section", text: t("llm.backendTitle") }),
+      el("p", { class: "settings-lead", text: t("llm.backendLead") }),
+      el("div", { class: "field-row" }, [
+        el("label", {}, [el("span", { text: t("llm.backendOverride") }), overrideSelect]),
+        el("label", {}, [el("span", { text: t("llm.crewChatAgent") }), agentSelect]),
+      ]),
+      unbacked,
+    ].filter(Boolean),
   );
 }
 
-function paintChains(container, chains) {
+function paintChains(container, chains, emptyTiers) {
   clear(container);
+  const empty = new Set(emptyTiers);
   for (const tier of ["fast", "chat", "private"]) {
     const routes = chains[tier] || [];
+    /* Nothing is appended behind FAST or CHAT, so an empty one is not a
+       slower chain, it is work that can no longer happen at all: FAST
+       carries tool routing, the wake-word judge and the planner. Saying so
+       here is the only place a reader would look. */
+    const warning = empty.has(tier)
+      ? el("p", { class: "aside bad", role: "status" }, [
+        chip(t("llm.tierEmptyTag"), "warn"),
+        ` ${t(`llm.tierEmpty.${tier}`)}`,
+      ])
+      : null;
     container.append(el("section", { class: "card llm-chain" }, [
       el("header", {}, [
         el("h2", { text: t(`llm.tier.${tier}`) }),
         el("span", { class: "aside", text: `${routes.length}` }),
       ]),
+      warning,
       routeList(routes),
     ]));
   }

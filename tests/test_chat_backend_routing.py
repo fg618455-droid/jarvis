@@ -1,10 +1,11 @@
 """``chat_with_messages`` resolves which Tier.CHAT backend a turn prefers:
 a manual config override, or (under "auto") the preference the tool
 router's own LLM call already classified this turn as needing. Either
-way the resolved preference is only ever a hint passed to
-``RoutedBackend.chat(preferred_provider=...)`` — the existing route chain
-and its fail-soft fallback are what actually enforce "never leave a turn
-unanswered", tested separately in test_llm_routing.py.
+The two travel differently: a manual override is a pin
+(``forced_provider``) that lets nothing else answer, tested in
+test_chat_backend_pinned.py; automatic classification stays a hint
+(``preferred_provider``) that only reorders the chain, so the chain's own
+fail-soft fallback still catches the turn.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ class TestManualOverride:
         with patch("src.jarvis.reply.engine.get_llm_backend", return_value=mock_backend):
             chat_with_messages(cfg, [{"role": "user", "content": "hi"}])
 
-        assert mock_backend.chat.call_args.kwargs["preferred_provider"] == "claude_subscription"
+        assert mock_backend.chat.call_args.kwargs["forced_provider"] == "claude_subscription"
 
     def test_override_forces_crew_chat(self, mock_backend):
         from src.jarvis.reply.engine import chat_with_messages
@@ -49,21 +50,23 @@ class TestManualOverride:
         with patch("src.jarvis.reply.engine.get_llm_backend", return_value=mock_backend):
             chat_with_messages(cfg, [{"role": "user", "content": "hi"}])
 
-        assert mock_backend.chat.call_args.kwargs["preferred_provider"] == "crew_chat"
+        assert mock_backend.chat.call_args.kwargs["forced_provider"] == "crew_chat"
 
     def test_override_wins_over_automatic_preference(self, mock_backend):
         """Manual override is unconditional — it must not be overridden by
         whatever the router classified this turn as."""
         from src.jarvis.reply.engine import chat_with_messages
 
-        cfg = _cfg(chat_backend_override="ollama")
+        cfg = _cfg(chat_backend_override="codex_subscription")
         with patch("src.jarvis.reply.engine.get_llm_backend", return_value=mock_backend):
             chat_with_messages(
                 cfg, [{"role": "user", "content": "hi"}],
                 chat_backend_preference="complex",
             )
 
-        assert mock_backend.chat.call_args.kwargs["preferred_provider"] == "ollama"
+        kwargs = mock_backend.chat.call_args.kwargs
+        assert kwargs["forced_provider"] == "codex_subscription"
+        assert kwargs["preferred_provider"] is None
 
     def test_override_logs_the_decision(self, mock_backend):
         from src.jarvis.reply.engine import chat_with_messages
@@ -93,7 +96,11 @@ class TestAutomaticRouting:
 
         assert mock_backend.chat.call_args.kwargs["preferred_provider"] == "claude_subscription"
 
-    def test_local_preference_selects_ollama(self, mock_backend):
+    def test_local_preference_names_no_provider(self, mock_backend):
+        """"local" means the turn is small enough that the cheapest
+        configured route will do, and that is the configured chain order
+        already. There is no local reply model to prefer any more, so the
+        classification leaves the chain exactly as it is."""
         from src.jarvis.reply.engine import chat_with_messages
 
         cfg = _cfg()
@@ -103,7 +110,9 @@ class TestAutomaticRouting:
                 chat_backend_preference="local",
             )
 
-        assert mock_backend.chat.call_args.kwargs["preferred_provider"] == "ollama"
+        kwargs = mock_backend.chat.call_args.kwargs
+        assert kwargs["preferred_provider"] is None
+        assert kwargs["forced_provider"] is None
 
     def test_hermes_preference_selects_crew_chat(self, mock_backend):
         from src.jarvis.reply.engine import chat_with_messages
@@ -162,6 +171,7 @@ class TestFailOpen:
             chat_with_messages(cfg, [{"role": "user", "content": "hi"}])
 
         assert mock_backend.chat.call_args.kwargs["preferred_provider"] is None
+        assert mock_backend.chat.call_args.kwargs["forced_provider"] is None
 
     def test_missing_override_attribute_defaults_to_auto(self, mock_backend):
         """A cfg object built before this feature existed (no

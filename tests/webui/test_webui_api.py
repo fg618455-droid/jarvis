@@ -538,12 +538,11 @@ class TestSystem:
     def test_the_reading_names_the_models_in_use(self, client):
         body = client.get("/api/system", headers=HEADERS).get_json()
 
-        assert body["models"]["effective"]["chat"]["model"]
-        assert body["models"]["local"]["chat_fallback"]["model"]
+        assert body["models"]["local"]["private"]["model"]
         assert body["speech_recognition"]["backend"]
         assert body["process"]["pid"] > 0
 
-    def test_remote_routes_local_fallbacks_and_residency_are_separate(
+    def test_remote_routes_local_memory_and_residency_are_separate(
         self, client, tmp_path, monkeypatch,
     ):
         from jarvis.webui.api import system as system_api
@@ -588,8 +587,10 @@ class TestSystem:
             "name": "cloud-chat", "provider": "openai_compatible",
         }
         assert models["effective"]["fast"]["location"] == "remote"
-        assert models["local"]["fast_fallback"]["model"] == "local-fast"
-        assert models["local"]["chat_fallback"]["model"] == "local-chat"
+        # The local list is memory and embeddings, and nothing that replies:
+        # a reply-shaped local role here would be a local model the user
+        # could mistake for the one answering them.
+        assert set(models["local"]) == {"private", "embedding"}
         assert models["local"]["private"]["model"] == "local-chat"
         assert models["local"]["embedding"]["model"] == "local-embed"
         assert models["resident"] == [{"name": "resident-model", "size": "4 GB"}]

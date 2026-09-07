@@ -444,14 +444,25 @@ def _apply_custom_dictionary(text: str, dictionary: list) -> str:
     return text
 
 
-def _llm_clean_dictation(text: str, cfg, *, model: str = "gemma4:e2b", thinking: bool = False) -> str:
-    """Use the configured chat backend to remove filler words and tidy
-    dictation output. Falls back to the original text if the LLM is
-    unreachable, slow, or returns nothing usable."""
+def _llm_clean_dictation(text: str, cfg, *, model: str = "", thinking: bool = False) -> str:
+    """Tidy dictation output by removing filler words and false starts.
+
+    Runs on the PRIVATE tier, which is the loopback Ollama model. Dictated
+    speech is whatever the user happened to say into their microphone, and
+    it is being cleaned rather than answered, so it belongs with memory
+    writes rather than with the reply chain: sending it to whichever remote
+    route happens to be first would put private speech on someone else's
+    server for a cosmetic rewrite.
+
+    ``model`` overrides the resolved private model; it exists for callers
+    that already hold one. Falls back to the original text if the model is
+    unreachable, slow, or returns nothing usable, so a missing local model
+    costs the tidy-up and never the dictation.
+    """
     if cfg is None:
         return text
 
-    from ..llm import get_llm_backend
+    from ..llm import get_llm_backend, resolve_model, Tier
 
     system_prompt = (
         "Clean dictated text by removing filler words, hesitations, and false "
@@ -465,9 +476,12 @@ def _llm_clean_dictation(text: str, cfg, *, model: str = "gemma4:e2b", thinking:
     # (≈ len/4) with a floor, so short utterances stay bounded while long
     # ones are never cut. The 5s timeout is the real anti-runaway backstop.
     cap = max(64, len(text) // 2)
+    private_model = resolve_model(cfg, Tier.PRIVATE)
+    if model:
+        private_model = type(private_model)(model, Tier.PRIVATE)
     try:
         cleaned = get_llm_backend(cfg).direct(
-            model, system_prompt, text,
+            private_model, system_prompt, text,
             timeout_sec=5.0,
             thinking=thinking,
             max_tokens=cap,

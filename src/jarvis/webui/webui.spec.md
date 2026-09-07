@@ -104,14 +104,16 @@ configuration. A small inline script in `index.html` applies it before the
 first paint, because the module that owns it is deferred and the page would
 otherwise flash the default on every load for anyone who changed it.
 
-The System model card makes three different facts explicit. **Effective
-routes** names the first currently available FAST, CHAT, and PRIVATE candidate
-and labels each one local or remote. **Configured local models** names the
-Ollama FAST fallback, CHAT fallback, PRIVATE, and embedding roles. **Actually
-resident in Ollama** is populated only from `ollama ps` and carries the local
-GPU reading beside it. A remote route model is therefore never presented as
-if it consumed local VRAM. The LLM Routes view applies the same local/remote
-label to every effective-chain entry.
+The System model card is about this machine, and holds two facts that are
+never merged. **Configured local models** names the Ollama PRIVATE and
+embedding roles. **Actually resident in Ollama** is populated only from
+`ollama ps` and carries the local GPU reading beside it. A remote route model
+is therefore never presented as if it consumed local VRAM.
+
+Which routes the three chains resolved to is not here. It is the LLM routes
+panel's reading, and it is the same reading: taken in two places it would be
+taken at two moments and disagree about which endpoint is answering. That
+panel is where every effective-chain entry is labelled local or remote.
 
 ## Runtime
 
@@ -336,37 +338,94 @@ assistant work.
 
 | Region | Holds |
 |---|---|
-| Left rail | Today, System, Memory, Security, and the passive record. What the assistant knows and what state it is in |
-| Centre | The face, the assistant's name, what it is doing in words, and the dock that speaks or types to it |
-| Right rail | The last exchange, then Tools, MCP servers, LLM routes, Mission Control, and Logs as tiles under it, one to a row. How the machine is wired |
+| Left rail | Today, System, Memory, and the passive record. What the assistant knows and what state it is in |
+| Centre | The stage: the face, what it is doing, and either the readings that matter or the conversation itself. See "The stage" below |
+| Right rail | Tools, MCP servers, LLM routes, Mission Control, and Logs as tiles, one to a row. How the machine is wired |
 | Panel | Whichever detail is open, over the right rail |
 
-The deck is sized against the window rather than flowed down it. Only a rail
-and an open panel's body scroll: a deck that grew past the bottom of the
-screen would put the face somewhere you have to scroll back to, which is the
-one thing this layout exists to prevent.
+The deck is sized against the window rather than flowed down it. Only a rail,
+the stage's exchange, and an open panel's body scroll: a deck that grew past
+the bottom of the screen would put the face somewhere you have to scroll back
+to, which is the one thing this layout exists to prevent.
 
 Being sized against the window, a rail has to fill it. Every card in a rail
 takes an equal share of its height, so the scale of a card is the rail
-divided by what is in it rather than a gap someone left underneath. Two
-things are exempt.
-
-The last exchange takes its own height rather than a share. It is three
-lines that do not wrap, so it is the same three lines tall whether it is
-showing a turn or saying there has not been one; given a share of the rail
-it would be a tall box holding one line of text, which is the hole the rail
-was packed to close with a border drawn round it. What it does not take goes
-to the readings under it rather than back to the page, and because its
-height never changes the rail never rearranges itself the first time anyone
-speaks.
-
-And a tile is never given more room than a card beside it: it carries one
-number where a card carries a number and a line about it, so it comes out
-shorter at every window the deck is used at.
+divided by what is in it rather than a gap someone left underneath. A tile is
+the one exception: it is never given more room than a card beside it, because
+it carries one number where a card carries a number and a line about it, so
+it comes out shorter at every window the deck is used at.
 
 Below 1240px the right rail stops being a rail and folds into a row under
 the deck. There is no height there to share, so the tiles lay out across the
 width and take their own.
+
+### The stage
+
+The conversation is not a destination. Talking to the assistant is what the
+interface is for, so it happens where the assistant is: under the face, above
+the thing you type into. There is no conversation panel and no security
+panel, and `#/conversation` and `#/security` resolve to `#/deck` like every
+other retired address.
+
+The stage has two states and they are one attribute apart, so what changes
+between them is the layout rather than the contents of anything.
+
+| `data-stage` | Holds |
+|---|---|
+| `resting` | The face at full scale, its name, what it is doing, and one line of readings under it |
+| `talking` | The face capped against the room left, the exchange filling the rest, and the same dock |
+
+It is `talking` as soon as anything is in the exchange: a seeded history, a
+turn the daemon announced, or a message typed on this page. Only one of the
+two bands is ever in the layout, because a band held open for the other is
+the hole this arrangement exists to close.
+
+**The glance.** A start screen that is a circle and a text box is honest and
+useless: it says the assistant is running and nothing about whether anything
+needs you. Four readings answer that — what today holds, which level the gate
+is at and whether anything is queued behind it, which model is answering, and
+how long the daemon has been up. They are painted from the deck's shared
+snapshot rather than from endpoints of their own, so four readings are not
+four more timers, and each opens the panel it came from. The gate is the one
+that does not, because what its panel would have shown is already on this
+stage.
+
+A reading whose source failed or has not answered shows an em dash, for the
+reason every widget does: a zero meaning "no answer" and a zero meaning
+"none" are different facts, and on the gate they are the two that matter.
+
+**The exchange.** The last few turns, oldest rising away above the newest.
+The whole history is `/api/turns`; this is the conversation as it is
+happening. A turn arrives in three pieces in the order they become true —
+what was understood, the answer as it is written, then the finished record
+everything is reconciled against — so a page that missed a piece of the
+stream still ends up showing exactly what was said. A message typed here is
+on screen before the request is made, and the `heard` event that follows
+adopts that bubble rather than adding a second one.
+
+It is the only thing on the stage that scrolls. Two scrollers would give
+every gesture two possible answers and slide the dock out of reach.
+
+**The gate.** A confirmation is a question asked mid-turn, and the answer is
+the only thing between the assistant and running a tool on this machine.
+Behind a widget it is a question in a drawer: the reader is watching the
+face, the request expires on its own, and a refusal that was never made reads
+afterwards exactly like one that was. So it stands immediately over the dock,
+carrying what was asked, what it was asked with as text, a countdown, and the
+two answers. A card is kept and its countdown ticked in place rather than
+rebuilt, so the buttons do not move out from under the pointer once a second.
+
+It follows `confirmation` and `confirmation_resolved` and counts a clock of
+its own only while something is waiting. A request that has gone is removed
+however it was settled: from here, from the desktop, from Telegram, or by
+running out. A reading that failed leaves what is on screen alone, because a
+lost connection says nothing about what is waiting.
+
+**The dock.** The microphone, what you type, and send. Beside the button, a
+meter of how loud what the microphone is sending is — painted from
+JavaScript, so it asks `motionAllowed()` for itself and is not built at all
+when the answer is no. Nothing is carried by it alone: whether the microphone
+is open is on the button, in its pressed state and in its accessible name.
 
 ### What the phase is called
 
@@ -431,13 +490,14 @@ that waits for all of them waits for ever and shows nothing at all. One
 machine on the network that is not at home is not allowed to be a blank
 interface.
 
-A widget never invents a reading. A source that failed or has not answered
-yet shows an em dash, because a zero meaning "no answer" and a zero meaning
-"none" are very different facts on the security widget.
+A widget never invents a reading, and neither does the glance on the stage,
+which is painted from the same snapshot. A source that failed or has not
+answered yet shows an em dash, because a zero meaning "no answer" and a zero
+meaning "none" are very different facts on the gate.
 
 A status chip is toned by what it says rather than by something beside it,
-and two facts that are true at different times get a chip each. The security
-widget carries both rules: the level in force is toned by the level, so a
+and two facts that are true at different times get a chip each. The gate's
+reading carries both rules: the level in force is toned by the level, so a
 gate switched `off` reads as a warning whether or not anything happens to be
 queued, and what is waiting for an answer is its own chip rather than a
 colour borrowed by the level's. Merged, the reassuring tone would be showing
@@ -496,12 +556,6 @@ field typed and typed back again is not a change. A warning on every panel
 switch would be trained away inside a day, and then the one that mattered
 would be clicked through as fast as the rest.
 
-The conversation is the one view that keeps its own height. It scrolls its
-exchange internally and holds its composer in place, so the panel around it
-stops scrolling and hands the whole height over. Two nested scrollers would
-mean every gesture had two possible answers and the composer would slide out
-of reach, which is the exact fault that view was built to avoid.
-
 ### Addresses
 
 `#/deck` is where the interface opens. Every panel keeps the address it had
@@ -510,29 +564,37 @@ existing bookmark and cross-link still arrives somewhere sensible with the
 face behind it. `#/settings` is the only address that replaces the deck.
 
 An address that no longer names anything is followed and then replaced in
-place: `#/overview` and `#/visualizer` resolve to `#/deck`, and `#/llm` to
-`#/llm-routes`, so an old bookmark opens the thing that replaced it without
-leaving two URLs for one state.
+place: `#/overview`, `#/visualizer`, `#/conversation` and `#/security` all
+resolve to `#/deck`, and `#/llm` to `#/llm-routes`, so an old bookmark opens
+the thing that replaced it without leaving two URLs for one state.
 
 ## LLM routes panel
 
 `#/llm-routes` is the canonical address; `#/llm` is an alias for it, resolved
 the same way every other retired address is.
 
-The LLM routes view displays the ordered FAST, CHAT, and PRIVATE chains. Each
-entry keeps active state, protocol, model, masked credential, hit and failure
-counts, block time, and the last safe error label within its chain card. The
-entry layout wraps long model names and error labels instead of overflowing
-into neighbouring chains. The PRIVATE chain is read-only and contains one
-loopback Ollama route. Configured FAST and CHAT entries are editable using
-only the route schema described by the LLM spec. Named controls replace raw
-JSON and preserve order and every operational field, including `api_key_env`,
-`enabled`, and `capabilities`, as well as the masked direct credential. Stable
-source indices let an unchanged masked key survive a rename or reorder without
-exposing it. Provider-specific endpoint and model placeholders cover Ollama,
-OpenAI-compatible, Claude subscription, Codex subscription, and crew routes.
-The backend override and crew route selection live here rather than in general
-Settings.
+The panel is the reading, not the editor. It displays the ordered FAST, CHAT,
+and PRIVATE chains as the runtime resolved them: each entry keeps active
+state, protocol, model, masked credential, hit and failure counts, block
+time, and the last safe error label within its chain card. The entry layout
+wraps long model names and error labels instead of overflowing into
+neighbouring chains. Probing the models and clearing the cooldowns sit here
+too, because both are questions about the running system rather than changes
+to it, and this is the view they answer.
+
+Everything that writes `config.json` is in Settings → Providers: the route
+editor, the backend override, and the crew route selection. Configured FAST
+and CHAT entries are editable using only the route schema described by the
+LLM spec. Named controls replace raw JSON and preserve order and every
+operational field, including `api_key_env`, `enabled`, and `capabilities`, as
+well as the masked direct credential. Stable source indices let an unchanged
+masked key survive a rename or reorder without exposing it. Provider-specific
+endpoint and model placeholders cover every protocol a route can be
+configured for. The PRIVATE chain is not editable: it is one loopback Ollama
+route, and what it runs is the Ollama section of the same category.
+
+One editor at one address is the point. Reachable from two, whichever door
+was not used last shows a stale copy of what was typed in the other.
 
 The API never reconstructs configured routes from runtime status. Its
 `configured_routes` list is the editable disk shape; `effective_chains` is the
@@ -546,12 +608,18 @@ Loading and refreshing the view reads local config and cooldown state only.
 The only control that contacts a configured endpoint is **Probe models**.
 Resetting cooldowns and saving routes are local file writes.
 
-## MCP servers panel
+## MCP servers
 
 An MCP server is a command line, an environment, and a name. All three are
 edited as named controls rather than as raw JSON, the same way the LLM route
 editor works and for the same reason: a text area holding a configuration
 object is a way of asking someone to get the commas right.
+
+They are edited in Settings → MCP servers, which is where everything that
+writes `config.json` lives, and the panel at `#/mcp` is the reading: what is
+configured, what each launches with, whether it connected, and how many tools
+it brought. The environment is listed there by name only, because a
+credential is writable and is not readable, and that half changes nothing.
 
 `config.mcps` cannot ride `PUT /api/settings`. That endpoint refuses any key
 the field registry does not describe, and the registry describes scalars and
@@ -575,12 +643,12 @@ the list would otherwise leave the file describing a set of servers nobody
 asked for.
 
 Two facts sit side by side on every card and are never merged. What is
-*configured* is what this panel writes; what is *connected* is what the
+*configured* is what the editor writes; what is *connected* is what the
 running daemon actually managed to launch and ask. A server saved a moment
-ago is configured and not connected, and the panel says so: tools are
+ago is configured and not connected, and both surfaces say so: tools are
 discovered when the daemon starts, so a new server is on disk now and
 reachable after a restart. Before any discovery pass has run, "not connected"
-would be a guess rather than a reading, and the panel says that instead.
+would be a guess rather than a reading, and the card says that instead.
 
 ## Today panel
 
@@ -644,48 +712,15 @@ contains events emitted through `jarvis.debug.debug_log`, including listening,
 model, and route diagnostics, while the desktop face remains the everyday
 voice interaction surface.
 
-## Conversation view
+## Two live facts, never merged
 
-Three bands, and the exchange is the one the view is for.
-
-| Band | Holds |
-|---|---|
-| Live | This browser's microphone, what Jarvis is doing, and the conversation-mode switch. Under them, the utterances thrown away, and only when there are any |
-| Exchange | Every turn as a dialogue on one speaker column, grouped by day, oldest first, with what each turn cost folded away behind a disclosure |
-| Composer | Typing a turn, and whether to say the answer aloud |
-
-The view fills the window rather than growing past it, so the exchange is
-the only thing on the page that scrolls and the composer stays where it is.
-
-### Two live facts, never merged
-
-The band reports the microphone and the phase side by side because they are
+The stage reports the microphone and the phase separately because they are
 true at different scopes. The phase is the daemon's own and would be true
-with this page closed. The microphone is this browser's, and is true only
-here. A view that ran them together would report that the assistant is
-listening when nothing had opened a microphone at all.
-
-### What "live" means here
-
-- **Phase.** The `phase` event, with the same dot the header uses. The
-  view reads `/api/status` on mount as well, so it is correct from the
-  moment it appears rather than from the next change, which on an idle
-  assistant may never come.
-- **Stage.** The `stage` event names which part of the turn the wait is
-  in. The phase cannot: "running a tool" is true of every tool there is.
-- **The wait.** How long the current phase has been running, counted while
-  a turn is in flight and held still at idle, where it shows the last wait
-  that finished instead.
-- **Arrival.** A turn whose id was not in the previous reading is marked
-  once, for as long as the glow lasts, and never again. A first load marks
-  nothing.
-- **Level.** While the microphone is open, the loudest sample in the frames
-  already going to the daemon. It opens no second capture, keeps no audio,
-  and changes neither what is sent nor when.
-
-The exchange scrolls to the newest turn on arrival only if the reader was
-already there. Someone reading back through the history is not dragged to
-the bottom because a turn finished elsewhere.
+with this page closed; it is what the face draws and what the words beside
+it say. The microphone is this browser's, and is true only here: it is the
+dock's button and the meter next to it. A page that ran them together would
+report that the assistant is listening when nothing had opened a microphone
+at all.
 
 ### Motion that the stylesheet cannot reach
 
@@ -693,13 +728,13 @@ the bottom because a turn finished elsewhere.
 who asked for less motion, but a graphic painted from JavaScript is
 neither: a bar whose height is assigned on a timer keeps moving through
 that rule. `motionAllowed()` in `ui.js` is what anything painted that way
-asks, and the level meter is not built at all when the answer is no. What
-it shows is written beside it in words either way, so nothing is carried by
-motion alone.
+asks, and the microphone's level meter is not built at all when the answer
+is no. What it would have shown is on the button either way, so nothing is
+carried by motion alone.
 
 ### Conversation mode
 
-The band carries the switch that holds the follow-up window open, so no
+The dock carries the switch that holds the follow-up window open, so no
 question needs the wake word, and the header carries an indicator beside
 the phase on every view: an open microphone is a state worth seeing from
 wherever the page happens to be. Both follow the `conversation` event
@@ -712,8 +747,9 @@ so instead of showing a mode that is not running anywhere.
 ## The face
 
 A face that idles, listens, thinks, and speaks in step with the real
-conversation. It is one circle inside one ring, drawn by `static/js/face.js`
-into a canvas in the page.
+conversation. It is a reactor, drawn by `static/js/face.js` into a canvas in
+the page: a hot core inside a casing ring, with a band of coils, filaments,
+ripples and motes in the space between the two.
 
 The face is the centre of the deck and is mounted once for as long as the
 page is open. Opening a panel does not rebuild it: a face rebuilt on every
@@ -722,35 +758,61 @@ looked at a different reading.
 
 ### What it draws
 
-The disc inside the ring is the reading, and how much of the ring it fills is
-what the state is. That matters more than it sounds: it is a channel that
-survives a reader who has asked for no motion, and with every animation off
-the four states are still four different pictures. A face that separated
+The core inside the casing is the reading, and how much of the casing it
+fills is what the state is. That matters more than it sounds: it is a channel
+that survives a reader who has asked for no motion, and with every animation
+off the four states are still four different pictures. A face that separated
 `listening` from `thinking` by the speed of a rotation would have nothing
 left to say to that reader, and reporting the state is the only reason this
 drawing exists.
 
 | Reading | The face shows |
 |---|---|
-| `idle` | The disc at rest, at just over half the ring, breathing slowly |
-| `listening` | The disc open to four fifths of the ring: the largest step on the scale, and the one that has to read across a room |
-| `thinking` | The disc back at rest with one mark travelling round the ring. One moving part rather than an orbit of them, parked at the top when nothing may move |
-| `speaking` | The disc at two thirds, its edge pushed by the block of audio the TTS engine last wrote to the speakers |
+| `idle` | The core at rest, at just over half the casing, breathing slowly |
+| `listening` | The core open to four fifths of the casing: the largest step on the scale, and the one that has to read across a room. Its ripples run inwards, because it is the one state where the reactor is taking something in |
+| `thinking` | The core back at rest with one bright mark and its tail travelling round the casing. The only thing drawn on the casing ring itself, and parked at the top when nothing may move |
+| `speaking` | The core at two thirds, its edge pushed by the block of audio the TTS engine last wrote to the speakers |
 
-A waveform may move the edge of the disc by at most a fourteenth of its
+A waveform may move the edge of the core by at most a fourteenth of its
 radius. Past roughly a tenth an outline stops reading as a circle that is
 speaking and starts reading as a shape that is not a circle, and the samples
 arrive raw from the speakers, so they are normalised against their own peak
 and smoothed against their neighbours before they are drawn.
 
+Everything around the core says how hard the reactor is running rather than
+what it is doing. One energy figure per state sets how brightly the coils
+burn, how fast the machinery turns, how many motes are in the air, and how
+often a ripple leaves the core; the coils carry a charge that runs round them
+at that speed, the graduations outside the casing counter-turn, and the
+filaments between the core and the coils turn the other way again. It is a
+second reading of the same state, which is why it is allowed to live in
+motion alone. Idle is deliberately lit rather than dark: a face that went out
+between two questions would read as a daemon that had stopped.
+
+None of it may become the state. The energy figure and the size of the core
+are eased into rather than cut to, and everything that turns integrates its
+own angle rather than deriving one from the clock, so a change of speed
+accelerates the machinery instead of jumping it. A frame may advance the
+drawing by at most a twentieth of a second, so a tab returned to after an
+hour picks up where it was left rather than spinning through the hour it was
+hidden for.
+
 Everything is painted from `var(--accent)`, read off the stylesheet rather
 than held in the module, so a theme drives the face for free and there is no
 second palette to keep in step with the first. The custom property is
-resolved when the theme changes rather than on every frame.
+resolved to three channels when the theme changes rather than parsed on every
+frame, and every shade after that is arithmetic on those channels. The centre
+of the core is the accent taken towards white, which is how hot it is rather
+than a colour of its own, and the body of the core is left as the accent
+exactly: the glow it casts is painted before it and its rim is drawn as light
+added on top, so the largest object on the page still matches the palette the
+rest of the interface is drawn in.
 
 `motionAllowed()` decides whether there is an animation loop at all. When the
 answer is no there is no loop: a new reading is the only thing that repaints,
-so the picture is genuinely still rather than animating slowly.
+nothing that turns has advanced, and the core is at its state's size exactly
+rather than part-way into it, so the picture is genuinely still rather than
+animating slowly.
 
 ### Dressing it
 

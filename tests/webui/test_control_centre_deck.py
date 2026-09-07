@@ -24,11 +24,9 @@ from jarvis.webui.server import WebUIConfig, WebUIMode, WebUIServer
 
 # Every widget that opens a detail panel, by the address that panel answers to.
 PANELS = [
-    "conversation",
     "memory",
     "tools",
     "mcp",
-    "security",
     "system",
     "llm-routes",
     "logs",
@@ -64,8 +62,8 @@ def painted_deck(page, served: str) -> None:
     rail of blank cards.
     """
     page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
-    # Written on the conversation card by the first paint, and by nothing else.
-    page.wait_for_selector(".widget[data-panel='conversation'][data-empty]", timeout=20000)
+    # Written on the deck by the first paint, and by nothing else.
+    page.wait_for_selector(".deck[data-painted]", timeout=20000)
 
 
 @pytest.fixture(scope="module")
@@ -258,8 +256,7 @@ class TestOneSourceFailingIsNotTheDeckFailing:
             """() => ({
                 memory: document.querySelector(
                     '.widget[data-panel="memory"] .num').textContent.trim(),
-                exchange: document.querySelector(
-                    '.widget[data-panel="conversation"]').dataset.empty,
+                painted: document.querySelector('.deck').dataset.painted,
                 briefing: document.querySelector(
                     '.widget[data-panel="briefing"] .num').textContent.trim(),
             })"""
@@ -268,7 +265,7 @@ class TestOneSourceFailingIsNotTheDeckFailing:
         assert answered["memory"] not in ("", "—"), (
             "a widget whose own source answered is still empty"
         )
-        assert answered["exchange"] in ("true", "false"), (
+        assert answered["painted"] == "true", (
             "the deck never painted, so it never worked out what it holds"
         )
         assert answered["briefing"] == "—", (
@@ -714,48 +711,6 @@ class TestTheDeckFillsTheHeightItTakes:
         # The stage's own padding, and nothing more.
         assert below <= 32, f"{below}px of dead air under the dock"
 
-    def test_the_exchange_takes_its_own_height_with_a_turn_or_without(
-        self, page, served,
-    ):
-        """The failure this catches: an empty rail traded for an empty card.
-
-        The exchange is three lines that do not wrap, so it is the same three
-        lines tall whether it is showing a turn or saying there has not been
-        one. Given a third of the rail either way it is a tall box holding a
-        line of text, which is the hole the rail was packed to close with a
-        border drawn round it.
-        """
-        self._deck(page, served)
-
-        measured = page.evaluate(
-            """() => {
-                const card = document.querySelector('.widget[data-panel="conversation"]');
-                const rail = document.querySelector('.deck-rail-right');
-                const height = () => Math.round(card.getBoundingClientRect().height);
-                const was = card.dataset.empty;
-                const seen = {};
-
-                for (const state of ['true', 'false']) {
-                    card.dataset.empty = state;
-                    void rail.offsetHeight;
-                    seen[state] = height();
-                }
-
-                card.dataset.empty = was;
-                return { ...seen, rail: Math.round(rail.getBoundingClientRect().height) };
-            }"""
-        )
-
-        for state, taken in (("with no turn", measured["true"]), ("with one", measured["false"])):
-            assert taken < measured["rail"] / 3, (
-                f"the exchange {state} takes {taken}px of a "
-                f"{measured['rail']}px rail"
-            )
-        assert measured["true"] == measured["false"], (
-            "the rail is laid out differently for a card that is the same height, "
-            "so the readings under it move the first time anyone speaks"
-        )
-
     def test_a_tile_is_never_taller_than_a_card(self, page, served):
         """A tile carries less than a card, so it is never given more room.
 
@@ -785,11 +740,11 @@ class TestTheDeckFillsTheHeightItTakes:
 class TestAStatusChipIsTonedByWhatItSays:
     """A chip's colour is part of its text, not decoration beside it.
 
-    The security widget carries two facts that are true at different times:
-    which level is in force, and whether anything is waiting for an answer.
-    Toning the level by the waiting count merges them, so a gate that is
-    switched off reads in the reassuring tone whenever nothing happens to be
-    queued, which is exactly when nobody is looking closely.
+    The gate's reading on the stage carries two facts that are true at
+    different times: which level is in force, and whether anything is waiting
+    for an answer. Toning the level by the waiting count merges them, so a
+    gate that is switched off reads in the reassuring tone whenever nothing
+    happens to be queued, which is exactly when nobody is looking closely.
     """
 
     def _with_security(self, page, served, payload):
@@ -802,18 +757,14 @@ class TestAStatusChipIsTonedByWhatItSays:
             ),
         )
         page.goto(f"{served}/#/deck", wait_until="domcontentloaded")
-        page.wait_for_selector(".deck-rail-left .widget", state="visible", timeout=5000)
-        page.wait_for_function(
-            """() => [...document.querySelectorAll('.deck-rail-left .widget')].some(
-                (node) => node.dataset.panel === 'security'
-                    && node.querySelector('.chip')
-            )""",
-            timeout=5000,
+        page.wait_for_selector(
+            ".stage-reading[data-reading='security'] .chip", timeout=20000,
         )
         return page.evaluate(
             """() => {
-                const widget = document.querySelector('.widget[data-panel="security"]');
-                return [...widget.querySelectorAll('.chip')].map((chip) => ({
+                const reading = document.querySelector(
+                    '.stage-reading[data-reading="security"]');
+                return [...reading.querySelectorAll('.chip')].map((chip) => ({
                     text: chip.textContent.trim(),
                     tone: [...chip.classList].filter((name) => name !== 'chip'),
                 }));
@@ -863,7 +814,7 @@ class TestAStatusChipIsTonedByWhatItSays:
         )
 
         waiting = [chip for chip in chips if "2" in chip["text"]]
-        assert waiting, f"nothing on the widget says two decisions are waiting: {chips}"
+        assert waiting, f"nothing on the stage says two decisions are waiting: {chips}"
         assert waiting[0]["tone"] == ["warn"], (
             f"a queued decision is painted {waiting[0]['tone']} rather than 'warn'"
         )

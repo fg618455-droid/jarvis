@@ -52,6 +52,25 @@ class _Response:
             raise requests.exceptions.HTTPError(response=self)
 
 
+def test_the_catalogue_offers_no_retired_endpoint():
+    """Groq, Cerebras and NVIDIA NIM no longer serve this account. Leaving
+    them catalogued would let an import rebuild a chain out of endpoints
+    that answer nothing, and each one costs a real timeout before the chain
+    moves on."""
+    retired = {"groq", "cerebras", "nvidia-nim"}
+
+    assert retired.isdisjoint({endpoint.name for endpoint in ENDPOINTS})
+
+
+def test_no_tier_order_names_an_endpoint_the_catalogue_lacks():
+    from jarvis.llm.route_catalogue import CHAT_ORDER, FAST_ORDER
+
+    known = {endpoint.name for endpoint in ENDPOINTS}
+
+    assert known.issuperset(FAST_ORDER)
+    assert known.issuperset(CHAT_ORDER)
+
+
 def test_openrouter_catalogue_connection_metadata():
     endpoint = _endpoint("openrouter")
 
@@ -60,7 +79,10 @@ def test_openrouter_catalogue_connection_metadata():
     assert endpoint.model_env == "FCC_SMOKE_MODEL_OPEN_ROUTER"
 
 
-def test_gemini_and_openrouter_import_into_the_chat_chain_only():
+def test_an_import_fills_both_reply_chains():
+    """FAST and CHAT are both answered by configured routes now, so an
+    import that only filled one would leave the other with nothing: no
+    local model is appended behind either any more."""
     endpoints = [_endpoint(name) for name in _ROUTE_NAMES]
     values = {}
     results = []
@@ -74,9 +96,8 @@ def test_gemini_and_openrouter_import_into_the_chat_chain_only():
 
     for endpoint in endpoints:
         matches = [route for route in routes if route["name"] == endpoint.name]
-        assert [(route["tier"], route["model"]) for route in matches] == [
-            ("chat", values[endpoint.model_env])
-        ]
+        assert {route["tier"] for route in matches} == {"fast", "chat"}
+        assert {route["model"] for route in matches} == {values[endpoint.model_env]}
 
 
 @pytest.mark.parametrize("endpoint_name", _ROUTE_NAMES)

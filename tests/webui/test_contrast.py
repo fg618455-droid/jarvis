@@ -37,12 +37,10 @@ from jarvis.webui.server import WebUIConfig, WebUIMode, WebUIServer
 VIEWS = [
     "deck",
     "memory",
-    "conversation",
     "passive",
     "tools",
     "mcp",
     "briefing",
-    "security",
     "system",
     "settings",
     "llm-routes",
@@ -214,7 +212,7 @@ def _painted(page, view: str) -> None:
     behind it and reports the view as clean.
     """
     if view == "deck":
-        page.wait_for_selector(".widget[data-panel='conversation'][data-empty]", timeout=20000)
+        page.wait_for_selector(".deck[data-painted]", timeout=20000)
     elif view == "settings":
         page.wait_for_selector(".view-settings .settings-nav", state="visible", timeout=20000)
     else:

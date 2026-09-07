@@ -28,14 +28,28 @@ class _Cfg:
 
 
 class TestGetLLMBackend:
-    def test_returns_ollama_for_default_provider(self):
+    """A reply chain is what `llm_routes` says it is, plus the one
+    single-endpoint shape that is a whole configuration rather than a
+    fallback. Ollama is never part of either: it runs memory and
+    embeddings, and a machine with no reachable reply backend says so
+    instead of substituting a local model."""
+
+    def test_a_route_less_ollama_config_has_nothing_to_reply_with(self):
         from jarvis.llm import RoutedBackend, Tier, get_llm_backend
 
         backend = get_llm_backend(_Cfg())
 
         assert isinstance(backend, RoutedBackend)
-        assert backend.routes_for(Tier.CHAT)[0].provider == "ollama"
-        assert backend.routes_for(Tier.CHAT)[0].base_url == "http://127.0.0.1:11434"
+        assert backend.routes_for(Tier.CHAT) == ()
+        assert backend.routes_for(Tier.FAST) == ()
+
+    def test_memory_still_has_its_local_route(self):
+        from jarvis.llm import Tier, get_llm_backend
+
+        private = get_llm_backend(_Cfg()).routes_for(Tier.PRIVATE)
+
+        assert [route.provider for route in private] == ["ollama"]
+        assert private[0].base_url == "http://127.0.0.1:11434"
 
     def test_returns_openai_compatible_when_provider_set(self):
         from jarvis.llm import RoutedBackend, Tier, get_llm_backend
@@ -44,6 +58,7 @@ class TestGetLLMBackend:
             llm_provider="openai_compatible",
             llm_base_url="http://localhost:1234/v1",
             llm_api_key="sk-test",
+            llm_chat_model="served-model",
         )
 
         backend = get_llm_backend(cfg)
@@ -52,31 +67,30 @@ class TestGetLLMBackend:
         assert backend.routes_for(Tier.CHAT)[0].provider == "openai_compatible"
         assert backend.routes_for(Tier.CHAT)[0].base_url == "http://localhost:1234/v1"
 
-    def test_falls_back_to_ollama_for_unknown_provider(self):
+    def test_an_openai_compatible_endpoint_without_a_model_configures_nothing(self):
+        """Half a configuration is not a configuration. A route with no
+        model cannot answer, and inventing one from the local memory model
+        would put a local reply back in front of the user."""
         from jarvis.llm import Tier, get_llm_backend
 
-        cfg = _Cfg(llm_provider="lm-studio")  # unknown alias
+        cfg = _Cfg(
+            llm_provider="openai_compatible",
+            llm_base_url="http://localhost:1234/v1",
+        )
 
-        backend = get_llm_backend(cfg)
+        assert get_llm_backend(cfg).routes_for(Tier.CHAT) == ()
 
-        assert backend.routes_for(Tier.CHAT)[0].provider == "ollama"
-
-    def test_uses_ollama_base_url_when_llm_base_url_empty(self):
+    def test_an_unknown_provider_alias_replies_with_nothing(self):
         from jarvis.llm import Tier, get_llm_backend
 
-        cfg = _Cfg(ollama_base_url="http://1.2.3.4:11434")
+        cfg = _Cfg(llm_provider="lm-studio")  # unknown alias, resolves to ollama
 
-        backend = get_llm_backend(cfg)
+        assert get_llm_backend(cfg).routes_for(Tier.CHAT) == ()
 
-        assert backend.routes_for(Tier.CHAT)[0].base_url == "http://1.2.3.4:11434"
-
-    def test_ollama_provider_ignores_stale_llm_base_url(self):
-        """``llm_base_url`` is the OpenAI-compatible server's URL. When the
-        provider is Ollama, the backend must use ``ollama_base_url`` and
-        ignore any ``llm_base_url`` left over from a previous
-        OpenAI-compatible configuration — otherwise toggling the provider
-        back to Ollama would silently point OllamaBackend at the old
-        LM Studio URL."""
+    def test_a_stale_llm_base_url_never_reaches_the_memory_route(self):
+        """``llm_base_url`` is the OpenAI-compatible server's URL. Memory
+        work must use ``ollama_base_url`` and ignore any ``llm_base_url``
+        left over from a previous OpenAI-compatible configuration."""
         from jarvis.llm import Tier, get_llm_backend
 
         cfg = _Cfg(
@@ -85,10 +99,21 @@ class TestGetLLMBackend:
             ollama_base_url="http://127.0.0.1:11434",
         )
 
-        backend = get_llm_backend(cfg)
+        private = get_llm_backend(cfg).routes_for(Tier.PRIVATE)[0]
 
-        assert backend.routes_for(Tier.CHAT)[0].provider == "ollama"
-        assert backend.routes_for(Tier.CHAT)[0].base_url == "http://127.0.0.1:11434"
+        assert private.provider == "ollama"
+        assert private.base_url == "http://127.0.0.1:11434"
+
+    def test_a_non_loopback_ollama_url_never_serves_private_work(self):
+        """Memory is local because the data is private, so the private route
+        falls back to loopback rather than following a remote Ollama."""
+        from jarvis.llm import Tier, get_llm_backend
+
+        cfg = _Cfg(ollama_base_url="http://1.2.3.4:11434")
+
+        private = get_llm_backend(cfg).routes_for(Tier.PRIVATE)[0]
+
+        assert private.base_url == "http://127.0.0.1:11434"
 
 
 class TestGetEmbeddingBackend:

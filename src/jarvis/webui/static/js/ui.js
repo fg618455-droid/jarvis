@@ -6,7 +6,6 @@
    memory can become markup here. */
 
 import { t } from "./i18n.js";
-import * as fmt from "./fmt.js";
 
 export function el(tag, props = {}, children = []) {
   const node = document.createElement(tag);
@@ -126,61 +125,6 @@ export function rows(pairs) {
         ]),
       ),
   );
-}
-
-/* Stage colours: a single hue walked through lightness, so the eye reads
-   the bar as one measurement split into parts rather than as a legend of
-   unrelated categories. Tools break the run deliberately, because a tool
-   call is the one segment whose cost is not the assistant's own. */
-const STAGE_TONES = {
-  stt: "#7dd3fc",
-  tool_routing: "#5aa9cc",
-  planner: "#4a8caa",
-  recall: "#3d7189",
-  llm: "#93a4b3",
-  tts_synth: "#d9dee4",
-};
-
-const TOOL_TONE = "#fbbf24";
-
-function stageTone(name) {
-  if (name.startsWith("tool:")) return TOOL_TONE;
-  return STAGE_TONES[name] || "#4b5563";
-}
-
-function stageTotals(turn) {
-  const totals = new Map();
-  for (const stage of turn.stages || []) {
-    totals.set(stage.name, (totals.get(stage.name) || 0) + stage.duration_ms);
-  }
-  return totals;
-}
-
-export function stageBar(turn) {
-  const totals = stageTotals(turn);
-  const measured = [...totals.values()].reduce((a, b) => a + b, 0);
-  const total = Math.max(turn.total_ms || 0, measured);
-  if (!total) return empty(t("deck.noTurns"));
-
-  const bar = el("div", { class: "stagebar" });
-  for (const [name, duration] of totals) {
-    bar.append(
-      el("span", {
-        style: `width: ${((duration / total) * 100).toFixed(2)}%; background: ${stageTone(name)}`,
-        title: `${name}: ${fmt.ms(duration)}`,
-      }),
-    );
-  }
-  const rest = total - measured;
-  if (rest > 1) {
-    bar.append(
-      el("span", {
-        style: `width: ${((rest / total) * 100).toFixed(2)}%; background: var(--surface-3)`,
-        title: fmt.ms(rest),
-      }),
-    );
-  }
-  return bar;
 }
 
 let toastHost = null;
