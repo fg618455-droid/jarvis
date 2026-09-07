@@ -196,3 +196,56 @@ class TestTheGateHoldsUnderAPinnedLanguage:
         listener._finalize_utterance()
 
         assert _dispatched(listener) is not None
+
+    def test_the_probability_that_is_recorded_is_the_one_that_was_measured(self):
+        """The journal is how this failure was found and how a repeat gets
+        found again. A pinned turn filed as 1.00 says only that a language
+        was named, which every pinned turn does; the number worth keeping is
+        the one the identification pass actually returned."""
+        from jarvis.runtime import get_recorder
+
+        listener, _model = _listener_gating("de", 0.85, detection=("de", 0.93))
+
+        # A turn is only filed once it has an answer, so the reading is taken
+        # off the trace the journal entry will later be written from.
+        recorder = get_recorder()
+        opened = []
+        began = recorder.begin
+
+        def remember(**kwargs):
+            opened.append(began(**kwargs))
+            return opened[-1]
+
+        with patch.object(recorder, "begin", side_effect=remember):
+            listener._finalize_utterance()
+
+        assert opened, "the utterance never opened a turn"
+        assert opened[-1].language_probability == pytest.approx(0.93)
+        assert opened[-1].language == "de"
+
+    def test_a_discard_is_counted_under_the_reason_it_happened_for(self):
+        """A silent discard is the usual cause of "it ignored me", so the
+        count has to name this gate rather than land in a general bin."""
+        from jarvis.runtime import get_runtime_state
+
+        before = get_runtime_state().snapshot()["discarded"].get(
+            "language_probability", 0
+        )
+        listener, _model = _listener_gating("de", 0.85)
+
+        listener._finalize_utterance()
+
+        after = get_runtime_state().snapshot()["discarded"].get(
+            "language_probability", 0
+        )
+        assert after == before + 1
+
+    def test_the_language_alone_never_decides(self):
+        """The gate weighs the probability and never compares languages, so
+        it holds for every language and for code-switching inside one. A
+        confident reading that disagrees with the pin is still speech."""
+        listener, _model = _listener_gating("de", 0.85, detection=("en", 0.99))
+
+        listener._finalize_utterance()
+
+        assert _dispatched(listener) is not None
