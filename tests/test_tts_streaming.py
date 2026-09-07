@@ -323,25 +323,32 @@ class TestTheEngineSpeaksWhileItWrites:
 
         assert spoken == []
 
-    def test_without_a_listener_the_reply_is_not_streamed(
+    def test_without_a_listener_nothing_is_spoken(
         self, mock_config, db, dialogue_memory,
     ):
-        """Nothing waiting on early text means nothing to gain from streaming."""
+        """The stream still runs — it is read as well as heard.
+
+        A turn with no speech path is still watched by the control centre,
+        which shows the answer as it is written. What a missing speech
+        listener costs is the sound, and only the sound.
+        """
         from jarvis.reply.engine import run_reply_engine
 
         seen = {}
 
         def mock_chat(*args, on_token=None, **kwargs):
             seen["on_token"] = on_token
+            on_token("Hallo.")
             return _mock_response("Hallo.")
 
         with patch("jarvis.reply.engine.chat_with_messages", side_effect=mock_chat):
-            run_reply_engine(
+            reply = run_reply_engine(
                 db=db, cfg=mock_config, tts=None, text="hallo",
                 dialogue_memory=dialogue_memory,
             )
 
-        assert seen["on_token"] is None
+        assert seen["on_token"] is not None
+        assert reply == "Hallo."
 
     def test_a_speech_path_that_fails_does_not_cost_the_user_the_answer(
         self, mock_config, db, dialogue_memory,
