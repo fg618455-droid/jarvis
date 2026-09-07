@@ -19,7 +19,7 @@
 
 import { api } from "./api.js";
 import { t } from "./i18n.js";
-import { phaseLabel } from "./phase.js";
+import { displayPhase, phaseLabel } from "./phase.js";
 import { el, icon, ICONS, motionAllowed } from "./ui.js";
 
 const SIZE_KEY = "jarvis.faceSize";
@@ -396,10 +396,11 @@ export function mountFace(stage, { onSend, onMicToggle } = {}) {
      actually reading. */
   function paintPhase(phase, reading) {
     const label = phaseLabel(phase, reading);
+    const shown = displayPhase(phase, reading);
     canvas.setAttribute("aria-label", label);
     stateNode.replaceChildren(
-      el("span", { class: `state-pill${phase === "idle" ? "" : " live"}` }, [
-        el("span", { class: "state-pill-dot", dataset: { phase: phase || "offline" } }),
+      el("span", { class: `state-pill${shown === "idle" ? "" : " live"}` }, [
+        el("span", { class: "state-pill-dot", dataset: { phase: shown || "offline" } }),
         el("span", { text: label }),
       ]),
     );

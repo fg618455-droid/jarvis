@@ -41,8 +41,6 @@ class TestVisualizerState:
             (Phase.IDLE, "idle"),
             (Phase.STARTING, "idle"),
             (Phase.DICTATING, "idle"),
-            (Phase.CAPTURING, "listening"),
-            (Phase.TRANSCRIBING, "thinking"),
             (Phase.THINKING, "thinking"),
             (Phase.TOOL, "thinking"),
             (Phase.SPEAKING, "speaking"),
@@ -54,6 +52,48 @@ class TestVisualizerState:
         body = client.get("/api/visualizer/state", headers=HEADERS).get_json()
 
         assert body["state"] == expected
+
+
+class TestOverheardSpeechLeavesTheFaceAlone:
+    """The room talks past Jarvis all day, and the face is not part of it.
+
+    Voice activity opens the microphone and the recogniser runs on whatever
+    it caught, both without anyone having addressed Jarvis. Drawn, that is
+    the face waking and thinking for a second every time someone speaks
+    nearby: motion that answers no question the watcher asked, and that
+    claims an exchange which is not happening.
+    """
+
+    @pytest.mark.parametrize("phase", [Phase.CAPTURING, Phase.TRANSCRIBING])
+    def test_the_face_rests_until_jarvis_is_addressed(self, client, phase):
+        get_runtime_state().set_phase(phase)
+
+        body = client.get("/api/visualizer/state", headers=HEADERS).get_json()
+
+        assert body["state"] == "idle"
+
+    @pytest.mark.parametrize(
+        "phase, expected",
+        [(Phase.CAPTURING, "listening"), (Phase.TRANSCRIBING, "thinking")],
+    )
+    def test_a_conversation_gives_the_reading_back(self, client, phase, expected):
+        """In a conversation every utterance is addressed to Jarvis, so the
+        same phases are the face doing exactly what it says it is doing."""
+        get_runtime_state().set_conversation_active(True)
+        get_runtime_state().set_phase(phase)
+
+        body = client.get("/api/visualizer/state", headers=HEADERS).get_json()
+
+        assert body["state"] == expected
+
+    def test_an_accepted_request_still_shows_its_work(self, client):
+        """Nothing is hidden once the wake word landed: the turn's own
+        phases are what the watcher is waiting on."""
+        get_runtime_state().set_phase(Phase.THINKING)
+
+        body = client.get("/api/visualizer/state", headers=HEADERS).get_json()
+
+        assert body["state"] == "thinking"
 
     def test_state_carries_the_shape_the_face_expects(self, client):
         body = client.get("/api/visualizer/state", headers=HEADERS).get_json()

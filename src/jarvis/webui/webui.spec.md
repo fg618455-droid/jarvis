@@ -370,31 +370,41 @@ width and take their own.
 
 ### What the phase is called
 
-The runtime publishes one word per phase, and outside a conversation two of
-those words describe one wait. `phase.js` turns a phase into the sentence
-shown, reading it against the one fact that changes what it means: whether a
+The runtime publishes one word per phase, and outside a conversation three of
+those words describe one wait. `phase.js` turns a phase into the reading
+shown, against the one fact that changes what it means: whether a
 conversation is open.
 
 | Phase | Situation | Reads as |
 |---|---|---|
 | `idle` | no conversation | waiting for the wake word |
 | `capturing` | no conversation | waiting for the wake word |
+| `transcribing` | no conversation | waiting for the wake word |
 | `idle` | a conversation is open | in conversation, no wake word needed |
 | `capturing` | a conversation is open | listening |
+| `transcribing` | a conversation is open | transcribing |
 
-`capturing` means voice activity opened the microphone, not that Jarvis was
-addressed. Outside a conversation the utterance is on its way to a wake-word
-check, and most of what a room says was meant for nobody in particular, so
-the wait the reader is in has not changed and neither does the sentence. A
-room with people in it enters and leaves `capturing` several times a minute;
-a header that renamed the wait each time would flicker between two sentences
-that say the same thing. Whether the room is being written down is the
-recording indicator's job, beside the phase and true for as long as it is on,
-rather than a phrase that appears only while someone happens to be talking.
+`capturing` means voice activity opened the microphone, and `transcribing`
+that the recogniser is running on what it caught; neither means Jarvis was
+addressed. Outside a conversation both are steps towards finding out whether
+the wake word was said at all, and most of what a room says was meant for
+nobody in particular, so the wait the reader is in has not changed and
+neither does the reading. A room with people in it passes through both
+several times a minute; a header that renamed the wait each time would
+flicker between sentences that say the same thing. Whether the room is being
+written down is the recording indicator's job, beside the phase and true for
+as long as it is on, rather than a phrase that appears only while someone
+happens to be talking.
 
 Asking for the wake word during a conversation is the opposite mistake: it
 names something that is not needed, and reads as the assistant having missed
 the user.
+
+`displayPhase()` holds the same rule for everything painted rather than
+written: the dot, the live pill, and the conversation band's stopwatch all
+take the phase from it, so nothing moves while the words hold still. The
+face's own drawing is held back the same way, one step earlier, in the
+reading `/api/visualizer/state` serves.
 
 The header, the face's label, and the conversation band take their words from
 that one function, so the same moment cannot be described three ways. A page
@@ -759,7 +769,7 @@ Jarvis's own live objects:
 
 | Reading | Source |
 |---|---|
-| `state` | The runtime phase (`jarvis.runtime.state.Phase`), mapped to `idle`, `listening`, `thinking`, or `speaking`. `capturing` reads as listening; `transcribing`, `thinking`, and `tool` all read as thinking; `starting` and `dictating` read as idle |
+| `state` | The runtime phase (`jarvis.runtime.state.Phase`), mapped to `idle`, `listening`, `thinking`, or `speaking`. `thinking` and `tool` read as thinking; `starting` and `dictating` read as idle. `capturing` reads as listening and `transcribing` as thinking only while a conversation is open: outside one they are the wait for the wake word, and a face that woke for a second every time someone in the room spoke would be answering a question nobody asked |
 | `level`, `samples` | The most recent block of audio a TTS engine wrote to the speakers, fed in by `PiperTTS` and `KokoroTTS` as they play. A waveform older than 0.6 seconds is stale and is not shown; when the samples are fresh they are trusted as speech even if the phase reading has not caught up yet |
 | `alert`, `loading` | Always `false`. Jarvis has no attention-signal concept and no TTS engine plays a thinking sound separate from the reply itself, so nothing here would ever set them |
 

@@ -1,22 +1,37 @@
 /* What the assistant is doing, said in the reader's terms.
 
-   The runtime publishes one word per phase, and outside a conversation two
-   of those words describe one wait. `idle` and `capturing` both mean the
-   wake word has not been said: voice activity opens the microphone for
-   whoever is in the room, and what it heard still has to be checked for the
-   name. Said as two sentences they turn the header into a flicker between
-   them every time anyone speaks nearby, and the second sentence carries
-   nothing the reader can act on.
+   The runtime publishes one word per phase, and outside a conversation
+   three of those words describe one wait. `idle`, `capturing` and
+   `transcribing` all mean the wake word has not been said yet: voice
+   activity opens the microphone for whoever is in the room, and the
+   recogniser runs on what it caught so the name can be looked for in it. A
+   room with people in it passes through all three several times a minute,
+   and none of it is an exchange with Jarvis.
 
-   Inside a conversation the same two words mean something else, because
-   nothing needs the wake word then, and that difference is worth the words.
+   Outside a conversation they are therefore one reading: the same sentence,
+   the same dot, no motion. Inside a conversation every utterance is
+   addressed to Jarvis, and the same phases are then worth showing, because
+   they are the work the reader is waiting on.
 
    The phase stays one word because the runtime measures with it. The
-   sentence built here is the reading, and it is built in one place so the
-   header, the face, and the conversation band cannot disagree about what
-   the same moment means. */
+   reading built here is what an interface shows, and it is built in one
+   place so the header, the face, and the conversation band cannot disagree
+   about what the same moment means. */
 
 import { t } from "./i18n.js";
+
+/* The phases that, on their own, only mean the wake word has not been said. */
+const BEFORE_A_TURN = new Set(["capturing", "transcribing"]);
+
+/* The phase an interface should paint: the runtime's word, unless it is a
+   step towards finding out whether Jarvis was addressed at all. Everything
+   painted from a phase (the dot, the pill, the wait's stopwatch) takes it
+   from here, so nothing moves while the words hold still. */
+export function displayPhase(phase, reading = {}) {
+  const { conversation = false } = reading;
+  if (!conversation && BEFORE_A_TURN.has(phase)) return "idle";
+  return phase;
+}
 
 /* `phase` is the runtime's own word. `reading` is what the page knows around
    it: whether it is still connected, and whether a conversation is open. */
@@ -30,12 +45,7 @@ export function phaseLabel(phase, reading = {}) {
   const known = phase && t(`phase.${phase}`) !== `phase.${phase}`;
   if (!known) return t("phase.offline");
 
-  if (conversation) {
-    return phase === "idle" ? t("phase.idle.conversation") : t(`phase.${phase}`);
-  }
-
-  // Overheard speech is still the wait for the wake word, not an exchange.
-  if (phase === "capturing") return t("phase.idle");
-
-  return t(`phase.${phase}`);
+  const shown = displayPhase(phase, reading);
+  if (conversation && shown === "idle") return t("phase.idle.conversation");
+  return t(`phase.${shown}`);
 }

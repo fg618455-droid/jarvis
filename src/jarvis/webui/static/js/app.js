@@ -14,7 +14,7 @@ import { api } from "./api.js";
 import { mountDeck, PANELS } from "./deck.js";
 import * as fmt from "./fmt.js";
 import { language, languages, setLanguage, t } from "./i18n.js";
-import { phaseLabel } from "./phase.js";
+import { displayPhase, phaseLabel } from "./phase.js";
 import { live } from "./sse.js";
 import { applyTheme, activeTheme, THEMES } from "./theme.js";
 import { el, icon, ICONS, toast } from "./ui.js";
@@ -241,7 +241,7 @@ function paintHeader() {
     return;
   }
 
-  dom.dot.dataset.phase = status.phase;
+  dom.dot.dataset.phase = displayPhase(status.phase, reading());
   dom.phase.textContent = phaseLabel(status.phase, reading());
   dom.uptime.textContent = fmt.seconds(status.uptime_seconds);
   dom.lastTurn.textContent = status.last_turn ? fmt.ms(status.last_turn.total_ms) : "—";

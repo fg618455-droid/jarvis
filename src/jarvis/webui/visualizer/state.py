@@ -36,6 +36,14 @@ _PHASE_TO_VISUAL_STATE = {
     Phase.DICTATING: "idle",
 }
 
+# The phases that, on their own, only mean the wake word has not been said
+# yet: voice activity opened the microphone for whoever is in the room, and
+# the recogniser is looking through what it caught for the name. Drawn as
+# themselves they wake the face for a second every time anyone speaks
+# nearby. Inside a conversation every utterance is addressed to Jarvis, and
+# then they are the work the watcher is waiting on.
+_BEFORE_A_TURN = frozenset({Phase.CAPTURING, Phase.TRANSCRIBING})
+
 
 class VisualizerWaveform:
     """The most recent block of audio a TTS engine wrote to the speakers.
@@ -85,19 +93,24 @@ def get_visualizer_waveform() -> VisualizerWaveform:
     return _waveform
 
 
-def _phase_to_visual_state(phase_value: str) -> str:
+def _phase_to_visual_state(phase_value: str, in_conversation: bool) -> str:
     try:
-        return _PHASE_TO_VISUAL_STATE[Phase(phase_value)]
+        phase = Phase(phase_value)
     except ValueError:
         return "idle"
+    if not in_conversation and phase in _BEFORE_A_TURN:
+        return "idle"
+    return _PHASE_TO_VISUAL_STATE[phase]
 
 
 def visualizer_state() -> dict:
     """The face's poll response, derived entirely from Jarvis's own state."""
     global _last_reported_state
 
-    phase_value = get_runtime_state().snapshot()["phase"]
-    state = _phase_to_visual_state(phase_value)
+    snapshot = get_runtime_state().snapshot()
+    state = _phase_to_visual_state(
+        snapshot["phase"], bool(snapshot["conversation"]["active"])
+    )
 
     samples, fresh = _waveform.read()
     level = 0.0

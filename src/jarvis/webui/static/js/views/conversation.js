@@ -16,7 +16,7 @@ import { api } from "../api.js";
 import * as fmt from "../fmt.js";
 import { t } from "../i18n.js";
 import { createMic } from "../mic.js";
-import { phaseLabel } from "../phase.js";
+import { displayPhase, phaseLabel } from "../phase.js";
 import { live } from "../sse.js";
 import { ICONS, chip, clear, el, empty, icon, motionAllowed, stageBar, toast } from "../ui.js";
 
@@ -160,9 +160,12 @@ function buildCapture(band, state) {
   let levelTimer = null;
 
   function paintReading() {
-    const phase = state.phase || "offline";
+    const reading = { conversation: state.mode };
+    // Overheard speech is not a turn: the dot, the words, and the stopwatch
+    // all read it as the wait it interrupts rather than as work in flight.
+    const phase = displayPhase(state.phase || "offline", reading);
     phaseDot.dataset.phase = phase;
-    phaseName.textContent = phaseLabel(phase, { conversation: state.mode });
+    phaseName.textContent = phaseLabel(state.phase || "offline", reading);
     stageName.textContent = state.stage;
 
     // While something is happening, how long it has been happening. When

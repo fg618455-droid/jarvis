@@ -30,17 +30,20 @@ from jarvis.webui.server import WebUIConfig, WebUIMode, WebUIServer
 
 LANGUAGES = ["en", "de"]
 
-# Everything `idle` and `capturing` can actually mean, as the page sees it.
+# Everything the phases before a turn can mean, as the page sees them.
 READINGS = {
     "idle-alone": ("idle", {"conversation": False}),
     "capturing-alone": ("capturing", {"conversation": False}),
+    "transcribing-alone": ("transcribing", {"conversation": False}),
     "idle-in-conversation": ("idle", {"conversation": True}),
     "capturing-in-conversation": ("capturing", {"conversation": True}),
+    "transcribing-in-conversation": ("transcribing", {"conversation": True}),
 }
 
-# The sentences those four readings are allowed to be: waiting for the name,
-# in a conversation that does not need it, and being listened to.
-DISTINCT = 3
+# The sentences those readings are allowed to be: waiting for the name, in a
+# conversation that does not need it, being listened to, and being written
+# down.
+DISTINCT = 4
 
 
 def _free_port() -> int:
@@ -162,12 +165,40 @@ class TestThePhaseIsSaidAsItIs:
         self, page, served, language
     ):
         """Speech in the room does not end that wait, so it does not change
-        what the header says. Two sentences for one situation only flicker."""
+        what the header says. Hearing it and running it through the
+        recogniser are steps towards finding out whether the wake word was
+        said at all; named separately they only flicker."""
         said = _labels(page, served, language)
         wake_word = _wake_word_words(page, served, language)
 
         assert said["idle-alone"] == wake_word
         assert said["capturing-alone"] == wake_word
+        assert said["transcribing-alone"] == wake_word
+
+    def test_the_dot_holds_still_with_the_words(self, page, served):
+        """The dot and the pill are painted from the same reading.
+
+        Words that stayed put beside a dot that changed colour every time
+        someone spoke nearby would be the same flicker in another form.
+        """
+        painted = page.evaluate(
+            """async (base) => {
+                const { displayPhase } = await import(base + '/static/js/phase.js');
+                return {
+                    idle: displayPhase('idle', { conversation: false }),
+                    capturing: displayPhase('capturing', { conversation: false }),
+                    transcribing: displayPhase('transcribing', { conversation: false }),
+                    inConversation: displayPhase('capturing', { conversation: true }),
+                    thinking: displayPhase('thinking', { conversation: false }),
+                };
+            }""",
+            served,
+        )
+
+        assert painted["capturing"] == painted["idle"]
+        assert painted["transcribing"] == painted["idle"]
+        assert painted["inConversation"] != painted["idle"]
+        assert painted["thinking"] != painted["idle"]
 
     @pytest.mark.parametrize("language", LANGUAGES)
     def test_every_situation_reads_differently(self, page, served, language):
@@ -241,6 +272,19 @@ class TestTheHeaderReadsTheSituation:
         """
         waiting = self._header(live_page, attached, Phase.IDLE, conversation=False)
         overheard = self._header(live_page, attached, Phase.CAPTURING, conversation=False)
+        written_out = self._header(
+            live_page, attached, Phase.TRANSCRIBING, conversation=False
+        )
+
+        assert overheard == waiting
+        assert written_out == waiting
+
+    def test_the_header_dot_holds_still_too(self, live_page, attached):
+        self._header(live_page, attached, Phase.IDLE, conversation=False)
+        waiting = live_page.locator("#phase-dot").get_attribute("data-phase")
+
+        self._header(live_page, attached, Phase.TRANSCRIBING, conversation=False)
+        overheard = live_page.locator("#phase-dot").get_attribute("data-phase")
 
         assert overheard == waiting
 
