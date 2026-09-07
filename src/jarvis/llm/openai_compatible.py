@@ -280,6 +280,49 @@ def _raise_if_incomplete(
     raise ProviderError("provider truncated the reply")
 
 
+REASONING_ANSWER_ALLOWANCE = 1024
+"""Room added to a caller's cap once a model is known to think first.
+
+A fast-tier cap describes the answer: a list of tool names, a handful of
+keywords, a one-word classification. A model with a reasoning channel
+counts its thinking against that same cap and can spend all of it before
+writing a word. The allowance is what the thinking gets; the caller's own
+number still describes the answer. It is deliberately generous, because a
+classification-shaped task that needs more than a thousand tokens of
+reasoning has gone wrong in a way a larger number would not repair, and
+the route timeout bounds the wall-clock cost either way.
+"""
+
+
+def _reasoning_text(message: Any) -> str:
+    """The model's thinking, under either name servers give the field."""
+    if not isinstance(message, dict):
+        return ""
+    for field in ("reasoning_content", "reasoning"):
+        value = message.get(field)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _spent_the_cap_thinking(data: Any, message: Any) -> bool:
+    """Whether an empty reply is the cap's fault rather than the model's.
+
+    Three things have to line up: the model stopped because it ran out of
+    room, it wrote nothing for the caller, and it did write something for
+    itself. Any other empty reply is an ordinary empty reply, and the
+    chain already knows how to walk past one.
+    """
+    if not isinstance(data, dict):
+        return False
+    choices = data.get("choices")
+    if not (isinstance(choices, list) and choices and isinstance(choices[0], dict)):
+        return False
+    if choices[0].get("finish_reason") != "length":
+        return False
+    return bool(_reasoning_text(message))
+
+
 def _decode_tool_arguments(arguments: str) -> Any:
     """Decode a tool call's accumulated argument string, or keep it as text."""
     try:
@@ -344,6 +387,11 @@ class OpenAICompatibleBackend(LLMBackend):
     def __init__(self, base_url: str, api_key: Optional[str] = None) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key or None
+        # Models observed spending a caller's whole cap on reasoning. One
+        # backend is built per route and kept for the life of the process,
+        # so a model announces itself once and every later fast call on
+        # that route is asked with room for the thinking already in it.
+        self._models_that_think: set[str] = set()
 
     @property
     def base_url(self) -> str:
@@ -356,6 +404,50 @@ class OpenAICompatibleBackend(LLMBackend):
         return headers
 
     # ── chat ───────────────────────────────────────────────────────────
+
+    def _direct_once(
+        self,
+        chat_model: str,
+        messages: List[Dict[str, Any]],
+        timeout_sec: float,
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+    ) -> tuple[Optional[str], bool]:
+        """One completion request, and whether its cap paid for thinking.
+
+        Returns the assistant's text, or ``None`` when it wrote none. The
+        second value says the reply was empty because the model exhausted
+        the cap reasoning, which is the only empty reply worth a second
+        request.
+        """
+        payload: Dict[str, Any] = {
+            "model": chat_model,
+            "messages": messages,
+            "stream": False,
+        }
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+
+        with requests.post(
+            f"{self._base_url}/chat/completions",
+            json=payload,
+            headers=self._headers(),
+            timeout=timeout_sec,
+        ) as resp:
+            resp.raise_for_status()
+            data = resp.json()
+
+        if not isinstance(data, dict):
+            return None, False
+        normalised = _normalise_response(data)
+        message = normalised.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content, False
+        return None, _spent_the_cap_thinking(data, message)
 
     def direct(
         self,
@@ -377,37 +469,40 @@ class OpenAICompatibleBackend(LLMBackend):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ]
-        payload: Dict[str, Any] = {
-            "model": chat_model,
-            "messages": messages,
-            "stream": False,
-        }
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
 
         try:
-            with requests.post(
-                f"{self._base_url}/chat/completions",
-                json=payload,
-                headers=self._headers(),
-                timeout=timeout_sec,
-            ) as resp:
-                resp.raise_for_status()
-                data = resp.json()
+            asked = max_tokens
+            if max_tokens is not None and chat_model in self._models_that_think:
+                asked = max_tokens + REASONING_ANSWER_ALLOWANCE
 
-            normalised = _normalise_response(data) if isinstance(data, dict) else None
-            if normalised:
-                msg = normalised.get("message")
-                if isinstance(msg, dict):
-                    content = msg.get("content")
-                    if isinstance(content, str) and content.strip():
-                        return content
+            content, thought_past_the_cap = self._direct_once(
+                chat_model, messages, timeout_sec, temperature, asked,
+            )
+            if content is not None:
+                return content
+
+            # An empty answer whose whole budget went to reasoning is the
+            # one empty answer worth asking about again: the model had
+            # something to say and no room left to say it in.
+            if thought_past_the_cap and max_tokens is not None and asked == max_tokens:
+                self._models_that_think.add(chat_model)
                 debug_log(
-                    "OpenAICompatibleBackend.direct: empty response content",
+                    "OpenAICompatibleBackend.direct: the reply budget went to "
+                    f"reasoning, asking again with {REASONING_ANSWER_ALLOWANCE} "
+                    "more tokens for the thinking",
                     "llm",
                 )
+                content, _ = self._direct_once(
+                    chat_model, messages, timeout_sec, temperature,
+                    max_tokens + REASONING_ANSWER_ALLOWANCE,
+                )
+                if content is not None:
+                    return content
+
+            debug_log(
+                "OpenAICompatibleBackend.direct: empty response content",
+                "llm",
+            )
         except requests.exceptions.Timeout:
             debug_log(f"OpenAICompatibleBackend.direct: timeout after {timeout_sec}s", "llm")
             raise ProviderError("provider request timed out") from None

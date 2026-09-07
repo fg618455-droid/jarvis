@@ -77,6 +77,16 @@ A fold that only concatenates deltas cannot tell a finished reply from one whose
 
 `finish_reason: "length"` is the server stopping the model mid-sentence, not the model finishing, and it is refused the same way on both the streamed and unstreamed paths. A fragment presented as an answer is worse than no answer, because nothing in it tells the user that the rest was cut off. A cap the caller asked for (`max_tokens` in the request) is the caller's own decision and its short answer stands.
 
+### Reasoning budgets
+
+A `max_tokens` cap describes the answer the caller wants, not the thinking a model does before writing it. Every fast-tier caller sets a small one, because a tool list, a few keywords or a one-word classification is all it is asking for. A model with a reasoning channel counts its thinking against that same cap and can spend the whole of it before writing a word, which arrives as `finish_reason: "length"`, an empty `content`, and the entire allowance sitting in `reasoning_content`. Read as an ordinary empty response, that fails the route, then the next route running the same model family, and the caller falls back to its own no-answer behaviour on every single turn. Nothing about that is visible as a model problem.
+
+`OpenAICompatibleBackend.direct()` therefore treats the three conditions together, and only together, as the cap's fault rather than the model's: the model stopped at the cap, wrote nothing for the caller, and did write something for itself. It asks once more with `REASONING_ANSWER_ALLOWANCE` (1024) added, so the caller's number still describes the answer and the thinking gets room of its own. Any other empty reply, including one with no reasoning behind it and one from a caller that set no cap, stays an ordinary empty response the chain walks past.
+
+The model is then remembered for the life of the backend, and every later capped `direct()` call on that route asks with the allowance included. One extra round trip per model is a warm-up cost; one per turn would be a latency bug, since the fast tier exists to answer inside its own few seconds. A widened request that is still empty is not widened again. The memory is per backend instance, which `RoutedBackend` builds once per route, so it never crosses between routes and never reaches disk.
+
+The allowance is deliberately generous: a classification-shaped task needing more than a thousand tokens of reasoning has gone wrong in a way a larger number would not repair, and the route timeout bounds the wall-clock cost either way.
+
 ## Typed provider failures
 
 `OpenAICompatibleBackend` raises:
@@ -101,15 +111,21 @@ A tier's chain is not one list. A call carrying a tool schema considers only rou
 
 An empty response is not only a `None` return. Text, a tool call, and reasoning are the three things a chat turn can be made of, and `chat_response_is_empty()` reads a response holding none of them as a route that did not answer, however well-formed the envelope around it is. Some endpoints answer a request they cannot serve with exactly that shape: a valid completion, zero tokens either side, no content. Returning it would end the turn on a route that never spoke, and the caller cannot tell that apart from a model with nothing to say, so the chain walks on to the next capable route instead. A tool call without prose and a reasoning-only turn are both answers and stop the walk.
 
-Configured `codex_subscription` routes are accepted only for CHAT. They are tried after the other configured CHAT candidates and before the appended local fallback because starting the CLI and running a reasoning model has higher latency than an already warm endpoint. FAST and PRIVATE entries for this provider are dropped before a backend is built.
+Configured `codex_subscription` routes are accepted only for CHAT. They are tried after the other configured CHAT candidates because starting the CLI and running a reasoning model has higher latency than an already warm endpoint. FAST and PRIVATE entries for this provider are dropped before a backend is built.
 
 ### The chain budget
 
 `llm_chat_chain_budget_sec` (30 s) is the ceiling on one walk of a chain, across every route it tries. A route's own timeout bounds one attempt, and the caller's timeout bounds the request, but neither bounds the walk: with `llm_chat_timeout_sec` at three minutes, a chain of individually reasonable routes adds up to far longer than anyone waiting to hear an answer will sit through, and it does so without any single route exceeding what it was allowed. `RoutedBackend` derives the walk's `RequestDeadline` from the smaller of the caller timeout and this budget, so the budget is a ceiling and never a floor: a caller asking for less keeps its own tighter deadline. An unset or unusable value leaves the walk to the caller timeout alone. The budget applies to `chat()` and `streaming()`, the two calls that walk a chain on behalf of someone waiting.
 
-Configured FAST and CHAT chains always end with loopback Ollama. The appended local FAST route has a 60-second route limit and the local CHAT route has a 180-second route limit, matching the local-only candidates; each caller can still impose a smaller timeout. Disabled configured entries remain visible in route status but cannot reduce those active local limits. A configuration with no routes has one effective local candidate per lane. `resolve_model()` returns a string-compatible value carrying its `Tier`, so existing backend method signatures remain ordinary model-string APIs while the router can select a chain.
+FAST and CHAT are exactly what `llm_routes` configures. Nothing is appended behind them, and in particular no local model is: both chains answer a person, and a machine that cannot reach a configured backend says so rather than substituting a small local model whose reply reads like the real one. A configuration with no enabled route in a lane has an empty chain for that lane, and every call on it returns nothing, which the caller reports honestly. `ollama` is not a selectable route protocol; an entry naming it (or any other unknown provider) is dropped when the backend is built, so a config file written by an earlier release cannot put a local model back in front of a conversation.
 
-A route the user switched off is inert. It stays in the chain so the control centre can still show it, but it takes no part in deciding how the local candidates are built: a configuration whose only route is disabled yields the same local chain as a configuration with no routes at all. The local candidates always run the configured `local_fast_model` and `ollama_chat_model`, never a remote route model, and their timeouts leave room for a cold model load, because the local candidate is last in its chain and has nothing to fall forward to. A ceiling shorter than a page-in would not buy speed; it would guarantee the candidate can never answer.
+The one exception is shape, not fallback: a configuration with no routes at all but `llm_provider` set to `openai_compatible`, a base URL and a chat model is a whole single-endpoint configuration, and yields one FAST and one CHAT route against that endpoint. A half-filled one (no URL or no model) yields nothing.
+
+`resolve_model()` returns a string-compatible value carrying its `Tier`, so existing backend method signatures remain ordinary model-string APIs while the router can select a chain.
+
+A route the user switched off is inert: it stays in the chain so the control centre can still show it, but it never answers, and switching off the last route in a lane empties that lane rather than summoning a replacement.
+
+Ollama's remaining jobs are PRIVATE work and embeddings. The PRIVATE route runs `ollama_chat_model` on loopback with a 180-second limit, which leaves room for a cold model load: it is the only candidate in its lane and has nothing to fall forward to, so a ceiling shorter than a page-in would not buy speed, it would guarantee the lane can never answer. Dictation's filler-word clean-up runs on this lane too (`dictation_engine._llm_clean_dictation`): dictated speech is private text being tidied rather than a question being answered, so it belongs with memory writes and never travels to the reply chain.
 
 ### Model residency
 
@@ -156,16 +172,20 @@ embeddings stay local.
 
 ## Chat backend selection
 
-The main reply loop's Tier.CHAT call (`chat_with_messages` in `src/jarvis/reply/engine.py`) can bias which configured route answers a given turn, on top of the ordinary chain fallback above. This is a per-call hint, not a second routing mechanism: `RoutedBackend.chat(preferred_provider=...)` only reorders its existing candidate list for that one call, promoting routes of the named provider to the front while leaving the rest of the chain reachable immediately after. A promoted route that is missing from the chain, or present but failing, falls through to the normal chain order exactly as an unpromoted failure would — this feature can never leave a turn with no answer that the existing chain would have produced.
+The main reply loop's Tier.CHAT call (`chat_with_messages` in `src/jarvis/reply/engine.py`) decides which configured route answers a given turn. Two sources feed that decision, resolved by `_resolve_chat_backend_selection`, and they are different promises rather than two strengths of the same one. At most one is ever set on a call.
 
-Two independent sources feed `preferred_provider`, resolved in `chat_with_messages` via `_resolve_preferred_chat_provider`:
+- **Manual override — a pin.** `cfg.chat_backend_override`. `"auto"` (the default) defers to automatic classification below. Any other value names a route provider (`"openai_compatible"`, `"claude_subscription"`, `"codex_subscription"`, `"crew_chat"`) and travels as `RoutedBackend.chat(forced_provider=...)`, which *removes* the rest of the chain for that call instead of reordering it. Only that provider's routes may answer; if none of them do, the call returns nothing and the turn fails. Naming a backend is a decision about which one is allowed to answer, so a pin suppresses automatic classification outright, and answering from a different provider would be exactly the thing the pin rules out. Every route of the pinned provider is still tried: two entries onto one backend are two ways of reaching the thing that was pinned, not a fallback away from it.
+- **Automatic classification — a hint.** Only consulted when the override is `"auto"`. The tool router's own LLM call (`jarvis.tools.selection._select_llm`, see `tools/selection.spec.md`) also classifies the turn as `"local"`, `"complex"`, or `"hermes"` in the same response that picks the tool allow-list, so no second LLM call is made. `"complex"` maps to `"claude_subscription"` and `"hermes"` to `"crew_chat"`; `"local"` names no provider, because it means the turn is small enough that the cheapest configured route will do, and that is the configured chain order already. This travels as `preferred_provider`, which only promotes matching routes to the front and leaves the rest of the chain reachable, so a promoted route that is missing or failing falls through as any unpromoted failure would. A turn with no classification (non-LLM selection strategy, router failure or timeout, or a response that ignored the instruction) resolves to no preference at all.
 
-- **Manual override** — `cfg.chat_backend_override`. `"auto"` (the default) defers to automatic classification below. Any other value names a route provider (e.g. `"ollama"`, `"claude_subscription"`, `"codex_subscription"`, `"crew_chat"`) to try first for every reply, regardless of that turn's classification. Not validated against configured routes at load time: a forced provider with no matching route is the same ordinary "unavailable" case the chain fallback already handles.
-- **Automatic classification** — only consulted when the override is `"auto"`. The tool router's own LLM call (`jarvis.tools.selection._select_llm`, see `tools/selection.spec.md`) also classifies the turn as `"local"`, `"complex"`, or `"hermes"` in the same response that picks the tool allow-list, so no second LLM call is made. `"local"` maps to `"ollama"`, `"complex"` maps to `"claude_subscription"`, `"hermes"` maps to `"crew_chat"`. A turn with no classification (non-LLM selection strategy, router failure or timeout, or a response that ignored the instruction) resolves to no preference at all, which is the existing configured chain order unchanged.
+A pin and native tool schemas interact in the one way that is not a fallback. `claude_subscription` and `codex_subscription` advertise `chat` but not `tools`, so a tool-bearing call under such a pin finds no candidate. Refusing outright would fail every tool turn, and answering from a tool-capable provider would break the pin, so `RoutedBackend` raises `ToolsNotSupportedError` — the signal the reply engine already answers by re-asking that same backend with markdown-fenced tools. A pin onto a provider with no route in the chain at all raises nothing and simply returns nothing: there is no backend present to re-ask.
+
+When a pinned turn produces no reply, the engine says which backend was pinned and that nothing else was tried (`PINNED_BACKEND_MESSAGE`), rather than the "every backend failed" wording used for an exhausted chain. The others were never asked, and telling someone to try again would send them at a request that fails identically every time.
+
+The control centre reports `chat_backend_override_backed`: whether the pinned provider has an enabled CHAT route to answer from. An unbacked pin fails every turn identically, so the page marks it rather than leaving the user unable to tell a broken backend from one that was never configured. The API refuses a pin naming something that is not a route protocol at all, since that can never become answerable; it accepts a protocol with no route yet, because pinning before adding the route is a reasonable order to work in.
 
 The router's classification travels from the tool-router call site to the chat call within one reply exactly like `routed_tools` does: computed once, reused for every turn of that reply's agentic loop, and carried through a hot-window cache hit alongside the cached tool list so a repeated query does not lose it.
 
-`debug_log` fires when the manual override forces a provider, when automatic classification selects `claude_subscription` or `crew_chat`, and when a preferred provider has no matching route and the call falls through to the normal chain order.
+`debug_log` fires when the override pins a provider, when automatic classification prefers one, when a pinned provider has no capable route and the turn ends, and when a preferred provider has no matching route and the call falls through to the normal chain order.
 
 ## Embeddings
 
@@ -177,15 +197,15 @@ With `llm_routes` configured, `get_embedding_backend(cfg)` returns an `OllamaBac
 |---|---|---|
 | `llm_routes` | `[]` | Ordered generic endpoint entries for FAST and CHAT |
 | `llm_chat_chain_budget_sec` | `30.0` | Ceiling on one chain walk, across every route it tries; see "The chain budget" |
-| `chat_backend_override` | `"auto"` | `"auto"` or a route provider name to force for every Tier.CHAT reply; see "Chat backend selection" |
+| `chat_backend_override` | `"auto"` | `"auto"`, or a route provider name that every Tier.CHAT reply is pinned to; see "Chat backend selection" |
 | `llm_provider` | `"ollama"` | Single-endpoint protocol used when `llm_routes` is empty |
 | `llm_base_url` | `""` | Single-endpoint URL used when `llm_routes` is empty |
 | `llm_api_key` | `""` | Single-endpoint bearer credential used when `llm_routes` is empty |
 | `llm_chat_model` | local model | Effective first CHAT model |
 | `fast_model` | automatic | Effective first FAST route model (derived at load time) |
-| `local_fast_model` | `gemma4:e2b` | Ollama FAST fallback model |
+| `local_fast_model` | `gemma4:e2b` | Small local model the setup wizard provisions and budgets VRAM for; not a route |
 | `ollama_base_url` | `http://127.0.0.1:11434` | Ollama URL for a local-only setup; private work requires loopback |
-| `ollama_chat_model` | setup selection | Local chat and private model |
+| `ollama_chat_model` | setup selection | PRIVATE-lane model: memory writes, graph mutations, dictation clean-up |
 | `ollama_embed_model` | `nomic-embed-text` | Local embedding model |
 
 Each `llm_routes` entry has this shape:
