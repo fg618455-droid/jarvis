@@ -25,7 +25,7 @@ from .codex_subscription import CodexSubscriptionBackend
 from .crew_chat import CrewChatBackend
 from .ollama import OllamaBackend
 from .openai_compatible import OpenAICompatibleBackend
-from .route_state import RouteStateStore
+from .route_state import RouteStateStore, route_state_key
 from .tiers import Tier
 
 
@@ -138,11 +138,17 @@ class RoutedBackend(LLMBackend):
             self._backends[route] = backend
         return backend
 
-    def _available(self, tier: Tier, capability: str = "chat"):
+    def _available(
+        self, tier: Tier, capability: str = "chat", *, record_skips: bool = True,
+    ):
         for route in self.routes_for(tier):
             if not route.enabled or capability not in route.capabilities:
                 continue
-            if self._state.is_invalid_for_run(route) or self._state.is_blocked(route):
+            if self._state.is_invalid_for_run(route):
+                continue
+            if self._state.is_blocked(route):
+                if record_skips:
+                    self._state.record_cooldown_skip(route)
                 continue
             yield route
 
@@ -154,7 +160,7 @@ class RoutedBackend(LLMBackend):
         a promoted route that is unavailable or fails still falls through
         to the normal chain rather than ending the turn. No match for
         ``preferred_provider`` in ``routes`` (or no preference at all)
-        returns the input order unchanged â€” the fail-open case a caller
+        returns the input order unchanged — the fail-open case a caller
         forcing an unconfigured provider depends on."""
         if not preferred_provider:
             return routes
@@ -170,19 +176,6 @@ class RoutedBackend(LLMBackend):
         return preferred + rest
 
     @staticmethod
-    def _is_local(route: Route) -> bool:
-        try:
-            host = (urlparse(route.base_url).hostname or "").lower()
-        except ValueError:
-            return False
-        if host == "localhost" or host.endswith(".local"):
-            return True
-        try:
-            return not ipaddress.ip_address(host).is_global
-        except ValueError:
-            return False
-
-    @staticmethod
     def _is_loopback(route: Route) -> bool:
         try:
             host = (urlparse(route.base_url).hostname or "").lower()
@@ -195,6 +188,18 @@ class RoutedBackend(LLMBackend):
         except ValueError:
             return False
 
+    @staticmethod
+    def _is_local(route: Route) -> bool:
+        try:
+            host = (urlparse(route.base_url).hostname or "").lower()
+        except ValueError:
+            return False
+        if host == "localhost" or host.endswith(".local"):
+            return True
+        try:
+            return not ipaddress.ip_address(host).is_global
+        except ValueError:
+            return False
 
     @classmethod
     def _allowed_route(cls, route: Route) -> bool:
@@ -213,7 +218,6 @@ class RoutedBackend(LLMBackend):
             and not cls._is_local(route)
         )
 
-
     @staticmethod
     def _timeout(caller_timeout: float, route: Route) -> float:
         return min(float(caller_timeout), float(route.timeout_sec))
@@ -221,7 +225,12 @@ class RoutedBackend(LLMBackend):
     def _failed(self, route: Route, error: BaseException | str) -> None:
         if isinstance(error, AuthError):
             self._state.mark_invalid_for_run(route)
-        self._state.record_failure(route, error)
+        if isinstance(error, str) and "empty" in error.lower():
+            self._state.record_empty_response(route)
+        elif isinstance(error, BaseException):
+            self._state.record_provider_failure(route, error)
+        else:
+            self._state.record_failure(route, error)
         debug_log(
             f"LLM {route.tier.value} route failed ({error if isinstance(error, str) else type(error).__name__})",
             "llm",
@@ -236,12 +245,15 @@ class RoutedBackend(LLMBackend):
         preferred_provider: str | None = None,
         deadline: RequestDeadline | None = None,
     ):
+        tier = self._tier(model)
         candidates = self._ordered_for_preference(
-            list(self._available(self._tier(model), capability)), preferred_provider,
+            list(self._available(tier, capability)), preferred_provider,
         )
         for route in candidates:
             if deadline is not None and deadline.expired(clock=self._clock):
+                self._state.record_deadline_skip(route)
                 break
+            self._state.record_attempt(route)
             try:
                 result = invoke(self._backend(route), route)
             except ToolsNotSupportedError:
@@ -252,8 +264,10 @@ class RoutedBackend(LLMBackend):
             if result is None:
                 self._failed(route, "EmptyResponse")
                 continue
-            self._state.record_hit(route)
+            self._state.record_success(route)
             return result
+        reason = "deadline" if deadline is not None and deadline.expired(clock=self._clock) else "exhausted"
+        self._state.record_chain_exhaustion(tier, reason)
         return None
 
     def direct(self, chat_model, system_prompt, user_content, timeout_sec=10.0,
@@ -268,12 +282,14 @@ class RoutedBackend(LLMBackend):
                   timeout_sec=30.0, thinking=False,
                   deadline: RequestDeadline | None = None):
         deadline = deadline or RequestDeadline.after(timeout_sec, clock=self._clock)
-        available = list(self._available(self._tier(chat_model), "stream"))
-        stream_routes = available
+        stream_routes = list(self._available(self._tier(chat_model), "stream"))
         for route in stream_routes:
             remaining = deadline.remaining(clock=self._clock)
             if remaining <= 0.0:
+                self._state.record_deadline_skip(route)
                 break
+
+            self._state.record_attempt(route)
 
             lock = threading.RLock()
             progress_or_done = threading.Event()
@@ -343,9 +359,12 @@ class RoutedBackend(LLMBackend):
                     if isinstance(error, ToolsNotSupportedError):
                         raise error
                     if isinstance(error, (ProviderError, requests.exceptions.RequestException, TimeoutError)):
-                        self._failed(route, error)
+                        self._state.record_stream_abort(route, error)
+                    self._state.record_chain_exhaustion(
+                        self._tier(chat_model), "stream_aborted"
+                    )
                     return None
-                self._state.record_hit(route)
+                self._state.record_success(route)
                 return result or chunks
 
             with lock:
@@ -354,7 +373,7 @@ class RoutedBackend(LLMBackend):
             if finished and result is not None:
                 if on_token and isinstance(result, str) and result.strip():
                     on_token(result)
-                self._state.record_hit(route)
+                self._state.record_success(route)
                 return result
             if isinstance(error, ToolsNotSupportedError):
                 raise error
@@ -363,14 +382,16 @@ class RoutedBackend(LLMBackend):
             elif error is not None:
                 self._failed(route, ProviderError(type(error).__name__))
             else:
-                self._failed(route, "ProgressDeadlineExceeded" if not finished else "EmptyResponse")
+                self._failed(route, "EmptyResponse")
+        reason = "deadline" if deadline.expired(clock=self._clock) else "exhausted"
+        self._state.record_chain_exhaustion(self._tier(chat_model), reason)
         return None
 
     def chat(self, chat_model, messages, timeout_sec=30.0, extra_options=None,
              tools=None, thinking=False, on_token=None, preferred_provider=None,
              deadline: RequestDeadline | None = None):
         # A route that cannot stream still answers, it just answers all at
-        # once â€” so falling back through the chain never depends on whether
+        # once — so falling back through the chain never depends on whether
         # the caller wanted its text early.
         #
         # ``preferred_provider`` promotes routes of that provider to the
@@ -411,6 +432,7 @@ class RoutedBackend(LLMBackend):
             for route in self._available(tier, "chat")
         )
         for route in routes:
+            self._state.record_attempt(route)
             try:
                 found = self._backend(route).list_models(
                     timeout_sec=self._timeout(timeout_sec, route)
@@ -428,6 +450,7 @@ class RoutedBackend(LLMBackend):
         targets = [first_healthy] if first_healthy is not None else []
         warmed = False
         for route in targets:
+            self._state.record_attempt(route)
             try:
                 ok = self._backend(route).warm_up(
                     route.model,
@@ -443,7 +466,7 @@ class RoutedBackend(LLMBackend):
                 continue
             if ok:
                 warmed = True
-                self._state.record_hit(route)
+                self._state.record_success(route)
             else:
                 self._failed(route, "WarmUpFailed")
         return warmed
@@ -451,13 +474,13 @@ class RoutedBackend(LLMBackend):
     def route_status(self) -> dict[str, list[dict[str, Any]]]:
         result: dict[str, list[dict[str, Any]]] = {}
         for tier in Tier:
-            available = list(self._available(tier))
+            available = list(self._available(tier, record_skips=False))
             active = available[0] if available else None
             chain = []
             for route in self.routes_for(tier):
                 status = self._state.status(route)
                 chain.append({
-                    "id": f"{tier.value}:{route.name}",
+                    "id": route_state_key(route),
                     "name": route.name,
                     "provider": route.provider,
                     "base_url": route.base_url,
@@ -467,12 +490,20 @@ class RoutedBackend(LLMBackend):
                     "enabled": route.enabled,
                     "capabilities": sorted(route.capabilities),
                     "api_key_env": route.api_key_env,
+                    "configured": True,
+                    "selectable": route in available,
+                    "next_selectable": route == active,
                     "active": route == active,
                     "invalid": self._state.is_invalid_for_run(route),
                     **status,
                 })
             result[tier.value] = chain
         return result
+
+    def health_summary(self) -> dict[str, dict[str, Any]]:
+        return self._state.chain_status()
+
+
 
     def reset(self, route: Route | None = None) -> None:
         self._state.reset(route)
