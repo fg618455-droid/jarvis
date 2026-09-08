@@ -93,6 +93,7 @@ def test_every_session_has_the_deny_all_callback_and_default_permission_mode():
         assert options["mcp_servers"] == {}
         assert options["permission_mode"] == "default"
         assert options["max_turns"] == 1
+        assert options["extra_args"] == {"no-session-persistence": None}
         assert callable(options["can_use_tool"])
     assert [message["type"] for message in emitted].count("tool_denied") == 2
     assert "must not be logged" not in json.dumps(emitted)

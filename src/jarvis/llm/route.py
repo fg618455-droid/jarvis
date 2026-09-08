@@ -219,6 +219,7 @@ class RoutedBackend(LLMBackend):
                 "openai_compatible", "claude_subscription",
                 "codex_subscription", "crew_chat",
             }
+            and (route.tier is Tier.CHAT or route.provider == "openai_compatible")
             and not cls._is_local(route)
         )
 

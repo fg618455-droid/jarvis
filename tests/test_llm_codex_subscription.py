@@ -109,6 +109,10 @@ class TestSafeInvocation:
         cwd = observed["kwargs"]["cwd"]
         assert cwd
         assert args[args.index("--cd") + 1] == cwd
+        from pathlib import Path
+        assert 'history.persistence="none"' in args
+        assert 'log_dir=' + json.dumps(str(Path(cwd) / 'logs')) in args
+        assert 'sqlite_home=' + json.dumps(str(Path(cwd) / 'state')) in args
 
     def test_child_environment_cannot_select_a_metered_api_key(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "metered-secret")

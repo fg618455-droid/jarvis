@@ -22,6 +22,13 @@ from jarvis.llm.route import RequestDeadline, Route, RoutedBackend
 from jarvis.llm.route_state import RouteStateStore
 
 
+@pytest.mark.parametrize("provider", ["claude_subscription", "codex_subscription", "crew_chat"])
+def test_direct_router_construction_rejects_subscription_fast_lane(provider, tmp_path):
+    route = Route("wrong-lane", provider, "subscription", "", "model", Tier.FAST, 5.0)
+    router = RoutedBackend([route], state_store=RouteStateStore(tmp_path / "state.json"))
+    assert not router.routes_for(Tier.FAST)
+
+
 def test_probe_cli_supports_a_windows_cp1252_console(monkeypatch):
     from jarvis.llm import probe
 

@@ -79,6 +79,10 @@ class ClaudeSubscriptionBackend(LLMBackend):
     ) -> None:
         self._sidecar = sidecar_client or ClaudeSubscriptionSidecarClient()
 
+    def close(self) -> None:
+        """Release the sidecar when its owning runtime shuts down."""
+        self._sidecar.stop()
+
     def _log_selected(self, method: str) -> None:
         debug_log(f"ClaudeSubscriptionBackend: selected for {method}", "llm")
 

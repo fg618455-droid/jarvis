@@ -2,7 +2,7 @@
 
 Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it is gated. This is the reference for optimising the app's main bottleneck (LLM latency). Keep it in sync with the code — see the note at the bottom.
 
-> **Backend abstraction and lanes.** Every completion below enters the process-wide `LLMRuntime`, takes one immutable generation snapshot, and selects FAST, CHAT, or PRIVATE through `resolve_model(cfg, tier)`. FAST contains explicit cloud routes only; CHAT contains explicit cloud/subscription routes only; neither lane appends or falls back to Ollama. PRIVATE contains one loopback Ollama route, and `get_embedding_backend(cfg)` is separate, always loopback Ollama, and never routed. Blank credentials are unavailable. Subscription and crew routes are CHAT-only. A route update is built and atomically published for the next turn while an in-flight turn finishes on its old snapshot.
+> **Backend abstraction and lanes.** Daemon text, voice and conversation turns take a settings/backend generation from the process-wide `LLMRuntime`. Their completion helpers select FAST, CHAT or PRIVATE through `resolve_model(cfg, tier)` using that snapshot; standalone helpers use the settings supplied by their caller. FAST contains explicit cloud routes only; CHAT contains explicit cloud/subscription routes only; neither lane appends or falls back to Ollama. PRIVATE contains one loopback Ollama route, and `get_embedding_backend(cfg)` is separate, always loopback Ollama, and never routed. Blank credentials are unavailable. Subscription and crew routes are CHAT-only. A route update is built and atomically published for the next turn while an in-flight turn finishes on its old snapshot.
 >
 > The config loader and control-centre route editor accept the same provider
 > set. The editor round-trips environment credential names, activation, and
@@ -440,3 +440,5 @@ Groq GPT-OSS completion requests use `reasoning_effort=low` by default and
 output. Direct, streaming and tool requests share this policy. Explicit larger
 budgets and reasoning effort are preserved. Other endpoints keep their payloads.
 API contract: https://console.groq.com/docs/api-reference
+
+Subscription text-tool acceptance on 8 September 2026 used the actual Claude Sonnet 5 and Codex gpt-5.6-sol clients, the production text-tool parser and registry dispatch of getTime. Both passed with synthetic prompts. CLI transcript persistence is disabled; Codex logs/state use the request temporary directory and Claude sidecars close at runtime shutdown.

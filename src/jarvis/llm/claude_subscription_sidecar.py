@@ -49,6 +49,7 @@ async def _generate(request: dict, emit: Callable[[dict], None]) -> None:
         mcp_servers={},
         cwd=tempfile.gettempdir(),
         max_turns=1,
+        extra_args={"no-session-persistence": None},
         include_partial_messages=streaming,
     )
     client = _sdk.ClaudeSDKClient(options=options)

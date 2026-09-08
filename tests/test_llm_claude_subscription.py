@@ -10,6 +10,20 @@ import pytest
 from jarvis.llm.claude_subscription_sidecar_client import ClaudeSidecarError
 
 
+def test_runtime_shutdown_closes_claude_sidecar():
+    from unittest.mock import Mock
+    from jarvis.llm.claude_subscription import ClaudeSubscriptionBackend
+    from jarvis.llm.runtime import LLMRuntime
+
+    sidecar = Mock()
+    backend = ClaudeSubscriptionBackend(sidecar)
+    runtime = LLMRuntime(builder=lambda _: backend)
+    runtime.install(SimpleNamespace(llm_routes=[]))
+    runtime.shutdown()
+    runtime.shutdown()
+    sidecar.stop.assert_called_once_with()
+
+
 class FakeSidecar:
     def __init__(self, result="pong", error=None, chunks=()):
         self.result = result

@@ -46,3 +46,5 @@ ISO candidate is accepted only when the stored date text supplies explicit
 day and year evidence; all uncertain dates keep `days_remaining: null`.
 
 The opt-in live acceptance harness requires an explicit BOM-free JSON configuration and an existing NAS/Synology workspace before any writes. OCR acceptance displays known text on the primary screen and invokes screenshot through the registry. Safe reports retain only status and token-match booleans. Other tool checks remain separate acceptance gates.
+
+The guarded harness also supports supervised temporary-file and nutrition-database write/read/delete checks, fail-closed registry checks, actual-vault read-only search, disposable-process MCP refresh, and subscription text-parser/dispatcher acceptance. It never uses the productive nutrition database. Supervised approval and denial remain separate outcomes; absence of a channel proves fail-closed policy, not an explicit user denial.

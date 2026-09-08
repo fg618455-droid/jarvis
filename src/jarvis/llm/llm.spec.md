@@ -344,3 +344,13 @@ Graph placement and school-note imports always use PRIVATE, including category c
 Atomic config persistence retries Windows sharing/lock violations up to three
 times with bounded backoff. Other permission errors fail immediately; an
 unsuccessful replacement preserves the original config and removes the temp file.
+
+
+Subscription subprocesses do not persist session transcripts. Claude supplies
+`no-session-persistence` and exposes a close hook that stops its sidecar on runtime
+shutdown. Codex disables history persistence and keeps logs/SQLite state inside
+its per-request temporary directory; the caller controls TEMP/TMP without changing
+the existing login root. These are supported by the
+[Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+The router itself also rejects CHAT-only subscription/crew providers in FAST,
+including direct constructions that bypass the settings factory.
