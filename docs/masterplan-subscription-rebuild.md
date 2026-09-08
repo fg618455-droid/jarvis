@@ -1195,8 +1195,9 @@ evals/
 Zwei Baselines sind zwingend **vor** dem Umbau zu erfassen, damit die Regression messbar ist:
 
 1. **Memory-Retrieval-Baseline**: aktuelle Hybrid-Suche (Embedding+FTS) gegen einen festen
-   Fragenkatalog → Recall@3. Danach FTS5-only messen. Das ist die Zahl, die den größten
-   Qualitätsverlust quantifiziert.
+   Fragenkatalog → Recall@3, plus derselbe Katalog ohne Vektoren. Gemessen in T-002
+   (`evals/baselines/memory_recall.py`, Ergebnis in `docs/baselines/memory_recall_baseline.json`):
+   Hybrid 33,3 %, FTS-only 77,8 %. Referenz für T-031 ist der **FTS-only-Wert**, nicht der Blend.
 2. **Voice-Intent-Baseline**: die 48 bestehenden Intent-Judge-Evals gegen die deterministischen
    Regeln. Erwartung: deutlicher Rückgang. Ziel: die Regeln so weit verbessern, dass der Verlust
    unter 15 Prozentpunkten bleibt.
@@ -1806,7 +1807,7 @@ T-008** (fremder CLI-Vertrag) und **T-037** (Ersatz für den Intent-Judge).
 | **E-3** | Auto-Fallback zwischen Providern bei Quota? | **aus** per Default, opt-in mit sichtbarem Hinweis | P3 |
 | **E-4** | Wie tief darf ein Sprach-Run Seiteneffekte haben? | Default `read_only`; Schreiben nur nach Approval | P4 |
 | **E-5** | Wird `memory_provider` fest verdrahtet oder wählbar? | wählbar, Default `hermes` (quotenschonend) | P5 |
-| **E-6** | Recall-Verlust nach Embedding-Wegfall akzeptabel? | Zahl aus T-002/T-031 abwarten; wenn Recall@3 unter 60 % der Baseline fällt, muss über eine Alternative gesprochen werden | P5 |
+| **E-6** | Recall-Verlust nach Embedding-Wegfall akzeptabel? | T-002 gemessen (`docs/baselines/memory_recall_baseline.json`): Hybrid 33,3 %, FTS-only 77,8 % Recall@3. Der heutige Blend ist **schlechter** als sein eigener FTS-Zweig, weil ein FTS-Treffer als `1/(1+bm25)` gewertet wird und `bm25()` negativ ist. Der Embedding-Wegfall kostet nach dieser Messung nichts; T-031 misst gegen `fts_only` | P5 |
 | **E-7** | Chatterbox behalten (Voice-Cloning) oder entfernen? | **behalten**, aber nur Windows/CUDA; auf macOS deaktiviert. Es ist reines TTS und verletzt die Vorgabe nicht | P7 |
 | **E-8** | Wird der `pytesseract`-OCR als „lokales Modell" gewertet? | **nein** — deterministische Zeichenerkennung, keine Entscheidungsinstanz. Bleibt | P4 |
 | **E-9** | Erlaubt die „Jarvis AI Assistant License" den Umbau und eine spätere Weitergabe? | **muss vor P1 geklärt werden** — private Nutzung unkritisch, Veröffentlichung nicht | P1 (Veröffentlichung) |
