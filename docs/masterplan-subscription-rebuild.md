@@ -1198,9 +1198,12 @@ Zwei Baselines sind zwingend **vor** dem Umbau zu erfassen, damit die Regression
    Fragenkatalog → Recall@3, plus derselbe Katalog ohne Vektoren. Gemessen in T-002
    (`evals/baselines/memory_recall.py`, Ergebnis in `docs/baselines/memory_recall_baseline.json`):
    Hybrid 33,3 %, FTS-only 77,8 %. Referenz für T-031 ist der **FTS-only-Wert**, nicht der Blend.
-2. **Voice-Intent-Baseline**: die 48 bestehenden Intent-Judge-Evals gegen die deterministischen
-   Regeln. Erwartung: deutlicher Rückgang. Ziel: die Regeln so weit verbessern, dass der Verlust
-   unter 15 Prozentpunkten bleibt.
+2. **Voice-Intent-Baseline**: die bestehenden Intent-Judge-Evals (**42 Fälle**, nicht 48: 20
+   Einzel- + 22 Mehrsegment-Fälle) gegen die deterministischen Regeln. Gemessen in T-003
+   (`evals/baselines/voice_intent.py`, Ergebnis in `docs/baselines/voice_intent_baseline.json`):
+   Intent-Judge 97,6 %, Regeln 66,7 %, Lücke **30,95 Prozentpunkte**. Die Regeln scheitern fast
+   ausschließlich an Mehrsegment-Fällen (45,5 % gegenüber 90 % bei Einzelsegmenten). Ziel für
+   T-037 bleibt ein Verlust unter 15 Prozentpunkten, das sind rund 16 Punkte Arbeit.
 
 Eval-Läufe gegen Abo-Provider verbrauchen Kontingent. Deshalb: kleine Kernsuite (≤ 30 Fälle) im
 Nightly, volle Suite manuell mit ausgewiesenem Kostenhinweis.
@@ -1279,7 +1282,7 @@ Neuer CI-Wächter: ein Test, der `git grep -iE "ollama|lm ?studio|llama\.cpp|loc
 | R2 | Abo-Kontingent im Alltag erschöpft | hoch | hoch | Usage-Dashboard, Warnschwellen, Provider-Wahl pro Aufgabentyp, kein Auto-Fallback |
 | R3 | Memory-Qualität bricht ohne Embeddings ein | hoch | mittel | Baseline vorher messen (§23), BM25+Metadaten+Recency-Tuning, ehrliche Kommunikation |
 | R4 | CLI-Update bricht Adapter (kein stabiler Vertrag) | hoch | hoch | Golden-File-Kontrakttests, Versionspinning, Nightly-Live-Smoke, defensives Parsen |
-| R5 | Wegfall des Intent-Judge macht Wake-Erkennung schlechter | hoch | mittel | Regeln aus den 48 Eval-Fällen hart nachbauen, Barge-in beibehalten |
+| R5 | Wegfall des Intent-Judge macht Wake-Erkennung schlechter | hoch | **hoch** (gemessen: 30,95 Punkte Lücke) | Regeln aus den 42 Eval-Fällen hart nachbauen, Schwerpunkt Mehrsegment-Kontext, Barge-in beibehalten |
 | R6 | Datenabfluss: Redaction greift nicht vor Cloud-Aufruf | mittel | **kritisch** | Redaction als Pflicht-Middleware im Adapter, Test mit Fixture-Secrets, Audit |
 | R7 | Provider-Prozess schreibt außerhalb Workspace | mittel | hoch | `--add-dir`-Kontrolle, `--permission-mode`, `PermissionProfile`, Denylist, Approval |
 | R8 | Doppelter DB-Writer bleibt bestehen | mittel | hoch | Single-Writer-Test als CI-Gate, Memory-Viewer wird API-Client |
@@ -1331,7 +1334,7 @@ Komplexität: **S** ≤ 1 Tag · **M** 2–4 Tage · **L** 1–2 Wochen · **XL*
 - **Tests:** Migration hin (v3→v4) inkl. Backupdatei; Import-Isolation zeigt die bekannte
   Verletzung `output/tts.py:594` als `xfail`; Single-Writer-Test zeigt die bekannten fünf
   `GraphMemoryStore`-Konstruktionen als `xfail`.
-- **Evals:** Baseline-Läufe erzeugen (Memory-Recall@3, Voice-Intent 48 Fälle).
+- **Evals:** Baseline-Läufe erzeugen (Memory-Recall@3, Voice-Intent 42 Fälle).
 - **Abnahme:** App startet unverändert; beide Baseline-Dateien existieren; alle bisherigen
   Tests grün.
 - **Rollback:** Revert; `config.json.pre-v4.bak` zurückkopieren.
@@ -1686,7 +1689,7 @@ Für **jede** Phase gilt zusätzlich zu den phasenspezifischen Abnahmekriterien:
 |---|---|---|---|---|
 | T-001 | Config-Migration v4 + `execution_mode`-Flag + Backup | 0 | S | A |
 | T-002 | Baseline: Memory-Recall@3 messen und einfrieren | 0 | S | A |
-| T-003 | Baseline: Voice-Intent 48 Fälle gegen Regeln messen | 0 | S | A |
+| T-003 | Baseline: Voice-Intent 42 Fälle gegen Regeln messen | 0 | S | A |
 | T-004 | CI-Wächter: Single-Writer, Import-Isolation, Local-LLM-Grep (xfail) | 0 | S | A |
 | T-005 | `docs/operator-requirements.md` (Clean-Room-Spezifikation) | 0 | M | A |
 | T-006 | `ProviderAdapter` ABC + Event-Modell + `providers.spec.md` | 1 | M | B |
@@ -2288,7 +2291,7 @@ Riskanteste Glieder: **T-007/T-008** (fremde CLI-Verträge, wöchentliche Update
 | 1 | T-001 Config-Migration v4 + `execution_mode`-Flag + Backup | S |
 | 2 | T-004 CI-Wächter: Single-Writer, Import-Isolation, Local-LLM-Grep (xfail) | S |
 | 3 | T-002 Memory-Recall@3-Baseline messen und einfrieren | S |
-| 4 | T-003 Voice-Intent-Baseline (48 Fälle) messen | S |
+| 4 | T-003 Voice-Intent-Baseline (42 Fälle) messen | S |
 | 5 | T-005 `docs/operator-requirements.md` als lizenzfreie Clean-Room-Spezifikation | M |
 | 6 | T-006 `ProviderAdapter` ABC + normalisiertes Event-Modell | M |
 | 7 | T-010 `AuthenticationManager` (fail closed, Env-Scrubbing) | M |
