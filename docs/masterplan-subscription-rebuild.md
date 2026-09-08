@@ -1256,9 +1256,10 @@ Neuer CI-Wächter: ein Test, der `git grep -iE "ollama|lm ?studio|llama\.cpp|loc
    **keine** Datei kopiert — auch nicht paraphrasiert.
 2. Zulässige Grundlage: die vom Nutzer formulierte Anforderungsliste und öffentlich beobachtbares
    Produktverhalten (Screenshots, README, Bedienung).
-3. Wer implementiert, liest den fremden Quellcode nicht. Die Anforderungen werden vorher in
-   `docs/operator-requirements.md` als lizenzfreie Spezifikation festgehalten; nur dieses Dokument
-   geht in die Implementierungstickets ein.
+3. Wer implementiert, liest den fremden Quellcode nicht. Die Anforderungen sind in
+   `docs/operator-requirements.md` als lizenzfreie Spezifikation festgehalten (69 Anforderungen in
+   zwölf Bereichen, abgeleitet aus Kapitel 12 und 20 dieses Plans); nur dieses Dokument geht in die
+   Implementierungstickets ein.
 4. Das Verzeichnis `.research/` ist bereits untracked und bleibt es; es kommt in `.gitignore`
    und wird nach Abschluss der Anforderungsextraktion gelöscht.
 5. Namensgleichheit („JARVIS") ist unabhängig davon zu prüfen — beide Projekte tragen den Namen.
