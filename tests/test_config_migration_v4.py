@@ -31,6 +31,18 @@ def _write_config(tmp_path, monkeypatch, payload):
     return cfg_path
 
 
+def _break_backup_writes(monkeypatch):
+    """Fail only the backup write, so the migration's own save still works."""
+    from jarvis import config as config_module
+
+    real_save = config_module._save_json
+
+    def save(path, data):
+        return False if path.name.endswith(".bak") else real_save(path, data)
+
+    monkeypatch.setattr(config_module, "_save_json", save)
+
+
 V3_CONFIG = {
     "_config_version": 3,
     "llm_provider": "ollama",
@@ -60,6 +72,28 @@ class TestBackup:
         load_config()
 
         assert json.loads(backup.read_text(encoding="utf-8")) == {"kept": True}
+
+    def test_a_failed_backup_leaves_the_config_alone(self, tmp_path, monkeypatch):
+        """Without a rollback point the relocation must not happen: the next
+        start retries it, rather than moving keys with no way back."""
+        cfg_path = _write_config(tmp_path, monkeypatch, V3_CONFIG)
+        _break_backup_writes(monkeypatch)
+
+        settings = load_settings()
+
+        assert json.loads(cfg_path.read_text(encoding="utf-8")) == V3_CONFIG
+        assert settings.ollama_chat_model == "gpt-oss:20b"
+
+    def test_a_failed_backup_is_reported(self, tmp_path, monkeypatch, capsys):
+        _write_config(tmp_path, monkeypatch, V3_CONFIG)
+        _break_backup_writes(monkeypatch)
+
+        load_config()
+
+        output = capsys.readouterr().out
+        assert "pre-v4.bak" in output
+        assert "⚠️" in output, "a missing rollback point must not read as success"
+        assert "💾 Backup:" not in output, "no backup was written, so none may be claimed"
 
     def test_no_backup_for_a_config_already_at_v4(self, tmp_path, monkeypatch):
         cfg_path = _write_config(

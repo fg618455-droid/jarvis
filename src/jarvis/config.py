@@ -503,23 +503,27 @@ def _migrate_config(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any]:
     # Migration v4: introduce the execution mode and move the local-LLM
     # connection settings into ``_legacy_local_llm``. Nothing is dropped and
     # nothing changes behaviour: while ``execution_mode`` is ``local`` the
-    # relocated values are read back over the defaults (``_local_llm_overlay``).
-    # A one-off backup next to the config file is the rollback point.
+    # relocated values are read back over the defaults (``merge_config``).
+    # The backup next to the config file is the rollback point, so without it
+    # the migration does not run at all and the next start tries again.
     if migration_version < 4:
-        _backup_config(cfg_path, cfg_json, ".pre-v4.bak")
-        legacy = dict(cfg_json.get(LEGACY_LOCAL_LLM_KEY) or {})
-        for key in LEGACY_LOCAL_LLM_KEYS:
-            if key in cfg_json:
-                legacy[key] = cfg_json.pop(key)
-        if legacy:
-            cfg_json[LEGACY_LOCAL_LLM_KEY] = legacy
-        for key, value in _provider_mode_defaults().items():
-            cfg_json.setdefault(key, value)
-        cfg_json["_config_version"] = 4
-        modified = True
-        print("🔀 Config upgraded to v4: execution mode is 'local', behaviour unchanged", flush=True)
-        print(f"   💾 Backup: {cfg_path.name}.pre-v4.bak", flush=True)
-        print(f"   📦 Local model settings moved to \"{LEGACY_LOCAL_LLM_KEY}\"", flush=True)
+        if not _backup_config(cfg_path, cfg_json, ".pre-v4.bak"):
+            print(f"⚠️ Could not write {cfg_path.name}.pre-v4.bak", flush=True)
+            print("   ⏭️ Keeping the current config until the backup succeeds.", flush=True)
+        else:
+            legacy = dict(cfg_json.get(LEGACY_LOCAL_LLM_KEY) or {})
+            for key in LEGACY_LOCAL_LLM_KEYS:
+                if key in cfg_json:
+                    legacy[key] = cfg_json.pop(key)
+            if legacy:
+                cfg_json[LEGACY_LOCAL_LLM_KEY] = legacy
+            for key, value in _provider_mode_defaults().items():
+                cfg_json.setdefault(key, value)
+            cfg_json["_config_version"] = 4
+            modified = True
+            print("🔀 Config upgraded to v4: execution mode is 'local', behaviour unchanged", flush=True)
+            print(f"   💾 Backup: {cfg_path.name}.pre-v4.bak", flush=True)
+            print(f"   📦 Local model settings moved to \"{LEGACY_LOCAL_LLM_KEY}\"", flush=True)
 
     # Save migrated config
     if modified:

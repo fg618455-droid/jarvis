@@ -38,12 +38,12 @@ BASELINE_PATH = REPO_ROOT / "docs" / "baselines" / "voice_intent_baseline.json"
 
 JUDGE_MODEL = "gemma4:e2b"
 
-# The listener's thresholds for the judge-free path.
+# The listener's echo thresholds, which it holds as inline literals with
+# nothing to import. Everything else the rules need comes from the config
+# defaults, so changing a wake word or a stop command stays measured.
 ECHO_SIMILARITY_THRESHOLD = 70
 ECHO_LENGTH_FACTOR = 1.3
 ECHO_LENGTH_MARGIN = 3
-WAKE_WORD = "jarvis"
-STOP_COMMANDS = ("stop", "quiet", "shush", "silence", "enough", "shut up")
 
 
 @dataclass(frozen=True)
@@ -161,10 +161,11 @@ def judge_by_rules(case: Case) -> Verdict:
     )
 
     defaults = get_default_config()
-    aliases = sorted(set(defaults["wake_aliases"]) | {WAKE_WORD} | set(case.aliases))
+    wake_word = defaults["wake_word"]
+    aliases = sorted(set(defaults["wake_aliases"]) | {wake_word} | set(case.aliases))
     text = case.text.lower()
 
-    if is_stop_command(text, list(STOP_COMMANDS), defaults["stop_command_fuzzy_ratio"]):
+    if is_stop_command(text, list(defaults["stop_commands"]), defaults["stop_command_fuzzy_ratio"]):
         return Verdict(directed=False, query="", stop=True)
 
     if case.in_hot_window:
@@ -174,10 +175,10 @@ def judge_by_rules(case: Case) -> Verdict:
         # the query. Rules cannot tell a follow-up from a bystander's remark.
         return Verdict(directed=True, query=case.text, stop=False)
 
-    if is_wake_word_detected(text, WAKE_WORD, aliases, defaults["wake_fuzzy_ratio"]):
+    if is_wake_word_detected(text, wake_word, aliases, defaults["wake_fuzzy_ratio"]):
         return Verdict(
             directed=True,
-            query=extract_query_after_wake(text, WAKE_WORD, aliases),
+            query=extract_query_after_wake(text, wake_word, aliases),
             stop=False,
         )
 
