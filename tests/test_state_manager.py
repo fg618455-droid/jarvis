@@ -102,30 +102,50 @@ class TestHotWindowExpiry:
         sm.stop()
 
     def test_reset_hot_window_expiry_extends_timer(self):
-        """reset_hot_window_expiry restarts the timer so echo time doesn't eat the window."""
-        sm = StateManager(echo_tolerance=0.02, hot_window_seconds=0.10)
+        """Echo rejection grants a full new window on a controlled clock."""
+        now = 0.0
+        timers = []
 
-        with patch('builtins.print'):
-            sm.schedule_hot_window_activation()
-            time.sleep(0.04)
-            assert sm.is_hot_window_active() is True
+        class Timer:
+            def __init__(self, interval, callback):
+                self.deadline = now + interval
+                self.callback = callback
+                self.cancelled = False
 
-            # Wait until most of the window has elapsed
-            time.sleep(0.07)
-            assert sm.is_hot_window_active() is True  # still within 0.10s
+            def start(self):
+                timers.append(self)
 
-            # Reset the timer (simulating echo rejection)
-            sm.reset_hot_window_expiry()
+            def cancel(self):
+                self.cancelled = True
 
-            # After the original window would have expired, it should still be active
-            time.sleep(0.05)
-            assert sm.is_hot_window_active() is True
+        def advance(seconds):
+            nonlocal now
+            target = now + seconds
+            while True:
+                pending = [t for t in timers if not t.cancelled and t.deadline <= target]
+                if not pending:
+                    break
+                timer = min(pending, key=lambda t: t.deadline)
+                now = timer.deadline
+                timer.cancelled = True
+                timer.callback()
+            now = target
 
-            # Wait for the full reset window to expire
-            time.sleep(0.07)
-            assert sm.is_hot_window_active() is False
-
-        sm.stop()
+        with patch('jarvis.listening.state_manager.threading.Timer', Timer), patch('builtins.print'):
+            sm = StateManager(echo_tolerance=0.02, hot_window_seconds=0.10)
+            try:
+                sm.schedule_hot_window_activation()
+                advance(0.04)
+                assert sm.is_hot_window_active()
+                advance(0.07)
+                assert sm.is_hot_window_active()
+                sm.reset_hot_window_expiry()
+                advance(0.05)
+                assert sm.is_hot_window_active()
+                advance(0.051)
+                assert not sm.is_hot_window_active()
+            finally:
+                sm.stop()
 
     def test_reset_hot_window_expiry_reactivates_expired_window(self):
         """reset_hot_window_expiry reactivates a hot window that expired during echo processing."""

@@ -15,6 +15,30 @@ from ..base import Tool, ToolContext
 from ..types import ToolErrorCode, ToolExecutionResult
 
 
+def _find_tesseract() -> str | None:
+    """Resolve OCR without requiring GUI-launched processes to inherit PATH."""
+    configured = str(os.environ.get("TESSERACT_CMD", "") or "").strip()
+    candidates = [configured, shutil.which("tesseract") or ""]
+    if os.name == "nt":
+        candidates.extend([
+            str(Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Tesseract-OCR" / "tesseract.exe"),
+            str(Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Tesseract-OCR" / "tesseract.exe"),
+        ])
+    return next((candidate for candidate in candidates if candidate and Path(candidate).is_file()), None)
+
+
+def screenshot_preflight() -> tuple[bool, str]:
+    """Return a safe dependency status used by startup/live acceptance."""
+    if _find_tesseract() is None:
+        return False, "Tesseract OCR executable is unavailable."
+    try:
+        import pytesseract  # noqa: F401
+        from PIL import Image, ImageGrab  # noqa: F401
+    except ImportError:
+        return False, "Python screen OCR dependencies are unavailable."
+    return True, ""
+
+
 def _capture_to(path: str) -> tuple[bool, str]:
     """Capture one screen to *path*, returning a user-safe failure reason."""
     if sys.platform == "darwin":
@@ -68,7 +92,8 @@ class ScreenshotTool(Tool):
 
     def run(self, args: Optional[Dict[str, Any]], context: ToolContext) -> ToolExecutionResult:
         context.user_print("📸 Capturing a screenshot for OCR…")
-        if not shutil.which("tesseract"):
+        tesseract = _find_tesseract()
+        if not tesseract:
             context.user_print("⚠️ OCR is not installed.")
             return ToolExecutionResult.failure(
                 ToolErrorCode.UNSUPPORTED,
@@ -85,6 +110,7 @@ class ScreenshotTool(Tool):
                 "Screen OCR dependencies are not installed.", phase="preflight",
                 technical_details=type(exc).__name__,
             )
+        getattr(pytesseract, "pytesseract", pytesseract).tesseract_cmd = tesseract
 
         with tempfile.TemporaryDirectory(prefix="jarvis_ocr_") as tmpdir:
             image_path = str(Path(tmpdir) / "shot.png")

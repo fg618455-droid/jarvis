@@ -26,8 +26,8 @@ class TestScreenshotTool:
         assert self.tool.inputSchema["required"] == []
 
     @patch('src.jarvis.tools.builtin.screenshot._capture_to', return_value=(True, ''))
-    @patch('shutil.which')
-    def test_run_success(self, mock_which, _capture):
+    @patch('src.jarvis.tools.builtin.screenshot._find_tesseract', return_value='/usr/bin/tesseract')
+    def test_run_success(self, _find, _capture):
         """Test successful screenshot capture with inlined OCR logic."""
         # Lightweight stubs so dynamic imports succeed without heavy deps.
         # Saved and restored so the stubs don't leak into later tests that
@@ -50,8 +50,6 @@ class TestScreenshotTool:
         sys.modules['PIL'] = type('StubPIL', (), {'Image': _StubImage})
         sys.modules['PIL.Image'] = _StubImage
 
-        mock_which.side_effect = lambda name: f"/usr/bin/{name}" if name == "tesseract" else None
-
         try:
             result = self.tool.run({}, self.context)
         finally:
@@ -66,8 +64,8 @@ class TestScreenshotTool:
         assert result.reply_text == 'Sample OCR text'
         self.context.user_print.assert_called()
 
-    @patch('shutil.which', return_value=None)
-    def test_run_without_ocr_dependency_reports_unsupported(self, _which):
+    @patch('src.jarvis.tools.builtin.screenshot._find_tesseract', return_value=None)
+    def test_run_without_ocr_dependency_reports_unsupported(self, _find):
         """A missing OCR binary must never be reported as successful capture."""
         result = self.tool.run({}, self.context)
         assert isinstance(result, ToolExecutionResult)

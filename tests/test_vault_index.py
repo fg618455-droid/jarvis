@@ -17,6 +17,33 @@ from jarvis.memory.vault.render import END_MARKER
 pytestmark = pytest.mark.unit
 
 
+def test_scan_resume_does_not_lose_entry_at_deadline(tmp_path, monkeypatch):
+    for name in ("first.md", "second.md", "third.md"):
+        (tmp_path / name).write_text("resume-token", encoding="utf-8")
+    index = VaultIndex(tmp_path, scan_slice_sec=0.1)
+    ticks = iter([0.0, 0.0, 0.2])
+    monkeypatch.setattr("jarvis.memory.vault.index.time.monotonic", lambda: next(ticks))
+    first = index.search("resume-token")
+    assert len(first) == 1
+    monkeypatch.setattr("jarvis.memory.vault.index.time.monotonic", lambda: 1.0)
+    assert {hit.path for hit in index.search("resume-token")} == {
+        "first.md", "second.md", "third.md",
+    }
+
+
+def test_offline_placeholder_is_never_opened(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from pathlib import Path
+
+    note = tmp_path / "offline.md"
+    index = VaultIndex(tmp_path)
+    monkeypatch.setattr(Path, "stat", lambda *_args, **_kwargs: SimpleNamespace(
+        st_size=10, st_file_attributes=0x400000,
+    ))
+    monkeypatch.setattr(Path, "read_text", lambda *_args, **_kwargs: pytest.fail("hydrated placeholder"))
+    assert index._read_entry(note) is None
+
+
 def test_memory_files_index_only_protected_region(tmp_path):
     vault = tmp_path / "vault"
     memory = vault / "Jarvis"
@@ -220,3 +247,26 @@ def test_enrichment_still_reflects_edits_made_between_cached_lookups(tmp_path):
 
     assert search_vault_for_enrichment(cfg, ["zeta", "yankee"]) == []
     assert search_vault_for_enrichment(cfg, ["kappa", "omega"])
+
+
+def test_search_returns_incomplete_snapshot_when_file_read_stalls(tmp_path, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from jarvis.memory.vault.index import VaultIndex
+    (tmp_path / "synthetic.md").write_text("synthetic acceptance", encoding="utf-8")
+    index = VaultIndex(tmp_path, scan_slice_sec=0.1)
+    entered, release = threading.Event(), threading.Event()
+    read = index._read_entry
+    def stalled(path):
+        entered.set()
+        assert release.wait(5)
+        return read(path)
+    monkeypatch.setattr(index, "_read_entry", stalled)
+    try:
+        with ThreadPoolExecutor(1) as pool:
+            search = pool.submit(index.search, "synthetic")
+            assert entered.wait(2)
+            assert search.result(timeout=1) == []
+            assert index.status()["complete"] is False
+    finally:
+        release.set()

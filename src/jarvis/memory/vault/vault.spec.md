@@ -115,7 +115,7 @@ This is the one place where the vault holds memory that SQLite does not. The rea
 
 `plan_sync(store, cfg) -> SyncPlan` compares the graph against the folder and returns an ordered list of `PlannedChange(action, node_id, path, reason, diff)` where action is one of `create`, `update`, `rename`, `delete`, `skip`, `refuse`.
 
-- `update` is emitted only when the rendered content differs from the file on disk. An unchanged node produces `skip`. This matters: the vault sits in OneDrive and under Syncthing, and rewriting 60 identical files on every diary flush would generate sync traffic and Obsidian re-index churn for nothing.
+- `update` is emitted only when the rendered content differs from the file on disk. An unchanged node produces `skip`. This matters: the authoritative vault sits on Synology Drive, and rewriting identical files would generate sync traffic and Obsidian re-index churn for nothing.
 - `delete` is emitted for a file in the folder whose `jarvis_managed` is true and whose `jarvis_node_id` no longer exists in the graph.
 - `refuse` is emitted for a file in the folder that lacks the ownership marker but occupies a name the mirror wants. The mirror never overwrites it and never deletes it; the node is left unmirrored and the collision is logged.
 - Any file in the folder without `jarvis_managed: true` is otherwise ignored completely. The user may keep their own notes in the folder; they are read, never written.
@@ -146,13 +146,15 @@ With `obsidian_write_mode = "dry_run"` the worker computes the plan and reports 
 
 `index.py` builds an in-memory index over every `*.md` file under the vault root.
 
-Excluded: any path component starting with `.` (`.obsidian`, `.trash`, `.git`), files above `obsidian_index_max_file_kb`, and non-markdown files. Attachments, canvases, and bases are not read.
+Excluded: any path component starting with `.` (`.obsidian`, `.trash`, `.git`), files above `obsidian_index_max_file_kb`, non-markdown files, and Windows cloud placeholders marked offline/recall-on-access. The latter are not hydrated by a synchronous assistant turn; Synology Drive must make a note locally available before it is indexed. Attachments, canvases, and bases are not read.
 
 For Jarvis-managed files anywhere inside the memory folder, including `_quarantine`, only the protected region below `<!-- jarvis:end -->` is indexed. The machine-written part is already in the graph and enriches replies through the graph path; indexing it too would inject the same fact twice into one system prompt. An unmanaged note that the user places directly in the memory folder is indexed in full because Jarvis does not own any part of it.
 
-Each entry holds the vault-relative path, the note title (H1 if present, else filename stem), frontmatter tags, mtime, and the body text. An entry is re-read only when its mtime or size changed; every other file on the tree is served from memory. 392 notes at ~2 MB is small enough that a full re-scan is a few milliseconds, so there is no persistent index file to corrupt or invalidate.
+Each entry holds the vault-relative path, note title, tags, mtime, and body text. An entry is re-read only when mtime or size changed. Directory enumeration is incremental in eight-second slices, prioritising the configured Jarvis memory folder and resuming on the next search. Deletions are applied only after a complete scan cycle, so a partial Synology scan cannot evict cached notes. There is no persistent content index to leak, corrupt, or invalidate.
 
-`get_vault_index(vault_root, memory_folder, max_file_kb)` is the process-wide cache: it returns the same `VaultIndex` instance for the same resolved vault root plus those two config knobs, building one only on first use. Both callers below (enrichment and the `vaultSearch` tool) go through it rather than constructing `VaultIndex` directly, so a vault of any size is walked once per process, not once per reply turn. The cache never goes stale, because the returned index still refreshes its own entries on every `search()` call: a note edited in Obsidian, or a file the mirror just wrote, is picked up on the next search against that same cached index. A config change to `obsidian_memory_folder` or `obsidian_index_max_file_kb` is a different cache key, so it gets a fresh index rather than one built under the old settings.
+`get_vault_index(vault_root, memory_folder, max_file_kb)` is the process-wide cache. Both enrichment and `vaultSearch` reuse it. Each `search()` advances or begins a refresh cycle, so locally available edits are observed without rebuilding already unchanged entries. A config change to folder or size cap creates a distinct index.
+
+Refresh and bounded reads share a reentrant lock; ranking uses a stable entry snapshot. The scan deadline is checked before consuming the next directory entry, so continuation loses no file. Availability and size are checked again before opening a note. The scan slice is not a hard timeout for an individual filesystem operation or note read, and an incomplete scan can yield partial search results.
 
 Search is keyword-based over title, tags, and body, ranked by number of distinct query terms matched, then by term frequency, then by recency of mtime. Matching is Unicode-aware, reusing the same NFKC + casefold folding as `normalise_fact` in `graph.py` so German umlauts and casing behave. There are no hardcoded language patterns; content words come from the existing extractor, and stop-wording is the reader's caller's job, exactly as it is for graph enrichment.
 
@@ -225,3 +227,11 @@ These hold regardless of config, LLM output, or graph state:
 4. `obsidian_write_mode` defaults to `dry_run`; writing requires an explicit config change.
 5. A vault failure never fails a graph write, a diary write, or a reply.
 6. The graph in SQLite is authoritative; markdown is never parsed back into graph state.
+
+Keyword search waits at most one scan slice for filesystem refresh. A single
+background worker per index owns refresh I/O and publishes a complete cache
+snapshot under a short lock. A stalled filesystem operation cannot block a
+keyword-search caller or spawn additional refresh workers. It cannot be forcibly
+cancelled; that index serves its last snapshot until the operation completes.
+`vaultSearch` returns index completeness metadata and an explicit partial-results
+notice. Explicit bulk note reads retain their bounded content and count limits.

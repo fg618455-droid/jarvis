@@ -107,7 +107,7 @@ otherwise flash the default on every load for anyone who changed it.
 The System model card makes three different facts explicit. **Effective
 routes** names the first currently available FAST, CHAT, and PRIVATE candidate
 and labels each one local or remote. **Configured local models** names the
-Ollama FAST fallback, CHAT fallback, PRIVATE, and embedding roles. **Actually
+Ollama PRIVATE and embedding roles. **Actually
 resident in Ollama** is populated only from `ollama ps` and carries the local
 GPU reading beside it. A remote route model is therefore never presented as
 if it consumed local VRAM. The LLM Routes view applies the same local/remote
@@ -203,7 +203,7 @@ allowed; reading one back is not.
 | `POST /api/diary/scrub-deflections` | Rewrite diary summaries without deflection narration, streaming NDJSON progress |
 | `POST /api/diary/optimise-topics` | Normalise topic tags across diary rows, streaming NDJSON progress |
 | `GET /api/tools`, `POST /api/tools/refresh` | The tool catalogue, MCP server state, rediscovery, and each server's latest retained discovery error |
-| `GET/PUT /api/mcp/servers` | The configured MCP servers, how each launches, whether it connected, and the editor's schema. Writes replace the set, preserving unchanged masked credentials |
+| `GET/PUT /api/mcp/servers` | Configured MCP servers plus live discovery status. PUT preserves masked credentials, discovers outside the cache lock, atomically publishes tools/status, stops removed or changed workers, and returns `restart_required: false` |
 | `GET /api/briefing` | Today's School items, the cached prose if it exists, and the spoken briefing's own state. Reads no model |
 | `POST /api/briefing/refresh` | Generate today's prose through the spoken briefing's own generator and cache it for the local day |
 | `GET /api/security`, `/api/security/pending`, `POST /api/security/decide` | The confirmation policy, what is waiting, and the answer |
@@ -211,9 +211,9 @@ allowed; reading one back is not.
 | `POST /api/system/restart` | Ask the daemon to tear down and start a fresh generation in place; 409 in standalone mode |
 | `GET/PUT /api/settings` | Every editable config field, and writes to it |
 | `GET /api/llm/routes` | Configured routes, their editor schema, and separate effective FAST, CHAT, and PRIVATE chains with masked credentials and persisted health state; performs no outbound request |
-| `POST /api/llm/routes/probe` | User-triggered model catalogue and credential probe |
-| `POST /api/llm/routes/reset` | Clear persisted cooldowns and process-local invalid-key marks |
-| `PUT /api/llm/routes` | Validate and replace generic route configuration while preserving unchanged masked credentials |
+| `POST /api/llm/routes/probe` | User-triggered, secret-free credential/model/chat/stream/native-tool/text-tool capability probe with stable error classes |
+| `POST /api/llm/routes/reset` | Clear all persisted route health or one stable route id |
+| `PUT /api/llm/routes` | Validate, persist, build, and atomically activate a new generation for the next turn, rolling back completely on failure |
 | `GET /api/crew` | One reading of the NAS-hosted agent crew: recent activity, the agent roster with its tallies, a 14-day daily activity count, and when the reading was taken |
 | `POST /api/crew/chat` | Relay one message to one crew agent and return its reply |
 | `GET /api/visualizer/state` | The face's `idle\|listening\|thinking\|speaking` reading, a waveform, and the two signals Jarvis never sets (`alert`, `loading`) |
@@ -256,7 +256,7 @@ is true of a reply whichever route produced it: the timeouts and the thinking
 switches. There is still exactly one editor; two places open it.
 
 Ollama sits under Advanced, in one labelled section. It is what PRIVATE work
-and embeddings run on and the fallback a remote-only chain can be given, and
+and embeddings run on, and
 those are real settings that have to stay reachable, but they are not what a
 window about providers is about. Provider connections, route models, backend
 override, and crew route selection are not duplicated as settings fields
@@ -487,22 +487,25 @@ only the route schema described by the LLM spec. Named controls replace raw
 JSON and preserve order and every operational field, including `api_key_env`,
 `enabled`, and `capabilities`, as well as the masked direct credential. Stable
 source indices let an unchanged masked key survive a rename or reorder without
-exposing it. Provider-specific endpoint and model placeholders cover Ollama,
+exposing it. Provider-specific endpoint and model placeholders cover
 OpenAI-compatible, Claude subscription, Codex subscription, and crew routes.
+Ollama is not an editable FAST/CHAT provider.
 The backend override and crew route selection live here rather than in general
 Settings.
 
 The API never reconstructs configured routes from runtime status. Its
 `configured_routes` list is the editable disk shape; `effective_chains` is the
-expanded runtime shape that also contains automatic local fallbacks. Endpoint
+runtime shape after credential, tier, locality, and enabled-state filtering. Endpoint
 user-info, query values, and fragments are redacted in the response and
 restored from the indexed original when the safe displayed URL is returned
 unchanged. Environment-backed key values are resolved only when a backend is
 built and never enter this payload.
 
 Loading and refreshing the view reads local config and cooldown state only.
-The only control that contacts a configured endpoint is **Probe models**.
-Resetting cooldowns and saving routes are local file writes.
+The only control that contacts configured LLM endpoints is **Probe models**.
+Saving routes validates and persists the candidate, builds a complete runtime
+generation, and atomically swaps it for the next turn; build failure restores
+both disk and runtime state. Reset may clear all health or one stable route id.
 
 ## MCP servers panel
 

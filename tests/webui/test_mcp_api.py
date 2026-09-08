@@ -41,7 +41,7 @@ STORED = {
             "args": ["chrome-devtools-mcp@1.8.0"],
         },
     },
-    "_config_version": 3,
+    "_config_version": 7,
 }
 
 
@@ -170,7 +170,7 @@ class TestWriting:
         _put(client, [])
 
         assert _stored(client)["whisper_language"] == "de"
-        assert _stored(client)["_config_version"] == 3
+        assert _stored(client)["_config_version"] == 7
 
     def test_a_server_with_no_command_is_refused(self, client):
         response = _put(client, [{"name": "broken", "command": "  ", "args": []}])

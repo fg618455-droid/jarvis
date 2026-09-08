@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+import os
 import threading
+import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -16,6 +18,13 @@ from .render import END_MARKER, is_managed_markdown, parse_frontmatter
 
 _WORD = re.compile(r"[^\W_]+(?:[-'][^\W_]+)*", re.UNICODE)
 _H1 = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+_WINDOWS_OFFLINE_ATTRIBUTES = 0x1000 | 0x40000 | 0x400000
+
+
+def _is_locally_available(stat) -> bool:
+    """Avoid hydrating cloud placeholders during a synchronous search."""
+    attributes = int(getattr(stat, "st_file_attributes", 0) or 0)
+    return not bool(attributes & _WINDOWS_OFFLINE_ATTRIBUTES)
 
 
 def _fold(text: str) -> str:
@@ -61,35 +70,96 @@ class _Entry:
 class VaultIndex:
     """Index markdown under one vault and refresh changed entries on search."""
 
-    def __init__(self, vault_root, memory_folder="Jarvis", max_file_kb=512):
+    def __init__(
+        self, vault_root, memory_folder="Jarvis", max_file_kb=512,
+        scan_slice_sec: float = 8.0,
+    ):
         self.vault_root = Path(vault_root).expanduser().resolve(strict=False)
         self.memory_folder = Path(memory_folder or "Jarvis")
         self.max_bytes = max(1, int(max_file_kb)) * 1024
+        self.scan_slice_sec = max(0.1, float(scan_slice_sec))
         self._entries: dict[Path, _Entry] = {}
+        self._lock = threading.RLock()
         self._built = False
+        self._refresh_running = False
+        self._refresh_done = threading.Event()
+        self._refresh_failed = False
+        self._scan_stack: list[Path] = []
+        self._scan_candidates: set[Path] = set()
+        self._scan_complete = True
+        self._scan_iterator = None
+        self._scan_previsited: set[Path] = set()
 
     def _candidate_files(self) -> set[Path]:
         if not self.vault_root.is_dir():
             return set()
-        candidates: set[Path] = set()
-        try:
-            for path in self.vault_root.rglob("*.md"):
+        if not self._scan_stack and self._scan_iterator is None:
+            self._scan_stack = [self.vault_root]
+            self._scan_candidates = set()
+            memory_root = self.vault_root / self.memory_folder
+            if memory_root != self.vault_root and memory_root.is_dir():
+                # Managed notes are both the most likely enrichment hits and
+                # the safest controlled acceptance target. Scan them first.
+                self._scan_stack.append(memory_root)
+                self._scan_previsited = {memory_root}
+            else:
+                self._scan_previsited = set()
+        deadline = time.monotonic() + self.scan_slice_sec
+        self._scan_complete = False
+        while self._scan_stack or self._scan_iterator is not None:
+            if self._scan_iterator is None:
+                folder = self._scan_stack.pop()
                 try:
-                    relative = path.relative_to(self.vault_root)
-                    if any(part.startswith(".") for part in relative.parts):
+                    self._scan_iterator = os.scandir(folder)
+                except OSError as exc:
+                    debug_log(f"vault index directory skipped: {exc}", "vault")
+                    continue
+            while True:
+                if time.monotonic() >= deadline:
+                    debug_log(
+                        "vault index scan paused; continuing on the next search",
+                        "vault",
+                    )
+                    return set(self._scan_candidates)
+                try:
+                    item = next(self._scan_iterator)
+                except StopIteration:
+                    break
+                try:
+                    if item.name.startswith("."):
                         continue
-                    if not path.is_file() or path.stat().st_size > self.max_bytes:
+                    path = Path(item.path)
+                    if item.is_dir(follow_symlinks=False):
+                        if path not in self._scan_previsited:
+                            self._scan_stack.append(path)
                         continue
-                    candidates.add(path)
+                    stat = item.stat(follow_symlinks=False)
+                    if (
+                        not item.name.lower().endswith(".md")
+                        or not item.is_file(follow_symlinks=False)
+                        or stat.st_size > self.max_bytes
+                        or not _is_locally_available(stat)
+                    ):
+                        continue
+                    self._scan_candidates.add(path)
                 except OSError:
                     continue
-        except OSError as exc:
-            debug_log(f"vault index scan skipped: {exc}", "vault")
+            # The iterator is exhausted. Close its directory handle before
+            # moving to the next one; an interrupted scan keeps only one such
+            # handle open between calls.
+            self._scan_iterator.close()
+            self._scan_iterator = None
+        self._scan_complete = True
+        candidates = set(self._scan_candidates)
+        self._scan_candidates = set()
+        self._scan_previsited = set()
         return candidates
 
     def _read_entry(self, path: Path) -> _Entry | None:
         try:
             stat = path.stat()
+            if stat.st_size > self.max_bytes or not _is_locally_available(stat):
+                return None
             content = path.read_text(encoding="utf-8", errors="replace")
             relative = path.relative_to(self.vault_root)
         except (OSError, ValueError) as exc:
@@ -128,26 +198,59 @@ class VaultIndex:
         )
 
     def _refresh(self) -> None:
+        with self._lock:
+            entries = dict(self._entries)
         candidates = self._candidate_files()
-        for missing in set(self._entries) - candidates:
-            del self._entries[missing]
+        if self._scan_complete:
+            for missing in set(entries) - candidates:
+                del entries[missing]
         for path in candidates:
             try:
                 stat = path.stat()
             except OSError:
-                self._entries.pop(path, None)
+                entries.pop(path, None)
                 continue
-            cached = self._entries.get(path)
+            cached = entries.get(path)
             if cached and cached.mtime_ns == stat.st_mtime_ns and cached.size == stat.st_size:
                 continue
             entry = self._read_entry(path)
             if entry is None:
-                self._entries.pop(path, None)
+                entries.pop(path, None)
             else:
-                self._entries[path] = entry
-        if not self._built:
-            debug_log(f"vault index initialised with {len(self._entries)} notes", "vault")
+                entries[path] = entry
+        with self._lock:
+            self._entries = entries
             self._built = True
+
+    def _refresh_bounded(self) -> None:
+        with self._lock:
+            if not self._refresh_running:
+                self._refresh_running = True
+                self._refresh_failed = False
+                self._refresh_done.clear()
+                def run():
+                    try:
+                        self._refresh()
+                    except Exception:
+                        with self._lock:
+                            self._refresh_failed = True
+                        debug_log("vault index refresh unavailable", "vault")
+                    finally:
+                        with self._lock:
+                            self._refresh_running = False
+                            self._refresh_done.set()
+                threading.Thread(target=run, name="JarvisVaultRefresh", daemon=True).start()
+            done = self._refresh_done
+        # One worker per index prevents abandoned I/O from spawning more work.
+        # The last completed cache remains available during a stalled read.
+        done.wait(timeout=self.scan_slice_sec)
+
+    def status(self) -> dict:
+        with self._lock:
+            return {"complete": bool(self._built and self._scan_complete
+                                     and not self._refresh_running and not self._refresh_failed),
+                    "refresh_running": self._refresh_running,
+                    "indexed_notes": len(self._entries)}
 
     @staticmethod
     def _snippet(body: str, terms: list[str]) -> str:
@@ -172,9 +275,11 @@ class VaultIndex:
         query_terms = list(dict.fromkeys(_terms(query)))
         if not query_terms:
             return []
-        self._refresh()
+        self._refresh_bounded()
+        with self._lock:
+            entries = tuple(self._entries.values())
         ranked: list[VaultHit] = []
-        for entry in self._entries.values():
+        for entry in entries:
             haystack = _fold("\n".join([entry.title, " ".join(entry.tags), entry.body]))
             matched = [term for term in query_terms if term in haystack]
             if not matched:
@@ -196,6 +301,18 @@ class VaultIndex:
         return result
 
     def read_notes(
+        self,
+        relative_roots: tuple[str, ...],
+        *,
+        max_notes: int = 100,
+        max_chars_per_note: int = 20_000,
+    ) -> list[VaultNote]:
+        return self._read_notes(
+            relative_roots, max_notes=max_notes,
+            max_chars_per_note=max_chars_per_note,
+        )
+
+    def _read_notes(
         self,
         relative_roots: tuple[str, ...],
         *,
@@ -234,6 +351,7 @@ class VaultIndex:
                         or path.is_symlink()
                         or not path.is_file()
                         or path.stat().st_size > self.max_bytes
+                        or not _is_locally_available(path.stat())
                     ):
                         continue
                     candidates.add(path)
@@ -246,13 +364,15 @@ class VaultIndex:
                 stat = path.stat()
             except OSError:
                 continue
-            cached = self._entries.get(path)
+            with self._lock:
+                cached = self._entries.get(path)
             if cached and cached.mtime_ns == stat.st_mtime_ns and cached.size == stat.st_size:
                 entries.append(cached)
                 continue
             entry = self._read_entry(path)
             if entry is not None:
-                self._entries[path] = entry
+                with self._lock:
+                    self._entries[path] = entry
                 entries.append(entry)
 
         selected: list[VaultNote] = []

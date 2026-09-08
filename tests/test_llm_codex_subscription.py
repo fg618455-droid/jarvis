@@ -125,8 +125,13 @@ class TestSafeInvocation:
         assert child_environment["CODEX_HOME"] == r"C:\subscription-login"
 
     def test_windows_cmd_shim_resolves_to_node_without_a_command_shell(self):
-        from pathlib import Path
+        from pathlib import PureWindowsPath
+        from types import SimpleNamespace
         from jarvis.llm.codex_subscription import _resolve_codex_launcher
+
+        class WindowsFixturePath(PureWindowsPath):
+            def is_file(self):
+                return True
 
         def which(name):
             return {
@@ -134,9 +139,9 @@ class TestSafeInvocation:
                 "node": r"C:\Program Files\nodejs\node.exe",
             }[name]
 
-        with patch("jarvis.llm.codex_subscription.os.name", "nt"), patch(
+        with patch("jarvis.llm.codex_subscription.os", SimpleNamespace(name="nt", environ={}, pathsep=";")), patch(
             "jarvis.llm.codex_subscription.shutil.which", side_effect=which
-        ), patch.object(Path, "is_file", return_value=True):
+        ), patch("jarvis.llm.codex_subscription.Path", WindowsFixturePath):
             launcher = _resolve_codex_launcher()
 
         assert launcher[0] == r"C:\Program Files\nodejs\node.exe"

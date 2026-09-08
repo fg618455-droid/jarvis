@@ -82,6 +82,16 @@ class TestLocalFilesTool:
         assert result.success is False
         assert "not found" in result.reply_text.lower()
 
+    def test_bare_relative_path_is_resolved_under_home(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(os.path, "expanduser", lambda value: str(tmp_path) if value == "~" else value)
+        (tmp_path / "notes.txt").write_text("from home", encoding="utf-8")
+
+        result = self.tool.run({"operation": "read", "path": "notes.txt"}, self.context)
+
+        assert result.success is True
+        assert result.reply_text == "from home"
+
     @patch('pathlib.Path.write_text')
     @patch('pathlib.Path.mkdir')
     def test_run_write_success(self, mock_mkdir, mock_write_text):

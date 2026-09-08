@@ -58,6 +58,8 @@ class VaultSearchTool(Tool):
             getattr(context.cfg, "obsidian_index_max_file_kb", 512),
         )
         hits = index.search(query, limit=limit)
-        if not hits:
-            return ToolExecutionResult(True, "🔎 No matching vault notes found.")
-        return ToolExecutionResult(True, format_hits_for_prompt(hits, include_paths=True))
+        status = index.status()
+        text = format_hits_for_prompt(hits, include_paths=True) if hits else "No matching vault notes found."
+        if not status["complete"]:
+            text += "\nVault indexing is incomplete; these results may omit notes."
+        return ToolExecutionResult(True, text, metadata={"vault_index": status})

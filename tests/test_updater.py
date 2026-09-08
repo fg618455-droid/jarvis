@@ -1069,10 +1069,19 @@ class TestInstallUpdateMacos:
         # The script is POSIX bash; on Windows this only works when a real
         # bash (WSL / Git Bash) is on PATH — the wsl.exe shim prints "WSL is
         # not supported" and exits non-zero on machines without WSL.
-        if sys.platform == "win32" and not _bash_available():
-            pytest.skip("a POSIX bash (WSL or Git Bash) is required on Windows")
+        import shutil
+        bash = shutil.which("bash")
+        if sys.platform == "win32":
+            git = shutil.which("git")
+            git_bash = Path(git).parent.parent / "bin" / "bash.exe" if git else None
+            if git_bash is None or not git_bash.is_file():
+                pytest.skip("Git Bash with host filesystem access is required on Windows")
+            bash = str(git_bash)
+        if not bash:
+            pytest.skip("bash is required")
         import plistlib
         import re
+        import shlex
         import time
         import zipfile
         from unittest.mock import patch, MagicMock
@@ -1087,7 +1096,7 @@ class TestInstallUpdateMacos:
         # shell script that writes a marker file we can check for.
         marker_path = tmp_path / "fallback_fired.marker"
         stub_binary = app_source / "Contents" / "MacOS" / "Jarvis"
-        stub_binary.write_text(f'#!/bin/bash\necho fired > {marker_path}\n')
+        stub_binary.write_text(f'#!/bin/bash\necho fired > {shlex.quote(marker_path.as_posix())}\n', newline="\n")
         stub_binary.chmod(0o755)
 
         with zipfile.ZipFile(zip_path, "w") as zf:
@@ -1103,9 +1112,9 @@ class TestInstallUpdateMacos:
         # `if [ -x "$LSREGISTER" ]` guard skips it cleanly.
         stub_dir = tmp_path / "path_stubs"
         stub_dir.mkdir()
-        (stub_dir / "open").write_text("#!/bin/bash\nexit 1\n")
+        (stub_dir / "open").write_text("#!/bin/bash\nexit 1\n", newline="\n")
         (stub_dir / "open").chmod(0o755)
-        (stub_dir / "xattr").write_text("#!/bin/bash\nexit 0\n")
+        (stub_dir / "xattr").write_text("#!/bin/bash\nexit 0\n", newline="\n")
         (stub_dir / "xattr").chmod(0o755)
 
         from desktop_app.updater import install_update_macos
@@ -1156,14 +1165,22 @@ class TestInstallUpdateMacos:
         )
         # Fallback nohup also redirects to $LOG_FILE; neutralise it.
         script_text = script_text.replace('>> "$LOG_FILE" 2>&1', '>/dev/null 2>&1')
+        # Generated paths belong to the host filesystem. Git Bash accepts
+        # forward-slash drive/UNC paths; backslashes inside shell quotes do not.
+        if sys.platform == "win32":
+            script_text = script_text.replace(str(tmp_path), tmp_path.as_posix())
+            extracted_root = Path(new_app_match.group(1)).parent
+            script_text = script_text.replace(str(extracted_root), extracted_root.as_posix())
+            script_text = script_text.replace("\\", "/")
         runnable = tmp_path / "run.sh"
-        runnable.write_text(script_text)
+        runnable.write_text(script_text, newline="\n")
         runnable.chmod(0o755)
 
         env = os.environ.copy()
         env["PATH"] = f"{stub_dir}{os.pathsep}{env.get('PATH', '')}"
         result = subprocess.run(
-            ["bash", str(runnable)],
+            [bash, runnable.as_posix()],
+            cwd=tmp_path,
             env=env,
             capture_output=True,
             text=True,
