@@ -53,6 +53,7 @@ from .factory import (
     ollama_keep_alive,
 )
 from .route import RequestDeadline, Route, RoutedBackend
+from .runtime import BackendGeneration, LLMRuntime, get_llm_runtime
 from .tiers import Tier, resolve_model
 
 __all__ = [
@@ -72,6 +73,9 @@ __all__ = [
     "Route",
     "RequestDeadline",
     "RoutedBackend",
+    "BackendGeneration",
+    "LLMRuntime",
+    "get_llm_runtime",
     "Tier",
     "ToolsNotSupportedError",
     "check_version",

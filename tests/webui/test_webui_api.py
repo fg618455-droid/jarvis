@@ -538,8 +538,9 @@ class TestSystem:
     def test_the_reading_names_the_models_in_use(self, client):
         body = client.get("/api/system", headers=HEADERS).get_json()
 
-        assert body["models"]["effective"]["chat"]["model"]
-        assert body["models"]["local"]["chat_fallback"]["model"]
+        assert body["models"]["effective"]["chat"] is None
+        assert body["models"]["local"]["chat_fallback"] is None
+        assert body["models"]["local"]["private"]["model"]
         assert body["speech_recognition"]["backend"]
         assert body["process"]["pid"] > 0
 
@@ -557,14 +558,14 @@ class TestSystem:
             "llm_routes": [
                 {
                     "name": "cloud-fast", "provider": "openai_compatible",
-                    "base_url": "https://cloud.example/v1", "api_key": "",
+                    "base_url": "https://cloud.example/v1", "api_key": "synthetic",
                     "api_key_env": "", "model": "remote-fast", "tier": "fast",
                     "timeout_sec": 4.0, "enabled": True,
                     "capabilities": ["chat", "stream", "tools"],
                 },
                 {
                     "name": "cloud-chat", "provider": "openai_compatible",
-                    "base_url": "https://cloud.example/v1", "api_key": "",
+                    "base_url": "https://cloud.example/v1", "api_key": "synthetic",
                     "api_key_env": "", "model": "remote-chat", "tier": "chat",
                     "timeout_sec": 4.0, "enabled": True,
                     "capabilities": ["chat", "stream", "tools"],
@@ -588,8 +589,8 @@ class TestSystem:
             "name": "cloud-chat", "provider": "openai_compatible",
         }
         assert models["effective"]["fast"]["location"] == "remote"
-        assert models["local"]["fast_fallback"]["model"] == "local-fast"
-        assert models["local"]["chat_fallback"]["model"] == "local-chat"
+        assert models["local"]["fast_fallback"] is None
+        assert models["local"]["chat_fallback"] is None
         assert models["local"]["private"]["model"] == "local-chat"
         assert models["local"]["embedding"]["model"] == "local-embed"
         assert models["resident"] == [{"name": "resident-model", "size": "4 GB"}]

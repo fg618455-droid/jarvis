@@ -103,7 +103,8 @@ def chat() -> Response:
         from jarvis.memory.db import Database
         from jarvis.reply.engine import run_reply_engine
 
-        cfg = load_settings()
+        from jarvis.llm.runtime import get_llm_runtime
+        cfg = get_llm_runtime().install(load_settings()).settings
         database = Database(cfg.db_path, cfg.sqlite_vss_path)
         reply = run_reply_engine(database, cfg, None, text, _dialogue_memory(cfg))
     except Exception as exc:

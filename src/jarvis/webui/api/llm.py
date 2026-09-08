@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
+import threading
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-import requests
 from flask import Blueprint, Response, jsonify, request
 
 from jarvis.config import _load_json, _save_json, load_settings, resolve_config_path
@@ -14,13 +15,20 @@ from jarvis.config_metadata import (
     LLM_ROUTE_PROVIDER_PLACEHOLDERS,
 )
 from jarvis.debug import debug_log
-from jarvis.llm import ProviderError, RoutedBackend, Tier, get_llm_backend
-from jarvis.llm.route_state import RouteStateStore
+from jarvis.llm import Route, RoutedBackend, Tier, get_llm_runtime
+from jarvis.llm.probe import probe_route
+from jarvis.llm.route import _build_backend
+from jarvis.llm.route_state import route_state_key
 from jarvis.tools.builtin.ask_crew import AGENT_THREADS
 
 from .settings import MASK, _mask
 
 bp = Blueprint("llm_routes", __name__, url_prefix="/api/llm/routes")
+_PROBE_LOCK = threading.Lock()
+_ALLOWED_CHAT_OVERRIDES = {
+    "auto", "openai_compatible", "claude_subscription",
+    "codex_subscription", "crew_chat",
+}
 
 
 def _display_url(value: str) -> str:
@@ -37,7 +45,9 @@ def _display_url(value: str) -> str:
 
 def _payload() -> dict[str, Any]:
     settings = load_settings()
-    backend = get_llm_backend(settings)
+    generation = get_llm_runtime().install(settings)
+    settings = generation.settings
+    backend = generation.backend
     override = str(getattr(settings, "chat_backend_override", "auto") or "auto")
     crew_chat_agent = str(getattr(settings, "crew_chat_agent", "") or "")
     chains = (
@@ -72,6 +82,13 @@ def _payload() -> dict[str, Any]:
             "enabled": bool(route.get("enabled", True)),
             "capabilities": list(route.get("capabilities", [])),
         })
+    runtime = get_llm_runtime().status()
+    last_responding = next((
+        item
+        for tier in ("chat", "fast", "private")
+        for item in chains.get(tier, [])
+        if item.get("last_responded")
+    ), None)
     return {
         "configured_routes": configured_routes,
         "effective_chains": chains,
@@ -82,6 +99,10 @@ def _payload() -> dict[str, Any]:
         "provider_placeholders": LLM_ROUTE_PROVIDER_PLACEHOLDERS,
         "chat_backend_override": override,
         "crew_chat_agent": crew_chat_agent,
+        "runtime": runtime,
+        "runtime_generation": generation.number,
+        "last_responding_route": last_responding,
+        "health": runtime.get("health", {}),
     }
 
 
@@ -128,7 +149,7 @@ def _normalise_routes(raw_routes: Any, existing: list[dict[str, Any]]) -> list[d
         model = str(raw.get("model", "") or "").strip()
         tier = str(raw.get("tier", "") or "").strip().lower()
         if provider not in (
-            "ollama", "openai_compatible", "claude_subscription",
+            "openai_compatible", "claude_subscription",
             "codex_subscription", "crew_chat",
         ):
             raise ValueError(f"route {index + 1} has an unsupported protocol")
@@ -155,6 +176,24 @@ def _normalise_routes(raw_routes: Any, existing: list[dict[str, Any]]) -> list[d
             raise ValueError(f"route {index + 1} has an unsupported tier")
         if provider in {"claude_subscription", "codex_subscription", "crew_chat"} and tier != "chat":
             raise ValueError(f"route {index + 1} provider is only supported for chat")
+        if provider == "openai_compatible":
+            try:
+                parsed = urlsplit(base_url)
+                host = (parsed.hostname or "").strip().lower()
+            except ValueError as error:
+                raise ValueError(
+                    f"route {index + 1} has an invalid endpoint"
+                ) from error
+            try:
+                address = ipaddress.ip_address(host) if host else None
+            except ValueError:
+                address = None
+            if parsed.scheme != "https" or not host:
+                raise ValueError(f"route {index + 1} needs a cloud HTTPS endpoint")
+            if host == "localhost" or host.endswith(".local") or (
+                address is not None and not address.is_global
+            ):
+                raise ValueError(f"route {index + 1} cannot use a local endpoint")
         try:
             timeout_sec = float(raw.get("timeout_sec", 4.0))
         except (TypeError, ValueError) as error:
@@ -187,6 +226,21 @@ def _normalise_routes(raw_routes: Any, existing: list[dict[str, Any]]) -> list[d
     return clean
 
 
+def _write_and_swap(path, previous: dict[str, Any], candidate: dict[str, Any]):
+    """Persist, build and publish a generation, rolling the file back on failure."""
+    candidate["_config_version"] = max(7, int(candidate.get("_config_version", 0) or 0))
+
+    def prepare():
+        if not _save_json(path, candidate):
+            raise OSError("configuration write failed")
+        return load_settings()
+
+    def rollback() -> None:
+        _save_json(path, previous)
+
+    return get_llm_runtime().reconfigure(prepare, rollback)
+
+
 @bp.route("", methods=["PUT"])
 def replace_routes() -> Response:
     """Replace configured chains while preserving unchanged masked keys."""
@@ -198,11 +252,14 @@ def replace_routes() -> Response:
         clean = _normalise_routes(body.get("routes"), existing if isinstance(existing, list) else [])
     except (TypeError, ValueError) as error:
         return jsonify(error=str(error)), 400
-    config["llm_routes"] = clean
-    if not _save_json(path, config):
-        return jsonify(error="could not write route configuration"), 500
+    candidate = dict(config)
+    candidate["llm_routes"] = clean
+    try:
+        generation = _write_and_swap(path, config, candidate)
+    except Exception:
+        return jsonify(error="could not activate route configuration"), 500
     debug_log(f"LLM route configuration written ({len(clean)} routes)", "webui")
-    return jsonify({"written": len(clean), **_payload()})
+    return jsonify({"written": len(clean), "generation": generation.number, **_payload()})
 
 
 @bp.route("/chat-backend-override", methods=["PUT"])
@@ -215,11 +272,16 @@ def set_chat_backend_override() -> Response:
     RoutedBackend already handles at call time, not a config error."""
     body = request.get_json(silent=True) or {}
     value = str(body.get("chat_backend_override", "") or "").strip().lower() or "auto"
+    if value not in _ALLOWED_CHAT_OVERRIDES:
+        return jsonify(error="unsupported chat backend override"), 400
     path = resolve_config_path()
     config = _load_json(path) or {}
-    config["chat_backend_override"] = value
-    if not _save_json(path, config):
-        return jsonify(error="could not write chat backend override"), 500
+    candidate = dict(config)
+    candidate["chat_backend_override"] = value
+    try:
+        _write_and_swap(path, config, candidate)
+    except Exception:
+        return jsonify(error="could not activate chat backend override"), 500
     debug_log(f"chat backend override set to {value!r}", "webui")
     return jsonify({"chat_backend_override": value, **_payload()})
 
@@ -240,46 +302,92 @@ def set_crew_chat_agent() -> Response:
         )), 400
     path = resolve_config_path()
     config = _load_json(path) or {}
-    config["crew_chat_agent"] = value
-    if not _save_json(path, config):
-        return jsonify(error="could not write crew chat agent"), 500
+    candidate = dict(config)
+    candidate["crew_chat_agent"] = value
+    try:
+        _write_and_swap(path, config, candidate)
+    except Exception:
+        return jsonify(error="could not activate crew chat agent"), 500
     debug_log(f"crew chat agent set to {value!r}", "webui")
     return jsonify({"crew_chat_agent": value, **_payload()})
 
 
 @bp.route("/reset", methods=["POST"])
 def reset_routes() -> Response:
-    """Clear persisted cooldowns for all configured routes."""
-    RouteStateStore().reset()
-    debug_log("LLM route cooldowns reset", "webui")
-    return jsonify({"reset": True, **_payload()})
+    """Clear all health state or the exact stable route identifier supplied."""
+    body = request.get_json(silent=True) or {}
+    route_id = str(body.get("route_id", "") or "").strip()
+    generation = get_llm_runtime().install(load_settings())
+    backend = generation.backend
+    if not isinstance(backend, RoutedBackend):
+        return jsonify(error="routing backend is unavailable"), 409
+    selected = None
+    if route_id:
+        selected = next((route for route in backend.routes if route_state_key(route) == route_id), None)
+        if selected is None:
+            return jsonify(error="unknown route identifier"), 404
+    backend.reset(selected)
+    debug_log("LLM route health reset", "webui")
+    return jsonify({"reset": True, "route_id": route_id or None, **_payload()})
 
 
 @bp.route("/probe", methods=["POST"])
 def probe_routes() -> Response:
-    """Contact configured endpoints only after the user requests a probe."""
-    settings = load_settings()
-    backend = get_llm_backend(settings)
-    results = []
-    if isinstance(backend, RoutedBackend):
-        for route in backend.routes:
-            if route.provider == "ollama" and route.name.startswith("local-"):
+    """Run secret-free capability probes after an explicit user request."""
+    if not _PROBE_LOCK.acquire(blocking=False):
+        return jsonify(error="a route probe is already running"), 409
+    try:
+        settings = load_settings()
+        generation = get_llm_runtime().install(settings)
+        backend = generation.backend
+        results = []
+        effective = {
+            (route.name, route.tier.value): route
+            for route in (backend.routes if isinstance(backend, RoutedBackend) else ())
+            if route.tier is not Tier.PRIVATE
+        }
+        for index, raw in enumerate(getattr(settings, "llm_routes", []) or []):
+            if not isinstance(raw, dict):
                 continue
             try:
-                models = backend._backend(route).list_models(timeout_sec=route.timeout_sec)
-                results.append({
-                    "name": route.name,
-                    "tier": route.tier.value,
-                    "ok": bool(models),
-                    "models": models,
-                })
-            except (ProviderError, requests.exceptions.RequestException) as error:
-                results.append({
-                    "name": route.name,
-                    "tier": route.tier.value,
-                    "ok": False,
-                    "models": [],
-                    "error": type(error).__name__,
-                })
-    debug_log(f"LLM route probe completed ({len(results)} routes)", "webui")
-    return jsonify({"results": results})
+                tier = Tier(str(raw.get("tier", "")).strip().lower())
+            except ValueError:
+                continue
+            if tier is Tier.PRIVATE:
+                continue
+            name = str(raw.get("name", "") or f"route-{index + 1}").strip()
+            provider = str(raw.get("provider", "") or "").strip().lower()
+            try:
+                route = Route(
+                    name=name,
+                    provider=provider,
+                    base_url=str(raw.get("base_url", "") or "").strip().rstrip("/"),
+                    api_key=str(raw.get("api_key", "") or ""),
+                    api_key_env=str(raw.get("api_key_env", "") or "").strip(),
+                    model=str(raw.get("model", "") or "").strip(),
+                    tier=tier,
+                    timeout_sec=max(0.1, float(raw.get("timeout_sec", 4.0) or 4.0)),
+                    enabled=bool(raw.get("enabled", True)),
+                    capabilities=frozenset(
+                        str(value).strip().lower()
+                        for value in raw.get("capabilities", ["chat", "stream", "tools"])
+                        if str(value).strip().lower() in {"chat", "stream", "tools"}
+                    ),
+                )
+            except (TypeError, ValueError):
+                continue
+            effective_route = effective.get((name, tier.value))
+            concrete = None
+            if effective_route is not None and isinstance(backend, RoutedBackend):
+                concrete = backend._backend(effective_route)
+            # Missing credentials are detected before a backend is used. This
+            # keeps inactive configured candidates visible in the probe result
+            # without accidentally contacting them.
+            results.append(probe_route(
+                route,
+                backend=concrete or _build_backend(route, settings),
+            ))
+        debug_log(f"LLM route probe completed ({len(results)} routes)", "webui")
+        return jsonify({"results": results, "generation": generation.number})
+    finally:
+        _PROBE_LOCK.release()

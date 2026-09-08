@@ -649,6 +649,18 @@ class VoiceListener(threading.Thread):
             text: Transcribed text from audio
             utterance_energy: Pre-calculated energy from the utterance frames
         """
+        # Route edits become visible at an utterance boundary. An already
+        # dispatched turn keeps the generation it started with.
+        try:
+            from ..llm.runtime import get_llm_runtime
+            generation = get_llm_runtime().snapshot()
+            if getattr(self, "_llm_runtime_generation", 0) != generation.number:
+                self.cfg = generation.settings
+                self._intent_judge = create_intent_judge(self.cfg)
+                self._llm_runtime_generation = generation.number
+        except RuntimeError:
+            pass
+
         if not text or not text.strip():
             # Check hot window expiry
             self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
@@ -1334,6 +1346,11 @@ class VoiceListener(threading.Thread):
             query: Complete user query to process
         """
         debug_log(f"dispatching query: '{query}'", "voice")
+        try:
+            from ..llm.runtime import get_llm_runtime
+            turn_cfg = get_llm_runtime().snapshot().settings
+        except RuntimeError:
+            turn_cfg = self.cfg
 
         # Clear audio buffers to prevent stale audio from next query
         self._clear_audio_buffers()
@@ -1363,7 +1380,7 @@ class VoiceListener(threading.Thread):
 
         def _memory_lookup_started() -> None:
             phrase = str(
-                getattr(self.cfg, "memory_lookup_acknowledgement", "") or ""
+                getattr(turn_cfg, "memory_lookup_acknowledgement", "") or ""
             ).strip()
             if phrase and self.tts and self.tts.enabled:
                 try:
@@ -1424,7 +1441,7 @@ class VoiceListener(threading.Thread):
         try:
             with query_lock():
                 reply = run_reply_engine(
-                    self.db, self.cfg, None, query, self.dialogue_memory,
+                    self.db, turn_cfg, None, query, self.dialogue_memory,
                     language=self._last_detected_language,
                     on_memory_lookup_started=_memory_lookup_started,
                     on_speech_segment=speak_segment,

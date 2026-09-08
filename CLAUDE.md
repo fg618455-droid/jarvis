@@ -2,13 +2,15 @@ Data privacy comes first, always.
 
 Jarvis's voice pipeline (wake word, speech-to-text, text-to-speech) defaults to local engines (Piper, Whisper). A cloud STT/TTS vendor (e.g. ElevenLabs, Edge TTS, Gemini's audio path) may be added as an opt-in alternative, off by default, with the local engine remaining the fallback if the cloud vendor fails or is unconfigured (2026-08-23, Felix: the earlier "no exceptions" rule is lifted). Wake-word detection and any always-on/passive listening path stay local regardless — a live microphone stream that may run for hours a day is a materially different exposure than a bounded request sent for one TTS/STT call, and that distinction is not affected by this decision.
 
-The reasoning/LLM backend (2026-08-23, Felix, supersedes the 2026-08-18 decision below): simple, fast turns still default to the local Ollama model. A complex, slow, or orchestration-heavy turn may route to a cloud backend, but **only** through one of these, in any combination:
+The reasoning/LLM backend (2026-09-03, Felix, supersedes the 2026-08-23 decision below) has three structural privacy lanes. FAST and CHAT use only explicitly configured, successfully probed cloud or subscription routes. Ollama is never a FAST/CHAT candidate or fallback. PRIVATE work (memory writes, summaries, graph and vault notes) and embeddings use loopback Ollama only. An exhausted user-facing CHAT chain reports an honest fixed failure; background FAST/PRIVATE work remains fail-soft.
 
 - the self-hosted Hermes agent crew, running under Felix's own already-paid ChatGPT/Codex subscription (`askCrew`, Phase 7 of the Mission Control plan, `docs-felix/MISSION-CONTROL-PLAN.md`, not versioned in this repo);
 - a free-tier provider already configured under `~/.fcc/.env` (the free-claude-code key set);
 - a subscription-backed path that authenticates through a login Felix already pays for (e.g. the Claude Agent SDK riding his existing Claude Code subscription session) — never a raw metered API key billed per token/request.
 
-**Never** a pay-per-token/metered API billing arrangement (a raw Anthropic/OpenAI/etc. API key charged per call) — that is the one boundary Felix drew explicitly. Cost was the original reason for local-only on the reasoning path; it no longer applies for the subscription/free/local paths above, but a metered-billing integration is still out unless Felix explicitly says otherwise for that one case.
+Cloud credentials remain explicit configuration and are never inferred from an available local endpoint. Provider probes and status expose only safe capability/error metadata, never keys, prompts, generated text, or response bodies.
+
+The consolidation does not authorize new metered billing. Keep the existing free-tier/subscription cost boundary unless Felix explicitly approves additional charges.
 
 All user-facing command line output should make use of emojis. Especially an initial emoji to start off the lines that depict what the line is about. Output should make use of indentation spacing to establish a visual hierarchy and aim to make output as easy to sift through as possible. Exception: Windows .bat scripts cannot use emojis (cmd.exe doesn't render Unicode properly).
 
@@ -52,7 +54,7 @@ Any code change must either adhere to our spec files perfectly or you should ask
 | `src/jarvis/memory/recall_gate.spec.md` | Deterministic skip-enrichment heuristic when the hot window covers a follow-up | Fail-open; language-agnostic via `\w{3,}` + `re.UNICODE`; planner intent always wins |
 | `src/jarvis/memory/morning_briefing.spec.md` | Once-per-day spoken School briefing, and the generator it shares with the control centre's Today panel | One generator so two briefings never disagree about the same day; separate gates so reading on screen never suppresses the speech; an empty branch never reaches a model |
 | `src/jarvis/memory/remio.spec.md` | Optional local retrieval from remio-synchronised notes | Bounded attributable excerpts; synthesis stays in Jarvis; failures are invisible to other memory sources |
-| `src/jarvis/llm/llm.spec.md` | Pluggable LLM backend abstraction: `LLMBackend` ABC, `OllamaBackend`, `OpenAICompatibleBackend`, factory dispatch on `llm_provider`, `get_embedding_backend` override, config migrations, the two-tier model system (`Tier.FAST` / `Tier.CHAT` via `resolve_model`), function-style helpers | Provider-agnostic interface so Jarvis can run on Ollama, OpenAI-compatible (LM Studio / oMLX / llama.cpp / vLLM / LocalAI), or Anthropic-compatible servers; every context states its tier instead of defining a model fallback chain |
+| `src/jarvis/llm/llm.spec.md` | Three-tier routing, provider probes, health state, atomic runtime generations, PRIVATE Ollama, local embeddings | FAST/CHAT are explicit cloud/subscription chains; PRIVATE and embeddings are loopback Ollama only; no implicit local fallback |
 
 The LLM contexts graph at `docs/llm_contexts.md` maps every LLM call in the app (model, gating, inputs, outputs, limits, flow). Keep it up-to-date at all times: any change that adds, removes, or alters an LLM context (model resolution, timeout, cap, prompt source, gating flag, data-flow edge) must update `docs/llm_contexts.md` in the same PR.
 

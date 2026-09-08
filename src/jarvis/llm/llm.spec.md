@@ -4,15 +4,14 @@ The `jarvis.llm` package owns every LLM completion call. Jarvis mainly speaks ge
 
 The control centre treats the stored list and the running chains as different
 objects. `configured_routes` is the ordered, schema-complete disk shape and is
-the only input to its editor. `effective_chains` is read-only runtime status
-and additionally contains appended local candidates. This boundary prevents a
-save from turning an automatic fallback into explicit configuration or losing
-fields that status does not need. Direct keys are masked; environment key
+the only input to its editor. `effective_chains` is read-only runtime status.
+FAST and CHAT contain only explicit cloud/subscription routes; PRIVATE contains
+the one loopback Ollama route. Direct keys are masked and environment key
 values are never loaded by the configuration endpoint.
 
 ## Goals
 
-1. **Offline by default.** An empty `llm_routes` list uses Ollama exactly as a local installation expects.
+1. **Honest cloud lanes.** An empty FAST or CHAT chain stays empty and never silently sends that work to Ollama.
 2. **One dispatch path.** `get_llm_backend(cfg)` always returns `RoutedBackend`, including a purely local configuration.
 3. **Explicit privacy lane.** Memory writes and graph rewrites use `Tier.PRIVATE`, which contains one loopback `OllamaBackend` route. With route chains configured, embeddings also use loopback Ollama and never enter the router.
 4. **Fail-soft at the boundary.** Concrete OpenAI-compatible backends raise typed provider failures. `RoutedBackend` turns an exhausted chain into `None`, preserving the contract used by callers.
@@ -67,9 +66,9 @@ Function-style Ollama helpers remain available to performance tests and eval scr
 
 ### Streaming
 
-`RequestDeadline` carries one monotonic budget across route attempts. When no explicit deadline is supplied, `RoutedBackend.streaming()` derives it from the caller timeout. Streaming promotes an available loopback route for a 1.2-second progress window before continuing through the remaining route chain. This affects timing only; `routes_for(tier)` retains the configured tier order.
+`RequestDeadline` carries one monotonic budget across route attempts. When no explicit deadline is supplied, `RoutedBackend.streaming()` derives it from the caller timeout. Routes are attempted in configured order; there is no speculative local-first worker or progress-window failure classification.
 
-The first route to emit meaningful text owns the answer. Its wrapped callback becomes the only output path, and later output from an abandoned worker is discarded. Once a route owns the answer, a failure ends that stream and no later route is contacted. This output gate prevents a slow local worker from duplicating a cloud response.
+The first route to emit meaningful text owns the answer. Once a route owns the answer, a later stream failure is recorded as a stream abort and no second route is allowed to splice another answer onto it.
 
 ## Typed provider failures
 
@@ -89,19 +88,19 @@ Exception text is generic and contains no endpoint URL, key, response body, or m
 
 `Route` is a frozen dataclass with `name`, `provider`, `base_url`, `api_key`, `api_key_env`, `model`, `tier`, `timeout_sec`, `enabled`, `capabilities`, and `keep_alive`. Its direct credential field is excluded from `repr`; an environment credential is resolved only while constructing its backend.
 
-`RoutedBackend` groups routes by tier and tries each enabled, capable, unblocked route in configuration order. Deadline-aware streaming applies the local progress rule above. CHAT calls also carry one `RequestDeadline` across route attempts. A route's timeout is the smaller of its own limit and the remaining caller budget. A provider failure, connection failure, timeout, model failure, auth failure, or empty response moves to the next candidate. An exhausted chain returns `None`.
+`RoutedBackend` groups routes by tier and tries each enabled, capable, unblocked route in configuration order. Streaming and CHAT calls carry one `RequestDeadline` across route attempts. A route's timeout is the smaller of its own limit and the remaining caller budget. A provider failure, connection failure, timeout, model failure, auth failure, or empty response moves to the next candidate. An exhausted non-streaming chain returns `None`; the reply layer renders its fixed failure message.
 
-Configured `codex_subscription` routes are accepted only for CHAT. They are tried after the other configured CHAT candidates and before the appended local fallback because starting the CLI and running a reasoning model has higher latency than an already warm endpoint. FAST and PRIVATE entries for this provider are dropped before a backend is built.
+Configured `codex_subscription`, `claude_subscription`, and `crew_chat` routes are accepted only for CHAT. FAST and PRIVATE entries for these providers are dropped before a backend is built.
 
-Configured FAST and CHAT chains always end with loopback Ollama. The appended local FAST route has a 60-second route limit and the local CHAT route has a 180-second route limit, matching the local-only candidates; each caller can still impose a smaller timeout. Disabled configured entries remain visible in route status but cannot reduce those active local limits. A configuration with no routes has one effective local candidate per lane. `resolve_model()` returns a string-compatible value carrying its `Tier`, so existing backend method signatures remain ordinary model-string APIs while the router can select a chain.
+Configured FAST and CHAT chains contain only enabled, credentialed cloud or subscription routes. They never append Ollama, loopback, LAN, or an implicit single-endpoint fallback. A configuration with no valid route therefore has no effective candidate in that lane. `resolve_model()` returns a string-compatible value carrying its `Tier`, so existing backend method signatures remain ordinary model-string APIs while the router can select a chain.
 
-A route the user switched off is inert. It stays in the chain so the control centre can still show it, but it takes no part in deciding how the local candidates are built: a configuration whose only route is disabled yields the same local chain as a configuration with no routes at all. The local candidates always run the configured `local_fast_model` and `ollama_chat_model`, never a remote route model, and their timeouts leave room for a cold model load, because the local candidate is last in its chain and has nothing to fall forward to. A ceiling shorter than a page-in would not buy speed; it would guarantee the candidate can never answer.
+A route the user switched off remains visible in `configured_routes` but is inert. Blank environment variables count as missing credentials, so those routes are not imported into an effective chain and are not attempted.
 
 ### Model residency
 
 Ollama unloads a model once its keep-alive lapses and resets that timer from each request's own `keep_alive`, applying its short default when the field is absent. Warming a model once is therefore not enough: an assistant that idles between conversations pays a cold page-in on the next thing the user says. Every route built against an Ollama runtime carries a `keep_alive`, and `OllamaBackend` stamps it onto each `direct`, `streaming`, and `chat` request unless the caller passed one explicitly. The duration is `30m`, or `1m` under `low_power_mode`, which trades warmth for handing the GPU back between turns. Remote OpenAI-compatible routes carry no residency: it is an Ollama knob and their servers own the decision.
 
-`warm_up()` warms the first available candidate for the requested lane and its local Ollama candidate. `list_models()` combines unique names from reachable routes.
+`warm_up()` warms only the first available candidate for the requested lane. `list_models()` combines unique names from reachable routes.
 
 ### Cooldown state
 
@@ -115,22 +114,50 @@ Ollama unloads a model once its keep-alive lapses and resets that timer from eac
 | Quota exhaustion without reset | Until midnight UTC |
 | 401 or 403 | Invalid for the process lifetime |
 
-Hits, failures, last safe error label, and future block time feed the control centre. Persisted cooldowns prevent a restart from immediately touching a rate-limited or quota-exhausted key. Authentication invalidation is deliberately process-local, so a restarted process can retry a corrected external credential.
+Persisted cooldowns prevent a restart from immediately touching a rate-limited or quota-exhausted key. Authentication invalidation is deliberately process-local, so a restarted process can retry a corrected external credential.
+
+Route-state format v2 keys each route by a hash of tier, provider, base URL,
+and model. Counters distinguish started attempts, successes, provider
+failures, empty replies, cooldown skips, deadline-before-attempt skips,
+stream aborts, and whole-chain exhaustion. Only a provider call that actually
+started may increment an attempt or provider-failure counter. Status separately
+names configured, selectable, next-selectable, and last-responding routes and
+tracks safe failure labels plus attempt/success/failure timestamps. Reset may
+target one stable route id or the whole store; v1 files are read tolerantly.
+
+### Runtime generations and capability probes
+
+`LLMRuntime` owns an immutable settings/backend generation. A turn obtains one
+snapshot and keeps it to completion. Route PUT writes and reloads the candidate,
+constructs all adapters, then publishes the new generation atomically; any
+failure restores the previous file and generation. The voice daemon,
+conversation API, and direct reply path all acquire snapshots from this same
+runtime. Unchanged adapters are reused and all unique subscription sidecars are
+closed at daemon shutdown.
+
+`POST /api/llm/routes/probe` explicitly probes every configured non-PRIVATE
+route, including disabled or credential-missing candidates. Results contain
+only capability booleans, counts, model ids, timings, and stable error classes
+(`auth`, `billing`, `quota`, `model_missing`, `timeout`, `transport`, or
+`empty_response`). Prompts, generated text, bodies, URLs with credentials, and
+credential values are never retained or returned. Subscription and crew routes
+use completion probes; native tool support and the text-tool fallback are
+reported separately.
 
 `describe_model_topology(cfg)` is the status boundary for model names. It
 reports the first currently available candidate in each effective tier with
 its provider and loopback-derived `local`/`remote` location, separately from
-the configured Ollama FAST fallback, CHAT fallback, PRIVATE, and embedding
-roles. It never claims residency; only the independent `ollama ps` system
+the configured Ollama PRIVATE and embedding roles. It never claims residency;
+only the independent `ollama ps` system
 reading can say which weights are actually loaded.
 
 ## Lanes
 
 | Tier | Chain | Contexts |
 |---|---|---|
-| `Tier.FAST` | Configured fast routes, then local | intent judge, tool router, tool search, enrichment extractor, memory and tool digests, graph placement picker, evaluator, weather place extraction, school exam extraction |
-| `Tier.CHAT` | Configured chat routes, then local | reply loop, planner, step resolver, dictation cleanup, nutrition calls, spoken school morning briefing, other tool-specific completions |
-| `Tier.PRIVATE` | loopback Ollama only | diary summary, deflection rewrite, topic optimisation, graph extraction, node merge, graph auto-split |
+| `Tier.FAST` | Explicit cloud routes only | intent judge, tool router, tool search, enrichment extractor, evaluator, weather place extraction, school exam extraction |
+| `Tier.CHAT` | Explicit cloud/subscription routes only | reply loop, planner, step resolver, dictation cleanup, nutrition calls, spoken school morning briefing, other tool-specific completions |
+| `Tier.PRIVATE` | loopback Ollama only | memory/tool/loop summaries, diary summary, deflection rewrite, topic optimisation, graph extraction, node merge, graph auto-split, school-note import |
 
 Memory retrieval may send the selected snippet text into FAST or CHAT calls.
 The added provenance fields stay attached to local Python objects and do not
@@ -146,8 +173,8 @@ The main reply loop's Tier.CHAT call (`chat_with_messages` in `src/jarvis/reply/
 
 Two independent sources feed `preferred_provider`, resolved in `chat_with_messages` via `_resolve_preferred_chat_provider`:
 
-- **Manual override** — `cfg.chat_backend_override`. `"auto"` (the default) defers to automatic classification below. Any other value names a route provider (e.g. `"ollama"`, `"claude_subscription"`, `"codex_subscription"`, `"crew_chat"`) to try first for every reply, regardless of that turn's classification. Not validated against configured routes at load time: a forced provider with no matching route is the same ordinary "unavailable" case the chain fallback already handles.
-- **Automatic classification** — only consulted when the override is `"auto"`. The tool router's own LLM call (`jarvis.tools.selection._select_llm`, see `tools/selection.spec.md`) also classifies the turn as `"local"`, `"complex"`, or `"hermes"` in the same response that picks the tool allow-list, so no second LLM call is made. `"local"` maps to `"ollama"`, `"complex"` maps to `"claude_subscription"`, `"hermes"` maps to `"crew_chat"`. A turn with no classification (non-LLM selection strategy, router failure or timeout, or a response that ignored the instruction) resolves to no preference at all, which is the existing configured chain order unchanged.
+- **Manual override** — `cfg.chat_backend_override`. `"auto"` (the default) defers to automatic classification. Any other accepted value names a configured cloud/subscription provider to try first. `ollama` is rejected; migration v7 rewrites it to `auto`.
+- **Automatic classification** — only consulted under `"auto"`. The tool router emits `DEFAULT`, `COMPLEX`, or `HERMES` in the same response that picks the allow-list. `DEFAULT` leaves configured order unchanged, `COMPLEX` prefers `claude_subscription`, and `HERMES` prefers `crew_chat`. Legacy `LOCAL` parses as `DEFAULT`; it never selects a local route.
 
 The router's classification travels from the tool-router call site to the chat call within one reply exactly like `routed_tools` does: computed once, reused for every turn of that reply's agentic loop, and carried through a hot-window cache hit alongside the cached tool list so a repeated query does not lose it.
 
@@ -155,7 +182,7 @@ The router's classification travels from the tool-router call site to the chat c
 
 ## Embeddings
 
-With `llm_routes` configured, `get_embedding_backend(cfg)` returns an `OllamaBackend` whose URL is loopback. It never returns `RoutedBackend`, and the model remains `cfg.ollama_embed_model`, preserving the vector space used by stored embeddings. A configured non-loopback Ollama URL falls back to `http://127.0.0.1:11434` for private and embedding work. A single-endpoint configuration with no routes retains its explicit embedding-provider behaviour.
+`get_embedding_backend(cfg)` always returns an `OllamaBackend` whose URL is loopback. It never returns `RoutedBackend`, and the model remains `cfg.ollama_embed_model`, preserving the vector space used by stored embeddings. A configured non-loopback Ollama URL is replaced by `http://127.0.0.1:11434` for PRIVATE and embedding work.
 
 ## Configuration
 
@@ -163,14 +190,14 @@ With `llm_routes` configured, `get_embedding_backend(cfg)` returns an `OllamaBac
 |---|---|---|
 | `llm_routes` | `[]` | Ordered generic endpoint entries for FAST and CHAT |
 | `chat_backend_override` | `"auto"` | `"auto"` or a route provider name to force for every Tier.CHAT reply; see "Chat backend selection" |
-| `llm_provider` | `"ollama"` | Single-endpoint protocol used when `llm_routes` is empty |
-| `llm_base_url` | `""` | Single-endpoint URL used when `llm_routes` is empty |
-| `llm_api_key` | `""` | Single-endpoint bearer credential used when `llm_routes` is empty |
+| `llm_provider` | `"ollama"` | Legacy single-endpoint value; never creates FAST/CHAT routes |
+| `llm_base_url` | `""` | Legacy single-endpoint URL; v7 migrates eligible public cloud routes |
+| `llm_api_key` | `""` | Legacy credential used only by that one-time migration |
 | `llm_chat_model` | local model | Effective first CHAT model |
 | `fast_model` | automatic | Effective first FAST route model (derived at load time) |
-| `local_fast_model` | `gemma4:e2b` | Ollama FAST fallback model |
-| `ollama_base_url` | `http://127.0.0.1:11434` | Ollama URL for a local-only setup; private work requires loopback |
-| `ollama_chat_model` | setup selection | Local chat and private model |
+| `local_fast_model` | removed | Removed by migration v7 |
+| `ollama_base_url` | `http://127.0.0.1:11434` | PRIVATE and embedding runtime; forced to loopback |
+| `ollama_chat_model` | setup selection | PRIVATE model only |
 | `ollama_embed_model` | `nomic-embed-text` | Local embedding model |
 
 Each `llm_routes` entry has this shape:
@@ -299,3 +326,21 @@ src/jarvis/llm/
 ├── tiers.py
 └── llm.spec.md
 ```
+
+Runtime generations own copied settings. Resolved environment credentials participate
+in the process-salted generation fingerprint; rotation builds a fresh adapter while
+in-flight turns retain their existing adapter. Crew credential changes rebuild
+adapters. A failed build closes only newly created adapters and keeps the active
+generation usable.
+
+Groq GPT-OSS completion requests use `reasoning_effort=low` by default and
+`max_completion_tokens` with at least 1024 tokens, shared by reasoning and visible
+output. Direct, streaming and tool requests share this policy. Explicit larger
+budgets and reasoning effort are preserved. Other endpoints keep their payloads.
+API contract: https://console.groq.com/docs/api-reference
+
+Graph placement and school-note imports always use PRIVATE, including category classification.
+
+Atomic config persistence retries Windows sharing/lock violations up to three
+times with bounded backoff. Other permission errors fail immediately; an
+unsuccessful replacement preserves the original config and removes the temp file.

@@ -2,7 +2,7 @@
 
 Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it is gated. This is the reference for optimising the app's main bottleneck (LLM latency). Keep it in sync with the code — see the note at the bottom.
 
-> **Backend abstraction and lanes.** Every completion below selects FAST, CHAT, or PRIVATE through `resolve_model(cfg, tier)`. FAST contains explicit cloud routes only; CHAT contains explicit cloud/subscription routes only; neither lane appends or falls back to Ollama. PRIVATE contains one loopback Ollama route, and `get_embedding_backend(cfg)` is separate, always loopback Ollama, and never routed. Blank credentials are unavailable. Subscription and crew routes are CHAT-only.
+> **Backend abstraction and lanes.** Every completion below enters the process-wide `LLMRuntime`, takes one immutable generation snapshot, and selects FAST, CHAT, or PRIVATE through `resolve_model(cfg, tier)`. FAST contains explicit cloud routes only; CHAT contains explicit cloud/subscription routes only; neither lane appends or falls back to Ollama. PRIVATE contains one loopback Ollama route, and `get_embedding_backend(cfg)` is separate, always loopback Ollama, and never routed. Blank credentials are unavailable. Subscription and crew routes are CHAT-only. A route update is built and atomically published for the next turn while an in-flight turn finishes on its old snapshot.
 >
 > The config loader and control-centre route editor accept the same provider
 > set. The editor round-trips environment credential names, activation, and

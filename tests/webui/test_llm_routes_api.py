@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from jarvis.llm.probe import probe_route as real_probe_route
+
 
 def _write_config(tmp_path, monkeypatch):
     path = tmp_path / "config.json"
@@ -53,7 +55,7 @@ def test_get_routes_separates_configured_routes_from_effective_chains(
 
     assert [route["name"] for route in body["configured_routes"]] == ["cloud-chat"]
     assert [route["name"] for route in body["effective_chains"]["chat"]] == [
-        "cloud-chat", "local-chat",
+        "cloud-chat",
     ]
     configured = body["configured_routes"][0]
     assert configured["api_key"].endswith("tial")
@@ -73,11 +75,11 @@ def test_get_routes_exposes_the_schema_for_every_supported_provider(
     ]
     provider = next(field for field in body["route_fields"] if field["key"] == "provider")
     assert {choice["value"] for choice in provider["choices"]} == {
-        "ollama", "openai_compatible", "claude_subscription",
+        "openai_compatible", "claude_subscription",
         "codex_subscription", "crew_chat",
     }
     assert set(body["provider_placeholders"]) == {
-        "ollama", "openai_compatible", "claude_subscription",
+        "openai_compatible", "claude_subscription",
         "codex_subscription", "crew_chat",
     }
 
@@ -177,9 +179,9 @@ def test_put_routes_preserves_order_and_every_schema_field(
     monkeypatch.setenv("JARVIS_CONFIG_PATH", str(path))
     routes = [
         {
-            "name": "ollama-fast", "provider": "ollama",
-            "base_url": "http://127.0.0.1:11434", "api_key": "",
-            "api_key_env": "", "model": "qwen3:1.7b", "tier": "fast",
+            "name": "mistral-fast", "provider": "openai_compatible",
+            "base_url": "https://api.mistral.ai/v1", "api_key": "synthetic-key",
+            "api_key_env": "", "model": "mistral-small-latest", "tier": "fast",
             "timeout_sec": 12.5, "enabled": False,
             "capabilities": ["chat"],
         },
@@ -195,6 +197,77 @@ def test_put_routes_preserves_order_and_every_schema_field(
 
     assert response.status_code == 200
     assert json.loads(path.read_text())["llm_routes"] == routes
+
+
+def test_probe_reports_a_route_with_a_blank_environment_credential(
+    api_client, tmp_path, monkeypatch,
+):
+    path = _write_config(tmp_path, monkeypatch)
+    config = json.loads(path.read_text())
+    config["_config_version"] = 7
+    config["llm_routes"][0]["api_key"] = ""
+    config["llm_routes"][0]["api_key_env"] = "EMPTY_ROUTE_KEY"
+    path.write_text(json.dumps(config))
+    monkeypatch.setenv("EMPTY_ROUTE_KEY", "   ")
+    built = []
+    monkeypatch.setattr(
+        "jarvis.webui.api.llm._build_backend",
+        lambda route, settings: built.append(route) or object(),
+    )
+
+    response = api_client.post("/api/llm/routes/probe")
+
+    assert response.status_code == 200
+    result = response.get_json()["results"][0]
+    assert result["name"] == "cloud-chat"
+    assert result["configured"] is False
+    assert result["credential"] == {
+        "required": True, "present": False, "source": "environment",
+    }
+    assert result["models"] == []
+    assert len(built) == 1
+
+
+def test_probe_response_is_structured_and_never_contains_text_or_key(
+    api_client, tmp_path, monkeypatch,
+):
+    _write_config(tmp_path, monkeypatch)
+
+    class Backend:
+        def list_models(self, **_kwargs):
+            return ["served-model"]
+
+        def direct(self, *_args, **_kwargs):
+            return "sensitive generated probe text"
+
+        def streaming(self, *_args, on_token=None, **_kwargs):
+            if on_token:
+                on_token("sensitive")
+            return "sensitive generated stream text"
+
+        def chat(self, *_args, **_kwargs):
+            return {
+                "message": {
+                    "tool_calls": [{"function": {"name": "probe_echo"}}],
+                },
+            }
+
+    monkeypatch.setattr("jarvis.webui.api.llm._build_backend", lambda *_args: Backend())
+    monkeypatch.setattr(
+        "jarvis.webui.api.llm.probe_route",
+        lambda route, backend=None: real_probe_route(route, backend=Backend()),
+    )
+
+    response = api_client.post("/api/llm/routes/probe")
+
+    raw = response.get_data(as_text=True)
+    assert response.status_code == 200
+    assert "synthetic-credential" not in raw
+    assert "sensitive generated" not in raw
+    result = response.get_json()["results"][0]
+    assert result["chat"]["ok"] is True
+    assert result["stream"]["ok"] is True
+    assert result["tools"]["native"] is True
 
 
 def test_route_api_and_debug_log_never_emit_clear_key(
@@ -256,6 +329,17 @@ def test_put_chat_backend_override_blank_resets_to_auto(
     assert response.get_json()["chat_backend_override"] == "auto"
     stored = json.loads(path.read_text())
     assert stored["chat_backend_override"] == "auto"
+
+
+def test_put_chat_backend_override_rejects_ollama(api_client, tmp_path, monkeypatch):
+    _write_config(tmp_path, monkeypatch)
+
+    response = api_client.put(
+        "/api/llm/routes/chat-backend-override",
+        json={"chat_backend_override": "ollama"},
+    )
+
+    assert response.status_code == 400
 
 
 def test_put_chat_backend_override_logs_the_change(

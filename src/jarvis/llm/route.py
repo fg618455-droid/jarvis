@@ -116,6 +116,10 @@ class RoutedBackend(LLMBackend):
         self._state = state_store or RouteStateStore()
         self._backend_factory = backend_factory
         self._backends: dict[Route, LLMBackend] = {}
+        self._credentials = {
+            route: os.environ.get(route.api_key_env, "") if route.api_key_env else route.api_key
+            for route in self._routes
+        }
         self._clock = clock
         self.local_progress_sec = max(0.0, float(local_progress_sec))
 
@@ -503,7 +507,28 @@ class RoutedBackend(LLMBackend):
     def health_summary(self) -> dict[str, dict[str, Any]]:
         return self._state.chain_status()
 
+    def reuse_backends_from(self, previous: "RoutedBackend") -> None:
+        """Reuse adapters and the thread-safe health store for equal routes."""
+        self._state = previous._state
+        for route in self._routes:
+            old = next((candidate for candidate in previous._routes if candidate == route), None)
+            if (old is not None and old in previous._backends
+                    and self._credentials[route] == previous._credentials[old]):
+                self._backends[route] = previous._backends[old]
 
+    def close(self, seen: set[int] | None = None) -> None:
+        """Close every instantiated provider adapter at daemon shutdown."""
+        closed = seen if seen is not None else set()
+        for backend in self._backends.values():
+            if id(backend) in closed:
+                continue
+            closed.add(id(backend))
+            close = getattr(backend, "close", None) or getattr(backend, "shutdown", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
 
     def reset(self, route: Route | None = None) -> None:
         self._state.reset(route)

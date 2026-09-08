@@ -400,6 +400,11 @@ def submit_text_query(
 
     dm = _global_dialogue_memory
     cfg = _global_cfg
+    try:
+        from .llm.runtime import get_llm_runtime
+        cfg = get_llm_runtime().snapshot().settings
+    except RuntimeError:
+        pass
     db = _global_db
     if dm is None or cfg is None or db is None:
         # Daemon not initialised (e.g. tests that don't boot main()). Fail
@@ -901,6 +906,8 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
     _install_signal_handlers()
 
     cfg = load_settings()
+    from .llm.runtime import get_llm_runtime
+    cfg = get_llm_runtime().install(cfg).settings
     configure_vault_search_tool(cfg)
     configure_computer_interaction_tools(cfg)
     configure_system_management_tool(cfg)
@@ -1510,6 +1517,11 @@ def _run_daemon_generation(smoke_test: bool = False) -> None:
             shutdown_runtime()
         except Exception as _e:
             debug_log(f"MCP runtime shutdown error: {_e}", "jarvis")
+
+        try:
+            get_llm_runtime().shutdown()
+        except Exception as _e:
+            debug_log(f"LLM runtime shutdown error: {type(_e).__name__}", "jarvis")
 
         _stop_vault_mirror()
         db.close()
