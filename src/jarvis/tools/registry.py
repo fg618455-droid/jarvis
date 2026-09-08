@@ -5,6 +5,7 @@ import sys
 import re
 import requests
 import threading
+import copy
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -93,6 +94,7 @@ def configure_system_management_tool(cfg) -> None:
 _mcp_tools_cache: Dict[str, "ToolSpec"] = {}
 _mcp_tools_cache_lock = threading.Lock()
 _mcp_config_cache: Dict[str, Any] = {}
+_mcp_reconfigure_lock = threading.RLock()
 _mcp_errors_cache: Dict[str, str] = {}
 _mcp_status_cache: Dict[str, Dict[str, Any]] = {}
 
@@ -136,12 +138,12 @@ def refresh_mcp_tools(verbose: bool = True) -> Tuple[Dict[str, "ToolSpec"], Dict
     Returns:
         Tuple of (discovered_tools, errors) where errors maps server name to error message.
     """
-    with _mcp_tools_cache_lock:
-        config = {name: dict(value) for name, value in _mcp_config_cache.items()}
-    if not config:
-        debug_log("No MCP config cached, skipping refresh", "mcp")
-        return reconfigure_mcp_tools({}, verbose=verbose)
-    return reconfigure_mcp_tools(config, verbose=verbose)
+    # Serialise the snapshot with configuration changes: a refresh must not
+    # capture an old config and later restore it over a newer one.
+    with _mcp_reconfigure_lock:
+        with _mcp_tools_cache_lock:
+            config = copy.deepcopy(_mcp_config_cache)
+        return reconfigure_mcp_tools(config, verbose=verbose)
 
 
 def is_mcp_cache_initialized() -> bool:
@@ -254,17 +256,20 @@ def reconfigure_mcp_tools(
 ) -> Tuple[Dict[str, ToolSpec], Dict[str, str]]:
     """Discover outside the cache lock, then publish one complete generation."""
     global _mcp_tools_cache, _mcp_config_cache, _mcp_errors_cache, _mcp_status_cache
-    config = {name: dict(value) for name, value in (mcps_config or {}).items()}
-    tools, errors, statuses = discover_mcp_tools_detailed(config)
-    from .external.mcp_runtime import get_runtime
+    with _mcp_reconfigure_lock:
+        config = copy.deepcopy(mcps_config or {})
+        from .external.mcp_runtime import get_runtime
 
-    get_runtime().reconfigure_servers(config)
-    with _mcp_tools_cache_lock:
-        _mcp_config_cache = config
-        _mcp_tools_cache = tools
-        _mcp_errors_cache = errors
-        _mcp_status_cache = statuses
-        published = _mcp_tools_cache.copy()
+        # Admit the new configuration before discovery uses the worker pool.
+        # Old callers fail closed while readers retain the previous cache.
+        get_runtime().reconfigure_servers(config)
+        tools, errors, statuses = discover_mcp_tools_detailed(config)
+        with _mcp_tools_cache_lock:
+            _mcp_config_cache = config
+            _mcp_tools_cache = tools
+            _mcp_errors_cache = errors
+            _mcp_status_cache = statuses
+            published = _mcp_tools_cache.copy()
     if verbose and published:
         debug_log(f"MCP tools cache initialized with {len(published)} tools", "mcp")
     return published, errors.copy()

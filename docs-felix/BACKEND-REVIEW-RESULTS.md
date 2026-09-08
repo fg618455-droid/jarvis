@@ -110,3 +110,19 @@ Browser/editor subscription tests no longer depend on a Groq credential.
 The full post-follow-up suite is running; the earlier 3787 count is not its result.
 A private NAS runtime candidate is prepared outside Git. It is not activated and
 does not claim to satisfy the blocked Mistral-primary or database-migration gates.
+
+### Local review findings and fixes
+
+- MCP configuration discovery previously ran before the runtime admitted the new
+  configuration; a changed server could fail its own discovery. Concurrent old
+  discovery could also publish after a removal. A separate writer lock now
+  serialises configuration changes and refresh snapshots, admits the new worker
+  configuration first and publishes cache results under the short reader lock.
+  The real-process change/removal test and concurrency regression are included
+  in a 28-test passing MCP/API block. Cache readers remain available.
+- The Qt worker lifetime test performed 150 real setup/network checks and hit
+  its 180-second child-process timeout in the full suite. Its subprocess now
+  stubs availability checks while preserving real worker implementations,
+  signals and QThread lifetimes. All four lifetime tests passed in 7.42 seconds.
+- Release verdict remains pending: Mistral quota, explicit Deny and productive
+  NAS adoption remain open. Passing unit tests do not satisfy those live gates.

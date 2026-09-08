@@ -50,3 +50,20 @@ def test_real_idle_and_removal_close_worker(peer):
     worker = get_runtime()._workers['disposable']
     get_runtime().reconfigure_servers({})
     assert not worker.alive
+
+
+def test_registry_reconfiguration_discovers_changed_real_worker(peer):
+    from jarvis.tools import registry
+    cfg, marker = peer
+    try:
+        tools, errors = registry.reconfigure_mcp_tools({'disposable': cfg}, verbose=False)
+        assert not errors and len(tools) == 4
+        changed = {**cfg, 'env': {'JARVIS_SYNTHETIC_GENERATION': '2'}}
+        tools, errors = registry.reconfigure_mcp_tools({'disposable': changed}, verbose=False)
+        assert not errors and len(tools) == 4
+        assert len(marker.read_text().splitlines()) == 2
+        registry.reconfigure_mcp_tools({}, verbose=False)
+        assert registry.refresh_mcp_tools(verbose=False) == ({}, {})
+        assert not get_runtime()._workers
+    finally:
+        registry.reconfigure_mcp_tools({}, verbose=False)
