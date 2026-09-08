@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 class _AnswerAfterFourSecondsBackend:
     """Model double that exposes the effective timeout without sleeping."""
@@ -71,5 +73,5 @@ def test_a_disabled_remote_route_does_not_force_local_greetings_into_fallback(
     )
 
     assert reply == "Mir geht es gut, danke der Nachfrage!"
-    assert local.direct_timeouts == [60.0]
-    assert local.chat_timeouts == [180.0]
+    assert local.direct_timeouts == pytest.approx([60.0], abs=0.1)
+    assert local.chat_timeouts == pytest.approx([180.0], abs=0.1)

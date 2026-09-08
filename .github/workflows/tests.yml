@@ -17,12 +17,12 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y portaudio19-dev libegl1 libxkbcommon0
+        run: sudo apt-get update && sudo apt-get install -y portaudio19-dev libegl1 libxkbcommon0 xvfb xauth
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
       - name: Run unit tests
         run: |
-          python -m pytest -q -m unit
+          xvfb-run -a python -m pytest -q -m unit
 

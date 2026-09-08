@@ -67,12 +67,13 @@ def _wait_for_complete(events, timeout=5.0):
 def _wait_for_ipc_complete(capsys, timeout=5.0):
     """Block until a ``__CHAT__:`` ``complete`` event appears on stdout."""
     deadline = time.time() + timeout
+    chat_lines = []
     while time.time() < deadline:
         out = capsys.readouterr().out
-        chat_lines = [
+        chat_lines.extend([
             ln for ln in out.splitlines()
             if ln.startswith(daemon.CHAT_IPC_PREFIX)
-        ]
+        ])
         for ln in chat_lines:
             try:
                 payload = json.loads(ln[len(daemon.CHAT_IPC_PREFIX):])
