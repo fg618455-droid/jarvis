@@ -10,6 +10,8 @@ The desktop app is a **separate package** from the core `jarvis` module. It depe
 - Building alternative UIs (web, mobile) without modifying core logic
 - Keeping PyQt6 dependencies isolated from the core package
 
+`tests/test_import_isolation.py` enforces the boundary. It carries an allowlist of the modules that still reach into `desktop_app.face_widget` to drive the avatar state, so no new import can appear while those are converted to a notifications port.
+
 ## Package Structure
 
 ```
