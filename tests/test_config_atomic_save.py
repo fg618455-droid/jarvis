@@ -105,7 +105,8 @@ def test_save_json_creates_missing_parent_directory(tmp_path):
     assert leftover == []
 
 
-def test_save_retries_a_windows_sharing_violation_without_losing_original(tmp_path, monkeypatch):
+@pytest.mark.parametrize("winerror", [5, 32, 33])
+def test_save_retries_a_windows_sharing_violation_without_losing_original(tmp_path, monkeypatch, winerror):
     import os
     path = tmp_path / "config.json"
     path.write_text('{"version": 1}', encoding="utf-8")
@@ -116,9 +117,28 @@ def test_save_retries_a_windows_sharing_violation_without_losing_original(tmp_pa
         if len(attempts) == 1:
             assert json.loads(path.read_text())["version"] == 1
             error = PermissionError("synthetic sharing violation")
-            error.winerror = 32
+            error.winerror = winerror
             raise error
         replace(source, target)
     monkeypatch.setattr("jarvis.config.os.replace", sharing_violation_once)
     assert _save_json(path, {"version": 2})
     assert json.loads(path.read_text())["version"] == 2
+
+
+def test_persistent_access_denied_is_bounded_and_keeps_original(tmp_path, monkeypatch):
+    path = tmp_path / "config.json"
+    path.write_text('{"version": 1}', encoding="utf-8")
+    attempts = []
+
+    def denied(source, target):
+        attempts.append(True)
+        error = PermissionError("synthetic permanent denial")
+        error.winerror = 5
+        raise error
+
+    monkeypatch.setattr("jarvis.config.os.replace", denied)
+    monkeypatch.setattr("jarvis.config.time.sleep", lambda _: None)
+    assert not _save_json(path, {"version": 2})
+    assert len(attempts) == 4
+    assert json.loads(path.read_text())["version"] == 1
+    assert list(tmp_path.iterdir()) == [path]

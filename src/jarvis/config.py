@@ -443,9 +443,10 @@ def _save_json(path: Path, data: Dict[str, Any]) -> bool:
                     os.replace(tmp_path, path)
                     break
                 except PermissionError as exc:
-                    if getattr(exc, "winerror", None) not in (32, 33) or attempt == 3:
+                    if getattr(exc, "winerror", None) not in (5, 32, 33) or attempt == 3:
                         raise
-                    # Sync clients may hold a short-lived read handle.
+                    # Sync clients can report either access denied (5) or
+                    # a sharing/lock violation while inspecting a new file.
                     time.sleep(0.05 * (attempt + 1))
         except Exception:
             try:

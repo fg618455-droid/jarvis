@@ -17,6 +17,7 @@ obsolete cloud model. Retrieval snippets may still enter the explicit CHAT reply
 The setup wizard persists only the PRIVATE Ollama model and requires the PRIVATE
 and embedding models, independently of the legacy chat provider.
 
-Config persistence uses atomic replacement. Windows sharing/lock violations are
-retried with a bounded delay; other errors fail without replacing the old file.
+Config persistence uses atomic replacement. Windows access-denied and sharing/lock violations are
+retried at most four times with bounded delays; persistent failures preserve the
+old file and remove the temporary file. Other errors fail immediately.
 Diagnostics contain the exception class and Windows code, never config values.
