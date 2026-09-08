@@ -938,13 +938,22 @@ Neue Migration **v4** in `_migrate_config`:
 
 1. **Backup zuerst:** `config.json` → `config.json.pre-v4.bak` (einmalig, nie überschreiben).
 2. Alle Ollama-/OpenAI-kompatiblen Schlüssel werden **nicht gelöscht**, sondern nach
-   `_legacy_local_llm` verschoben (ein Objekt). Damit ist ein Downgrade möglich und nichts geht
-   verloren.
+   `_legacy_local_llm` verschoben (ein Objekt): `llm_provider`, `llm_base_url`, `llm_api_key`,
+   `llm_chat_model`, die vier `embedding_*`, die drei `ollama_*`, `fast_model`. Damit ist ein
+   Downgrade möglich und nichts geht verloren.
 3. Neue Schlüssel mit Defaults: `execution_mode`, `default_provider`, `provider_models`,
    `memory_provider`, `stt_route_preference`, `tts_route_preference`, `capability_profile`.
 4. `_config_version = 4`.
-5. Entfernte Schlüssel: `planner_*`, `evaluator_*`, `*_digest_enabled`, `tool_selection_strategy`
-   (Werte `llm`/`embedding` → `keyword`), `fast_model`, `sqlite_vss_path`, `embedding_*`.
+
+Solange `execution_mode == "local"` gilt, liest `merge_config()` den `_legacy_local_llm`-Block
+zwischen Defaults und Live-Konfiguration wieder ein. Nur so ist die Phase-0-Zusage „Verhalten
+identisch" einlösbar und der Rückweg bleibt ein Konfigwert. Jede Stelle, die Konfiguration liest
+(Loader, Settings-Fenster, Provider-Seiten des Wizards), geht durch `merge_config()`.
+
+Das **Entfernen** von Schlüsseln (`planner_*`, `evaluator_*`, `*_digest_enabled`,
+`tool_selection_strategy` mit Werten `llm`/`embedding` → `keyword`, `sqlite_vss_path`) ändert
+Verhalten und gehört deshalb zu **Config v5** in Phase 6, zusammen mit dem Wegfall des
+Feature-Flags. In Phase 0 wird nichts entfernt.
 
 ### 16.2 Datenbank
 

@@ -949,8 +949,8 @@ class ProviderChoicePage(QWizardPage):
 
     def _preselect_from_config(self):
         try:
-            from jarvis.config import default_config_path, _load_json
-            config = _load_json(default_config_path()) or {}
+            from jarvis.config import default_config_path, _load_json, merge_config
+            config = merge_config(_load_json(default_config_path()) or {})
             provider = str(config.get("llm_provider", "ollama") or "ollama")
         except Exception:
             provider = "ollama"
@@ -1405,8 +1405,8 @@ class OpenAICompatiblePage(QWizardPage):
         user's values. With no saved URL, default to the common LM Studio
         address and kick off auto-discovery of running local servers."""
         try:
-            from jarvis.config import default_config_path, _load_json
-            config = _load_json(default_config_path()) or {}
+            from jarvis.config import default_config_path, _load_json, merge_config
+            config = merge_config(_load_json(default_config_path()) or {})
         except Exception:
             config = {}
         saved_url = str(config.get("llm_base_url", "") or "")

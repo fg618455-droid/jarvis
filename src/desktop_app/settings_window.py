@@ -23,7 +23,7 @@ from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont
 
 from jarvis.config import (
-    get_default_config, load_config,
+    get_default_config, load_config, merge_config,
     default_config_path, _save_json, _load_json,
     SUPPORTED_CHAT_MODELS,
 )
@@ -430,7 +430,9 @@ class SettingsWindow(QDialog):
         self._config_path = default_config_path()
         self._current_config = _load_json(self._config_path)
         self._defaults = get_default_config()
-        self._merged = {**self._defaults, **self._current_config}
+        # Same merge the daemon uses, so the form shows the values Jarvis
+        # actually runs on rather than the bare defaults.
+        self._merged = merge_config(self._current_config)
 
         apply_theme(self)
         self._build_ui()

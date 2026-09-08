@@ -73,7 +73,7 @@ Provider-aware fields in `Settings` (see [src/jarvis/config.py](../config.py)):
 | `embedding_api_key` | inherits `llm_api_key` | Override per-provider key. |
 | `embedding_model` | (OpenAI-compatible only) | The OpenAI-compatible embedding model. Read only when the effective embedding provider is `openai_compatible` (falling back to `ollama_embed_model` if blank); the Ollama path uses `ollama_embed_model`. |
 
-The `ollama_base_url` / `ollama_chat_model` / `ollama_embed_model` keys hold the Ollama configuration and are authoritative whenever the active (chat or embedding) provider is Ollama. `_load_settings` resolves `cfg.llm_chat_model`, `cfg.embedding_model`, and `cfg.fast_model` per-provider — the Ollama keys win on the Ollama path, the provider-aware keys win on the OpenAI-compatible path — so the codebase reads a single resolved field while each provider keeps its own on-disk model name. The v1 → v2 migration promotes any explicitly-set `ollama_*` values into the provider-aware keys; per-provider resolution means a promoted value never shadows the Ollama picker. The v2 → v3 migration folds the retired per-context model keys (`intent_judge_model`, `tool_router_model`, `evaluator_model`, `planner_model`) into `fast_model` (an explicitly chosen judge or router model is kept; the old default value is not pinned).
+The `ollama_base_url` / `ollama_chat_model` / `ollama_embed_model` keys hold the Ollama configuration and are authoritative whenever the active (chat or embedding) provider is Ollama. `_load_settings` resolves `cfg.llm_chat_model`, `cfg.embedding_model`, and `cfg.fast_model` per-provider — the Ollama keys win on the Ollama path, the provider-aware keys win on the OpenAI-compatible path — so the codebase reads a single resolved field while each provider keeps its own on-disk model name. The v1 → v2 migration promotes any explicitly-set `ollama_*` values into the provider-aware keys; per-provider resolution means a promoted value never shadows the Ollama picker. The v2 → v3 migration folds the retired per-context model keys (`intent_judge_model`, `tool_router_model`, `evaluator_model`, `planner_model`) into `fast_model` (an explicitly chosen judge or router model is kept; the old default value is not pinned). The v3 → v4 migration relocates all of these keys into the `_legacy_local_llm` block, from where `merge_config` reads them back while `execution_mode` is `"local"`.
 
 ### Model tiers
 
@@ -99,6 +99,23 @@ The migration in `_migrate_config` runs once when `_config_version < 2`:
 1. If `llm_provider` is unset, default to `"ollama"`.
 2. Promote `ollama_base_url` → `llm_base_url`, `ollama_chat_model` → `llm_chat_model`, `ollama_embed_model` → `embedding_model` (only when the new key is empty).
 3. Bump `_config_version` to `2` and persist via `_save_json` (which restricts the file to `0o600` on POSIX so credentials are not world-readable).
+
+### Execution mode
+
+`execution_mode` selects which engine answers: `"local"` runs the backends in this package, `"subscription"` runs the subscription providers (see [docs/masterplan-subscription-rebuild.md](../../../docs/masterplan-subscription-rebuild.md)). Unknown values fall back to `"local"`.
+
+The local-LLM connection settings (`LEGACY_LOCAL_LLM_KEYS`: `llm_provider`, `llm_base_url`, `llm_api_key`, `llm_chat_model`, the four `embedding_*` keys, the three `ollama_*` keys, `fast_model`) live on disk inside the `_legacy_local_llm` object. `merge_config(cfg_json)` layers them between the defaults and the live config while the mode is `"local"`: they override a default, and a key the user writes back at the top level overrides them. In `"subscription"` mode the block is inert. `load_config`, `load_settings`, the settings window and the setup wizard's provider pages all read through `merge_config`, so the form fields and the daemon always agree on which model is active.
+
+The remaining provider settings are `default_provider` and `memory_provider` (empty means "not chosen yet"), `provider_models` (model pinned per provider; a provider absent from the mapping runs on its own default), `stt_route_preference` / `tts_route_preference` (`"local_first"` or `"cloud_first"`) and `capability_profile` (`read_only`, `project_dev`, `automation`, `unrestricted`).
+
+### v3 → v4 config migration
+
+The migration in `_migrate_config` runs once when `_config_version < 4`:
+
+1. Write `config.json.pre-v4.bak` next to the config file. An existing backup is never overwritten, so the rollback point survives a second run.
+2. Move every key in `LEGACY_LOCAL_LLM_KEYS` from the top level into `_legacy_local_llm`. Nothing is dropped, so a downgrade finds its settings in the backup and the running install keeps resolving the same values through `merge_config`.
+3. Add the provider settings above with their defaults, leaving any value the user already chose.
+4. Bump `_config_version` to `4` and persist.
 
 ## Wire-shape specifics
 

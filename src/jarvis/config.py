@@ -55,6 +55,46 @@ def get_supported_model_ids() -> set[str]:
     return set(SUPPORTED_CHAT_MODELS.keys())
 
 
+# ============================================================================
+# EXECUTION MODE — local models vs subscription providers
+# ============================================================================
+# ``execution_mode`` selects which engine answers: the local LLM stack
+# (``local``) or the subscription providers Claude Code, Codex and Hermes
+# (``subscription``). The local-LLM connection settings live in the
+# ``_legacy_local_llm`` block on disk and are read back while the mode is
+# ``local``, so a mode switch is a config value rather than a reinstall.
+
+EXECUTION_MODES = ("local", "subscription")
+DEFAULT_EXECUTION_MODE = "local"
+
+# The on-disk key holding the relocated local-LLM settings.
+LEGACY_LOCAL_LLM_KEY = "_legacy_local_llm"
+
+# Settings naming a local-LLM endpoint, credential or model. These are the
+# keys the v4 migration relocates into ``_legacy_local_llm``.
+LEGACY_LOCAL_LLM_KEYS = (
+    "llm_provider",
+    "llm_base_url",
+    "llm_api_key",
+    "llm_chat_model",
+    "embedding_provider",
+    "embedding_base_url",
+    "embedding_api_key",
+    "embedding_model",
+    "ollama_base_url",
+    "ollama_embed_model",
+    "ollama_chat_model",
+    "fast_model",
+)
+
+# Route preferences for speech-to-text and text-to-speech.
+ROUTE_PREFERENCES = ("local_first", "cloud_first")
+
+# Capability profiles, from most to least restrictive (see the security
+# chapter of docs/masterplan-subscription-rebuild.md).
+CAPABILITY_PROFILES = ("read_only", "project_dev", "automation", "unrestricted")
+
+
 def _default_dictation_hotkey() -> str:
     """Return the platform-appropriate default dictation hotkey.
 
@@ -83,6 +123,23 @@ class Settings:
     # Database & Storage
     db_path: str
     sqlite_vss_path: str | None
+
+    # Execution Mode
+    # "local" answers through the local LLM stack, "subscription" through the
+    # provider adapters. The provider fields below apply to subscription mode.
+    execution_mode: str
+    # Provider carrying the reply path. Empty means "not chosen yet".
+    default_provider: str
+    # Provider running the background memory passes. Empty means "not chosen yet".
+    memory_provider: str
+    # Model pinned per provider, e.g. {"codex": "gpt-5.6-terra"}. A provider
+    # missing from the mapping runs on its own default model.
+    provider_models: Dict[str, str]
+    # Which speech route is tried first, and which is the fallback.
+    stt_route_preference: str  # "local_first" | "cloud_first"
+    tts_route_preference: str  # "local_first" | "cloud_first"
+    # Capability profile a run starts with.
+    capability_profile: str
 
     # LLM & AI Models
     # Provider-aware fields (see src/jarvis/llm/llm.spec.md). The
@@ -334,6 +391,55 @@ def _save_json(path: Path, data: Dict[str, Any]) -> bool:
         return False
 
 
+def _provider_mode_defaults() -> Dict[str, Any]:
+    """Defaults for the execution-mode and provider settings."""
+    return {
+        "execution_mode": DEFAULT_EXECUTION_MODE,
+        "default_provider": "",
+        "memory_provider": "",
+        "provider_models": {},
+        "stt_route_preference": "local_first",
+        "tts_route_preference": "local_first",
+        "capability_profile": "read_only",
+    }
+
+
+def merge_config(cfg_json: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge the defaults, the legacy local-LLM block and the live config.
+
+    In ``local`` execution mode the relocated local-LLM settings sit between
+    the defaults and the live config: they override a default, and a key the
+    user puts back at the top level overrides them. In ``subscription`` mode
+    the block is inert.
+    """
+    defaults = get_default_config()
+    overlay: Dict[str, Any] = {}
+    if _resolve_execution_mode(cfg_json.get("execution_mode")) == "local":
+        legacy = cfg_json.get(LEGACY_LOCAL_LLM_KEY)
+        if isinstance(legacy, dict):
+            overlay = {k: v for k, v in legacy.items() if k in LEGACY_LOCAL_LLM_KEYS}
+    return {**defaults, **overlay, **cfg_json}
+
+
+def _resolve_execution_mode(value: Any) -> str:
+    """Normalise an execution-mode value, falling back to ``local``."""
+    mode = str(value or "").strip().lower()
+    return mode if mode in EXECUTION_MODES else DEFAULT_EXECUTION_MODE
+
+
+def _backup_config(cfg_path: Path, cfg_json: Dict[str, Any], suffix: str) -> bool:
+    """Write a one-off pre-migration backup next to the config file.
+
+    An existing backup is never overwritten: it is the rollback point for the
+    first upgrade, and a second run must not clobber it with already-migrated
+    content.
+    """
+    backup_path = cfg_path.with_name(cfg_path.name + suffix)
+    if backup_path.exists():
+        return True
+    return _save_json(backup_path, cfg_json)
+
+
 def _migrate_config(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any]:
     """
     Apply config migrations for version upgrades.
@@ -394,6 +500,27 @@ def _migrate_config(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any]:
         cfg_json["_config_version"] = 3
         modified = True
 
+    # Migration v4: introduce the execution mode and move the local-LLM
+    # connection settings into ``_legacy_local_llm``. Nothing is dropped and
+    # nothing changes behaviour: while ``execution_mode`` is ``local`` the
+    # relocated values are read back over the defaults (``_local_llm_overlay``).
+    # A one-off backup next to the config file is the rollback point.
+    if migration_version < 4:
+        _backup_config(cfg_path, cfg_json, ".pre-v4.bak")
+        legacy = dict(cfg_json.get(LEGACY_LOCAL_LLM_KEY) or {})
+        for key in LEGACY_LOCAL_LLM_KEYS:
+            if key in cfg_json:
+                legacy[key] = cfg_json.pop(key)
+        if legacy:
+            cfg_json[LEGACY_LOCAL_LLM_KEY] = legacy
+        for key, value in _provider_mode_defaults().items():
+            cfg_json.setdefault(key, value)
+        cfg_json["_config_version"] = 4
+        modified = True
+        print("🔀 Config upgraded to v4: execution mode is 'local', behaviour unchanged", flush=True)
+        print(f"   💾 Backup: {cfg_path.name}.pre-v4.bak", flush=True)
+        print(f"   📦 Local model settings moved to \"{LEGACY_LOCAL_LLM_KEY}\"", flush=True)
+
     # Save migrated config
     if modified:
         if _save_json(cfg_path, cfg_json):
@@ -419,8 +546,7 @@ def load_config() -> Dict[str, Any]:
     if cfg_json:
         cfg_json = _migrate_config(cfg_path, cfg_json)
 
-    defaults = get_default_config()
-    return {**defaults, **cfg_json}
+    return merge_config(cfg_json)
 
 
 def _ensure_list(value: Any) -> list[str]:
@@ -473,6 +599,9 @@ def get_default_config() -> Dict[str, Any]:
         # Database & Storage
         "db_path": _default_db_path(),
         "sqlite_vss_path": None,
+
+        # Execution Mode & Providers
+        **_provider_mode_defaults(),
 
         # LLM & AI Models
         # Provider-aware fields. Default provider is ``ollama`` so a fresh
@@ -681,8 +810,7 @@ def load_settings() -> Settings:
         cfg_json = _migrate_config(cfg_path, cfg_json)
 
     # Get defaults and merge with JSON (JSON wins)
-    defaults = get_default_config()
-    merged: Dict[str, Any] = {**defaults, **cfg_json}
+    merged: Dict[str, Any] = merge_config(cfg_json)
 
     # Build Settings. Some fields support env var overrides.
     # Env overrides: JARVIS_VOICE_DEBUG, JARVIS_WHISPER_BACKEND
@@ -692,6 +820,25 @@ def load_settings() -> Settings:
     db_path = _expand_path(merged.get("db_path")) or _default_db_path()
     sqlite_vss_path = _expand_path(merged.get("sqlite_vss_path"))
     allowlist_bundles = _ensure_list(merged.get("allowlist_bundles"))
+
+    execution_mode = _resolve_execution_mode(merged.get("execution_mode"))
+    default_provider = str(merged.get("default_provider", "") or "").strip().lower()
+    memory_provider = str(merged.get("memory_provider", "") or "").strip().lower()
+    raw_provider_models = merged.get("provider_models")
+    provider_models = (
+        {str(k): str(v) for k, v in raw_provider_models.items()}
+        if isinstance(raw_provider_models, dict)
+        else {}
+    )
+    stt_route_preference = str(merged.get("stt_route_preference", "") or "").strip().lower()
+    if stt_route_preference not in ROUTE_PREFERENCES:
+        stt_route_preference = "local_first"
+    tts_route_preference = str(merged.get("tts_route_preference", "") or "").strip().lower()
+    if tts_route_preference not in ROUTE_PREFERENCES:
+        tts_route_preference = "local_first"
+    capability_profile = str(merged.get("capability_profile", "") or "").strip().lower()
+    if capability_profile not in CAPABILITY_PROFILES:
+        capability_profile = "read_only"
 
     ollama_base_url = str(merged.get("ollama_base_url"))
     ollama_embed_model = str(merged.get("ollama_embed_model"))
@@ -885,6 +1032,15 @@ def load_settings() -> Settings:
         # Database & Storage
         db_path=db_path,
         sqlite_vss_path=sqlite_vss_path,
+
+        # Execution Mode & Providers
+        execution_mode=execution_mode,
+        default_provider=default_provider,
+        memory_provider=memory_provider,
+        provider_models=provider_models,
+        stt_route_preference=stt_route_preference,
+        tts_route_preference=tts_route_preference,
+        capability_profile=capability_profile,
 
         # LLM & AI Models — provider-aware
         llm_provider=llm_provider,
