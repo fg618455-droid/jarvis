@@ -28,10 +28,10 @@ class _AnswerAfterFourSecondsBackend:
         }
 
 
-def test_a_disabled_remote_route_does_not_force_local_greetings_into_fallback(
+def test_no_cloud_chat_route_returns_honest_error_without_local_fallback(
     mock_config, db, dialogue_memory,
 ):
-    """A dormant route must not impose its four-second fallback cap locally."""
+    """A dormant route must never reactivate Ollama for a user reply."""
     from jarvis.llm.factory import get_llm_backend
     from jarvis.reply.engine import run_reply_engine
 
@@ -70,6 +70,6 @@ def test_a_disabled_remote_route_does_not_force_local_greetings_into_fallback(
         quiet=True,
     )
 
-    assert reply == "Mir geht es gut, danke der Nachfrage!"
-    assert local.direct_timeouts == [60.0]
-    assert local.chat_timeouts == [180.0]
+    assert "No configured cloud chat route" in reply
+    assert local.direct_timeouts == []
+    assert local.chat_timeouts == []

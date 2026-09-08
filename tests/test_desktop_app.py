@@ -60,13 +60,13 @@ class TestOllamaRuntimeFlags:
     def test_default_ollama_needs_everything(self):
         needed, chat_on_ollama = self._flags(llm_provider="ollama", embedding_provider="")
         assert needed is True
-        assert chat_on_ollama is True
+        assert chat_on_ollama is False
 
     def test_pure_openai_compatible_skips_ollama(self):
         """Chat and embeddings both remote: no local server, no model checks."""
         needed, chat_on_ollama = self._flags(
             llm_provider="openai_compatible", embedding_provider="")
-        assert needed is False
+        assert needed is True
         assert chat_on_ollama is False
 
     def test_openai_chat_with_ollama_embeddings_still_needs_server(self):
@@ -82,7 +82,7 @@ class TestOllamaRuntimeFlags:
         needed, chat_on_ollama = self._flags(
             llm_provider="ollama", embedding_provider="openai_compatible")
         assert needed is True
-        assert chat_on_ollama is True
+        assert chat_on_ollama is False
 
     def test_missing_attrs_default_to_ollama(self):
         """A cfg-like object without provider attrs defaults to the Ollama
@@ -91,7 +91,7 @@ class TestOllamaRuntimeFlags:
         from desktop_app.app import _ollama_runtime_flags
         needed, chat_on_ollama = _ollama_runtime_flags(SimpleNamespace())
         assert needed is True
-        assert chat_on_ollama is True
+        assert chat_on_ollama is False
 
 
 class TestOpenAICompatStartupCheck:

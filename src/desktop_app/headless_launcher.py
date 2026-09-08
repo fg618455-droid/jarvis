@@ -162,6 +162,8 @@ def main() -> int:
     from jarvis.config import load_settings
 
     cfg = load_settings()
+    # Ollama serves PRIVATE writes and embeddings only; this does not create
+    # or warm a local FAST/CHAT route.
     ollama_needed, chat_on_ollama = _ollama_runtime_flags(cfg)
 
     ollama_ownership = OllamaRuntimeOwnership()

@@ -2,14 +2,14 @@
 
 Two factories share one provider catalogue:
 
-- :func:`get_llm_backend` — chat / completion path. Dispatches on
-  ``settings.llm_provider``.
-- :func:`get_embedding_backend`: embeddings path. Route-chain configs
-  always use loopback Ollama so stored vectors remain in one private vector
-  space. Single-endpoint configs retain their explicit embedding provider.
+- :func:`get_llm_backend` — explicit cloud/subscription FAST and CHAT
+  routes plus one loopback Ollama PRIVATE route.
+- :func:`get_embedding_backend` — loopback Ollama only, keeping stored
+  vectors in one private vector space.
 """
 
 from __future__ import annotations
+import os
 from typing import Any, Optional
 from urllib.parse import urlparse
 import weakref
@@ -28,15 +28,6 @@ _CODEX_SUBSCRIPTION = "codex_subscription"
 _CREW_CHAT = "crew_chat"
 _DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 _ROUTER_CACHE: dict[int, tuple[weakref.ReferenceType[Any], RoutedBackend]] = {}
-
-# Ceilings for the loopback Ollama routes. Ollama evicts a model once its
-# keep-alive lapses, so the next call pays a page-in that runs into double
-# digits of seconds for a 7B weight set. The local route is always last in
-# its chain — there is nothing to fall forward to — so a ceiling shorter than
-# a cold load would not buy speed, it would guarantee the route can never
-# answer. The caller's own timeout still governs; these are only the maximum.
-_LOCAL_FAST_TIMEOUT_SEC = 60.0
-_LOCAL_CHAT_TIMEOUT_SEC = 180.0
 
 # How long Ollama holds a model resident after a request. The long value is
 # what makes a warm assistant stay warm; low power mode trades that away to
@@ -76,7 +67,7 @@ def _resolve_route_provider(value: Any) -> str:
             _CREW_CHAT,
         ):
             return v
-    return _OLLAMA
+    return ""
 
 
 def _str_attr(settings: Any, name: str, default: str = "") -> str:
@@ -128,7 +119,11 @@ def get_llm_backend(settings: Any) -> LLMBackend:
             if tier is Tier.PRIVATE:
                 continue
             provider = _resolve_route_provider(raw.get("provider"))
-            if provider == _CODEX_SUBSCRIPTION and tier is not Tier.CHAT:
+            if not provider or provider == _OLLAMA:
+                continue
+            if provider in {
+                _CLAUDE_SUBSCRIPTION, _CODEX_SUBSCRIPTION, _CREW_CHAT,
+            } and tier is not Tier.CHAT:
                 continue
             base_url = str(raw.get("base_url", "") or "").strip()
             model = str(raw.get("model", "") or "").strip()
@@ -152,7 +147,7 @@ def get_llm_backend(settings: Any) -> LLMBackend:
                 if isinstance(raw_capabilities, (list, tuple, set, frozenset))
                 else frozenset({"chat", "stream", "tools"})
             )
-            routes.append(Route(
+            route = Route(
                 name=str(raw.get("name", "") or f"route-{index + 1}").strip(),
                 provider=provider,
                 base_url=base_url.rstrip("/"),
@@ -163,85 +158,27 @@ def get_llm_backend(settings: Any) -> LLMBackend:
                 api_key_env=str(raw.get("api_key_env", "") or "").strip(),
                 enabled=bool(raw.get("enabled", True)),
                 capabilities=capabilities,
-            ))
+            )
+            # FAST and CHAT are cloud/subscription lanes. Loopback and LAN
+            # endpoints are not admitted even when labelled OpenAI-compatible.
+            if RoutedBackend._is_local(route):
+                continue
+            # An empty environment value is the same as no credential. Keep
+            # it visible in persisted configuration, but never attempt it.
+            if provider == _OPENAI_COMPATIBLE:
+                credential = (
+                    os.environ.get(route.api_key_env, "")
+                    if route.api_key_env else route.api_key
+                )
+                if not str(credential or "").strip():
+                    continue
+            routes.append(route)
 
-    # A Codex CLI process has materially higher startup latency than the
-    # ordinary configured endpoints. Keep every faster CHAT candidate in its
-    # configured relative order, then try Codex before the local fallback.
-    codex_chat_routes = [
-        route
-        for route in routes
-        if route.tier is Tier.CHAT and route.provider == _CODEX_SUBSCRIPTION
-    ]
-    if codex_chat_routes:
-        routes = [route for route in routes if route not in codex_chat_routes]
-        routes.extend(codex_chat_routes)
-
-    configured_ollama_url = _str_attr(
-        settings, "ollama_base_url", _DEFAULT_OLLAMA_URL
-    ).rstrip("/")
     private_ollama_url = _loopback_ollama_url(settings)
     ollama_chat = _str_attr(settings, "ollama_chat_model") or _str_attr(
         settings, "llm_chat_model"
     )
-    # ``fast_model`` names the first effective route for tier selection;
-    # ``local_fast_model`` is the model the appended Ollama candidate runs.
-    # Falling back to the old attribute keeps hand-built Settings doubles and
-    # pre-v6 callers compatible without reintroducing ambiguity for loaded
-    # configuration, which always supplies local_fast_model.
-    local_fast_model = (
-        _str_attr(settings, "local_fast_model")
-        or _str_attr(settings, "fast_model")
-        or ollama_chat
-    )
-    fast_model = _str_attr(settings, "fast_model") or local_fast_model
-    # Every Ollama request renews the model's residency, so an idle stretch
-    # between conversations never costs the next reply a cold page-in.
     keep_alive = ollama_keep_alive(settings)
-
-    # A route the user switched off is inert. It stays in the chain so the
-    # settings UI can still show it, but it does not get to decide whether the
-    # local chain is a fallback or the only path there is.
-    active_routes = [route for route in routes if route.enabled]
-
-    if active_routes:
-        local_defaults = {
-            Tier.FAST: Route(
-                "local-fast", _OLLAMA, private_ollama_url, "", local_fast_model,
-                Tier.FAST, _LOCAL_FAST_TIMEOUT_SEC, keep_alive=keep_alive,
-            ),
-            Tier.CHAT: Route(
-                "local-chat", _OLLAMA, private_ollama_url, "", ollama_chat,
-                Tier.CHAT, _LOCAL_CHAT_TIMEOUT_SEC, keep_alive=keep_alive,
-            ),
-        }
-        for tier in (Tier.FAST, Tier.CHAT):
-            tier_routes = [route for route in active_routes if route.tier is tier]
-            if not any(RoutedBackend._is_local(route) for route in tier_routes):
-                routes.append(local_defaults[tier])
-    else:
-        provider = _resolve_provider(getattr(settings, "llm_provider", None))
-        if provider == _OPENAI_COMPATIBLE:
-            base_url = _str_attr(settings, "llm_base_url") or configured_ollama_url
-            api_key = _str_attr(settings, "llm_api_key")
-            chat_model = (
-                _str_attr(settings, "llm_chat_model")
-                or _str_attr(settings, "fast_model")
-                or ollama_chat
-            )
-            routes.extend((
-                Route("configured-fast", provider, base_url, api_key, fast_model,
-                      Tier.FAST, _LOCAL_FAST_TIMEOUT_SEC),
-                Route("configured-chat", provider, base_url, api_key, chat_model,
-                      Tier.CHAT, _LOCAL_CHAT_TIMEOUT_SEC),
-            ))
-        else:
-            routes.extend((
-                Route("local-fast", _OLLAMA, configured_ollama_url, "", local_fast_model,
-                      Tier.FAST, _LOCAL_FAST_TIMEOUT_SEC, keep_alive=keep_alive),
-                Route("local-chat", _OLLAMA, configured_ollama_url, "", ollama_chat,
-                      Tier.CHAT, _LOCAL_CHAT_TIMEOUT_SEC, keep_alive=keep_alive),
-            ))
     routes.append(Route(
         "local-private", _OLLAMA, private_ollama_url, "", ollama_chat, Tier.PRIVATE,
         180.0, keep_alive=keep_alive,
@@ -270,7 +207,7 @@ def describe_model_topology(settings: Any) -> dict[str, dict[str, Any]]:
 
     The public FAST/CHAT model names are effective route selectors, not proof
     that those weights live on this machine.  This shape keeps that fact
-    separate from the explicit Ollama fallback/private/embedding choices;
+    separate from the explicit Ollama PRIVATE/embedding choices;
     actual residency is a system reading and is added by the web API.
     """
     backend = get_llm_backend(settings)
@@ -302,20 +239,13 @@ def describe_model_topology(settings: Any) -> dict[str, dict[str, Any]]:
                 ),
             }
 
-    local_chat = _str_attr(settings, "ollama_chat_model") or _str_attr(
-        settings, "llm_chat_model"
-    )
-    local_fast = (
-        _str_attr(settings, "local_fast_model")
-        or _str_attr(settings, "fast_model")
-        or local_chat
-    )
+    local_chat = _str_attr(settings, "ollama_chat_model")
     local_embedding = _str_attr(settings, "ollama_embed_model") or _str_attr(
         settings, "embedding_model"
     )
     local = {
-        "fast_fallback": {"model": local_fast, "provider": _OLLAMA},
-        "chat_fallback": {"model": local_chat, "provider": _OLLAMA},
+        "fast_fallback": None,
+        "chat_fallback": None,
         "private": {"model": local_chat, "provider": _OLLAMA},
         "embedding": {"model": local_embedding, "provider": _OLLAMA},
     }
@@ -340,26 +270,4 @@ def get_embedding_backend(settings: Any) -> LLMBackend:
     config falls through ``embedding_provider`` to ``llm_provider`` and then
     Ollama, retaining the standalone backend contract.
     """
-    if isinstance(getattr(settings, "llm_routes", None), list) and getattr(
-        settings, "llm_routes", None
-    ):
-        return OllamaBackend(_loopback_ollama_url(settings))
-
-    raw = getattr(settings, "embedding_provider", None)
-    if isinstance(raw, str) and raw.strip():
-        provider = _resolve_provider(raw)
-    else:
-        provider = _resolve_provider(getattr(settings, "llm_provider", None))
-
-    base_url = _str_attr(settings, "embedding_base_url")
-    if not base_url:
-        if provider == _OPENAI_COMPATIBLE:
-            base_url = _str_attr(settings, "llm_base_url")
-        else:
-            base_url = _str_attr(settings, "ollama_base_url", _DEFAULT_OLLAMA_URL)
-    if not base_url:
-        base_url = _DEFAULT_OLLAMA_URL
-    api_key = _str_attr(settings, "embedding_api_key") or _str_attr(
-        settings, "llm_api_key"
-    ) or None
-    return _build(provider, base_url, api_key)
+    return OllamaBackend(_loopback_ollama_url(settings))

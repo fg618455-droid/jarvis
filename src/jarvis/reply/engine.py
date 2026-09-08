@@ -34,9 +34,12 @@ from ..llm import (
 # classification prefers. Absent from the map (an unrecognised or missing
 # value) resolves to no preference, i.e. today's unmodified chain order.
 _CHAT_BACKEND_PREFERENCE_TO_PROVIDER = {
-    "local": "ollama",
     "complex": "claude_subscription",
     "hermes": "crew_chat",
+}
+_CHAT_OVERRIDE_PROVIDERS = {
+    "openai_compatible", "claude_subscription",
+    "codex_subscription", "crew_chat",
 }
 
 
@@ -53,7 +56,7 @@ def _resolve_preferred_chat_provider(cfg, chat_backend_preference):
     fail-open default this feature must never regress.
     """
     override = str(getattr(cfg, "chat_backend_override", "auto") or "auto").strip().lower()
-    if override and override != "auto":
+    if override in _CHAT_OVERRIDE_PROVIDERS:
         debug_log(f"chat backend override forces provider {override!r}", "llm")
         return override
 
@@ -85,7 +88,7 @@ def chat_with_messages(cfg, messages, *, timeout_sec=30.0, extra_options=None,
     the speech path can start on the first finished sentence.
 
     ``chat_backend_preference`` is the tool router's optional per-turn
-    classification ("local", "complex", or "hermes", from the same LLM call
+    classification ("default", "complex", or "hermes", from the same LLM call
     that picks the tool allow-list — see
     ``jarvis.tools.selection._select_llm``).
     Combined with ``cfg.chat_backend_override``, it resolves to a
@@ -800,7 +803,7 @@ def _maybe_digest_tool_result(
             tool_name=tool_name,
             tool_result=raw_tool_result,
             cfg=cfg,
-            chat_model=resolve_model(cfg, Tier.FAST),
+            chat_model=resolve_model(cfg, Tier.PRIVATE),
             timeout_sec=float(getattr(cfg, 'llm_digest_timeout_sec', 8.0)),
             thinking=getattr(cfg, 'llm_thinking_enabled', False),
         )
@@ -1894,7 +1897,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 diary_entries=raw_diary_entries,
                 graph_parts=raw_graph_parts + raw_vault_parts,
                 cfg=cfg,
-                chat_model=resolve_model(cfg, Tier.FAST),
+                chat_model=resolve_model(cfg, Tier.PRIVATE),
                 timeout_sec=_memory_digest_timeout_sec,
                 thinking=getattr(cfg, 'llm_thinking_enabled', False),
             )
@@ -2383,6 +2386,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # The latest plausible natural-language candidate. Used by the max-turns
     # digest backstop when the loop exhausts without producing a reply.
     last_candidate_reply: Optional[str] = None
+    chat_chain_exhausted = False
     max_turns = cfg.agentic_max_turns
     turn = 0
     malformed_retry_used = False
@@ -2826,6 +2830,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 response=llm_resp,
             )
         if not llm_resp:
+            chat_chain_exhausted = True
             debug_log("  ❌ LLM returned no response", "planning")
             break
 
@@ -3339,6 +3344,16 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         break
 
     # Step 9: Handle error case - return error message if no reply
+    if chat_chain_exhausted and (not reply or not reply.strip()):
+        reply = in_the_voices_language(
+            cfg,
+            "No configured cloud chat route is currently available. "
+            "Check the provider status or select another cloud route.",
+        )
+        debug_log(
+            "chat route chain exhausted, returning explicit cloud-route error",
+            "planning",
+        )
     if not reply or not reply.strip():
         # Max-turn backstop: the loop exhausted its turns without producing
         # a natural-language reply (e.g. pure tool-call loop). Run a cheap

@@ -81,10 +81,8 @@ def import_school_notes(
     duplicates_skipped = 0
     notes_unchanged = 0
     errors = 0
-    resolved_picker = picker_model or resolve_model(cfg, Tier.FAST)
-    chat_model = getattr(cfg, "llm_chat_model", None) or getattr(
-        cfg, "ollama_chat_model", "",
-    )
+    resolved_picker = resolve_model(cfg, Tier.PRIVATE)
+    chat_model = resolve_model(cfg, Tier.PRIVATE)
     timeout_sec = float(getattr(cfg, "llm_chat_timeout_sec", 30.0))
     thinking = bool(getattr(cfg, "llm_thinking_enabled", False))
 

@@ -147,23 +147,32 @@ def test_auth_failure_drops_route_for_the_rest_of_the_run(tmp_path):
     assert first_backend.calls == 1
 
 
-def test_dead_cloud_route_falls_back_to_local_ollama(tmp_path):
+def test_dead_cloud_route_falls_back_to_next_cloud_route(tmp_path):
     cloud = _route("cloud")
-    local = _route("local", provider="ollama")
-    router = _router(tmp_path, [cloud, local], {
+    backup = _route("backup")
+    router = _router(tmp_path, [cloud, backup], {
         cloud: _Backend(direct_error=ProviderError()),
-        local: _Backend(direct_result="local answer"),
+        backup: _Backend(direct_result="backup answer"),
     })
 
-    assert router.direct("chat", "system", "user") == "local answer"
+    assert router.direct("chat", "system", "user") == "backup answer"
+
+
+def test_ollama_chat_route_is_rejected_even_when_explicit(tmp_path):
+    local = _route("local", provider="ollama")
+    local_backend = _Backend(direct_result="must not run")
+    router = _router(tmp_path, [local], {local: local_backend})
+
+    assert router.direct("chat", "system", "user") is None
+    assert local_backend.calls == 0
 
 
 def test_every_route_dead_returns_none(tmp_path):
     first = _route("first")
-    local = _route("local", provider="ollama")
-    router = _router(tmp_path, [first, local], {
+    second = _route("second")
+    router = _router(tmp_path, [first, second], {
         first: _Backend(direct_error=ProviderError()),
-        local: _Backend(direct_result=None),
+        second: _Backend(direct_result=None),
     })
 
     assert router.direct("chat", "system", "user") is None
@@ -205,36 +214,36 @@ def test_streaming_failure_after_first_token_does_not_switch_route(tmp_path):
 
 def test_cooldown_survives_router_restart(tmp_path):
     first = _route("first")
-    local = _route("local", provider="ollama")
+    backup = _route("backup")
     state_path = tmp_path / "llm-routes-state.json"
     first_backend = _Backend(direct_error=RateLimitedError(retry_after=120))
-    local_backend = _Backend(direct_result="local")
+    backup_backend = _Backend(direct_result="backup")
     router = RoutedBackend(
-        [first, local],
+        [first, backup],
         state_store=RouteStateStore(state_path),
-        backend_factory={first: first_backend, local: local_backend}.__getitem__,
+        backend_factory={first: first_backend, backup: backup_backend}.__getitem__,
     )
-    assert router.direct("chat", "system", "user") == "local"
+    assert router.direct("chat", "system", "user") == "backup"
 
     untouched_after_restart = _Backend(direct_error=AssertionError("blocked route was retried"))
     restarted = RoutedBackend(
-        [first, local],
+        [first, backup],
         state_store=RouteStateStore(state_path),
-        backend_factory={first: untouched_after_restart, local: local_backend}.__getitem__,
+        backend_factory={first: untouched_after_restart, backup: backup_backend}.__getitem__,
     )
-    assert restarted.direct("chat", "system", "user") == "local"
+    assert restarted.direct("chat", "system", "user") == "backup"
     assert untouched_after_restart.calls == 0
 
 
-def test_streaming_falls_forward_when_local_makes_no_progress(tmp_path):
-    local = _route("local", provider="ollama")
+def test_streaming_falls_forward_when_first_cloud_returns_empty(tmp_path):
+    first = _route("first")
     cloud = _route("cloud")
     seen = []
     router = RoutedBackend(
-        [cloud, local],
+        [first, cloud],
         state_store=RouteStateStore(tmp_path / "state.json"),
         backend_factory={
-            local: _DelayedBackend(0.08, "late local"),
+            first: _Backend(stream=None),
             cloud: _DelayedBackend(0.0, "cloud answer"),
         }.__getitem__,
         local_progress_sec=0.01,
@@ -250,15 +259,15 @@ def test_streaming_falls_forward_when_local_makes_no_progress(tmp_path):
     assert seen == ["cloud answer"]
 
 
-def test_streaming_route_that_starts_owns_the_answer(tmp_path):
-    local = _route("local", provider="ollama")
+def test_first_streaming_cloud_route_owns_the_answer(tmp_path):
+    first = _route("first")
     cloud = _route("cloud")
     cloud_backend = _DelayedBackend(0.0, "cloud answer")
     router = RoutedBackend(
-        [local, cloud],
+        [first, cloud],
         state_store=RouteStateStore(tmp_path / "state.json"),
         backend_factory={
-            local: _DelayedBackend(0.01, "local answer"),
+            first: _DelayedBackend(0.01, "first answer"),
             cloud: cloud_backend,
         }.__getitem__,
         local_progress_sec=0.1,
@@ -266,7 +275,7 @@ def test_streaming_route_that_starts_owns_the_answer(tmp_path):
 
     assert router.streaming(
         "chat", "system", "user", deadline=RequestDeadline.after(1.0)
-    ) == "local answer"
+    ) == "first answer"
     assert cloud_backend.calls == 0
 
 
@@ -277,22 +286,22 @@ def test_disabled_or_incapable_routes_are_not_selected(tmp_path):
     no_stream = Route(
         **{**_route("no-stream").__dict__, "capabilities": frozenset({"chat"})}
     )
-    local = _route("local", provider="ollama")
+    fallback = _route("fallback")
     skipped = _Backend(stream=AssertionError("route should be skipped"))
     router = RoutedBackend(
-        [disabled, no_stream, local],
+        [disabled, no_stream, fallback],
         state_store=RouteStateStore(tmp_path / "state.json"),
         backend_factory={
             disabled: skipped,
             no_stream: skipped,
-            local: _Backend(stream="local answer"),
+            fallback: _Backend(stream="cloud answer"),
         }.__getitem__,
     )
 
-    assert router.streaming("chat", "system", "user") == "local answer"
+    assert router.streaming("chat", "system", "user") == "cloud answer"
 
 
-def test_factory_preserves_config_order_and_keeps_local_fallback():
+def test_factory_preserves_cloud_config_order_without_local_fallback():
     from jarvis.llm.factory import get_llm_backend
 
     settings = SimpleNamespace(
@@ -300,7 +309,7 @@ def test_factory_preserves_config_order_and_keeps_local_fallback():
             "name": "cloud",
             "provider": "openai_compatible",
             "base_url": "https://cloud.test/v1",
-            "api_key": "",
+            "api_key": "test-key",
             "api_key_env": "",
             "model": "cloud-model",
             "tier": "chat",
@@ -316,7 +325,7 @@ def test_factory_preserves_config_order_and_keeps_local_fallback():
     )
 
     routes = get_llm_backend(settings).routes_for(Tier.CHAT)
-    assert [route.name for route in routes] == ["cloud", "local-chat"]
+    assert [route.name for route in routes] == ["cloud"]
 
 
 def test_environment_credential_is_resolved_without_entering_route_state(monkeypatch, tmp_path):
@@ -361,21 +370,21 @@ def test_each_fallback_route_uses_its_configured_model(tmp_path):
     assert second_backend.models == ["second-model"]
 
 
-def test_warm_up_reaches_the_active_and_local_runtimes(tmp_path):
+def test_warm_up_reaches_only_the_first_selectable_cloud_runtime(tmp_path):
     cloud = Route(
         **{**_route("cloud").__dict__, "base_url": "https://cloud.test/v1"}
     )
-    local = _route("local", provider="ollama")
+    backup = _route("backup")
     cloud_backend = _Backend()
-    local_backend = _Backend()
-    router = _router(tmp_path, [cloud, local], {
+    backup_backend = _Backend()
+    router = _router(tmp_path, [cloud, backup], {
         cloud: cloud_backend,
-        local: local_backend,
+        backup: backup_backend,
     })
 
     assert router.warm_up("chat", timeout_sec=5.0) is True
     assert cloud_backend.warmed == ["cloud-model"]
-    assert local_backend.warmed == ["local-model"]
+    assert backup_backend.warmed == []
 
 
 def test_remote_route_never_borrows_the_single_endpoint_key():
@@ -404,8 +413,7 @@ def test_remote_route_never_borrows_the_single_endpoint_key():
     )
 
     router = get_llm_backend(settings)
-    cloud = router.routes_for(Tier.CHAT)[0]
-    assert router._backend(cloud)._api_key is None
+    assert router.routes_for(Tier.CHAT) == ()
 
 
 def test_route_chains_keep_embeddings_on_loopback_ollama():
@@ -426,7 +434,7 @@ def _settings_with_route(**overrides):
         "name": "cloud",
         "provider": "openai_compatible",
         "base_url": "https://cloud.test/v1",
-        "api_key": "",
+        "api_key": "test-key",
         "api_key_env": "",
         "model": "cloud-model",
         "tier": "chat",
@@ -446,48 +454,24 @@ def _settings_with_route(**overrides):
     )
 
 
-def _local(routes, tier):
-    from jarvis.llm.route import RoutedBackend
-
-    return next(
-        route for route in routes
-        if route.tier is tier and RoutedBackend._is_local(route)
-    )
-
-
-def test_a_disabled_route_leaves_the_local_chain_as_if_it_were_absent():
-    """A route the user switched off must not reshape the local fallback.
-
-    Otherwise switching a remote route off silently swaps the fast tier onto
-    the big chat model and clamps every local call to the short fallback
-    timeout, which turns each classification pass into a guaranteed miss.
-    """
+def test_a_disabled_route_leaves_no_chat_or_fast_fallback():
     from jarvis.llm.factory import get_llm_backend
 
     with_disabled = get_llm_backend(_settings_with_route(enabled=False)).routes
-    without_any = get_llm_backend(SimpleNamespace(
-        llm_routes=[],
-        ollama_base_url="http://127.0.0.1:11434",
-        ollama_chat_model="big-chat-model",
-        llm_chat_model="big-chat-model",
-        fast_model="tiny-fast-model",
-        llm_provider="ollama",
-    )).routes
-
-    for tier in (Tier.FAST, Tier.CHAT):
-        disabled_local = _local(with_disabled, tier)
-        plain_local = _local(without_any, tier)
-        assert disabled_local.model == plain_local.model
-        assert disabled_local.timeout_sec == plain_local.timeout_sec
+    assert not [
+        route for route in with_disabled
+        if route.enabled and route.tier in {Tier.FAST, Tier.CHAT}
+    ]
+    assert [route.provider for route in with_disabled if route.tier is Tier.PRIVATE] == ["ollama"]
 
 
-def test_the_local_fast_route_runs_the_explicit_local_fallback_model():
-    """A remote effective FAST name must never be sent to local Ollama."""
+def test_private_is_the_only_local_ollama_route():
     from jarvis.llm.factory import get_llm_backend
 
     routes = get_llm_backend(_settings_with_route()).routes
 
-    assert _local(routes, Tier.FAST).model == "tiny-fast-model"
+    local = [route for route in routes if RoutedBackend._is_local(route)]
+    assert [(route.tier, route.provider) for route in local] == [(Tier.PRIVATE, "ollama")]
 
 
 def test_route_models_remain_authoritative_for_the_effective_fast_chain():
@@ -497,22 +481,16 @@ def test_route_models_remain_authoritative_for_the_effective_fast_chain():
     routes = get_llm_backend(settings).routes_for(Tier.FAST)
 
     assert routes[0].model == "remote-fast-model"
-    assert _local(routes, Tier.FAST).model == "tiny-fast-model"
     assert resolve_model(settings, Tier.FAST) == "cloud-fast-effective"
 
 
-def test_a_local_fallback_gets_room_to_load_a_cold_model():
-    """Ollama evicts models, so a first call pays a page-in of many seconds.
-
-    A fallback timeout shorter than that load turns the local route into a
-    route that can never answer.
-    """
+def test_private_ollama_gets_room_to_load_a_cold_model():
     from jarvis.llm.factory import get_llm_backend
 
     routes = get_llm_backend(_settings_with_route()).routes
 
-    assert _local(routes, Tier.FAST).timeout_sec >= 30.0
-    assert _local(routes, Tier.CHAT).timeout_sec >= 30.0
+    private = next(route for route in routes if route.tier is Tier.PRIVATE)
+    assert private.timeout_sec >= 30.0
 
 
 def test_a_local_route_carries_the_configured_model_residency():
@@ -521,8 +499,8 @@ def test_a_local_route_carries_the_configured_model_residency():
 
     routes = get_llm_backend(_settings_with_route()).routes
 
-    for tier in (Tier.FAST, Tier.CHAT):
-        assert _local(routes, tier).keep_alive == OLLAMA_KEEP_ALIVE
+    private = next(route for route in routes if route.tier is Tier.PRIVATE)
+    assert private.keep_alive == OLLAMA_KEEP_ALIVE
 
 
 def test_low_power_mode_hands_the_gpu_back_between_turns():
@@ -533,7 +511,8 @@ def test_low_power_mode_hands_the_gpu_back_between_turns():
 
     routes = get_llm_backend(settings).routes
 
-    assert _local(routes, Tier.FAST).keep_alive == LOW_POWER_OLLAMA_KEEP_ALIVE
+    private = next(route for route in routes if route.tier is Tier.PRIVATE)
+    assert private.keep_alive == LOW_POWER_OLLAMA_KEEP_ALIVE
 
 
 def test_a_remote_route_leaves_residency_to_its_own_server():
@@ -554,12 +533,12 @@ class TestPreferredProviderRouting:
     catch a promoted route that turns out to be unavailable."""
 
     def test_preferred_provider_is_tried_first(self, tmp_path):
-        local = _route("local", provider="ollama")
+        backup = _route("backup", provider="openai_compatible")
         cloud = _route("cloud", provider="claude_subscription")
-        local_backend = _Backend(chat_result={"message": {"content": "local"}})
+        backup_backend = _Backend(chat_result={"message": {"content": "backup"}})
         cloud_backend = _Backend(chat_result={"message": {"content": "cloud"}})
-        router = _router(tmp_path, [local, cloud], {
-            local: local_backend,
+        router = _router(tmp_path, [backup, cloud], {
+            backup: backup_backend,
             cloud: cloud_backend,
         })
 
@@ -568,45 +547,45 @@ class TestPreferredProviderRouting:
 
         assert result == {"message": {"content": "cloud"}}
         assert cloud_backend.chat_calls == 1
-        assert local_backend.chat_calls == 0
+        assert backup_backend.chat_calls == 0
 
     def test_falls_through_to_the_rest_of_the_chain_when_preferred_fails(self, tmp_path):
         """The promoted route existing but failing (e.g. claude-agent-sdk not
         installed) must not end the turn — it continues through the normal
         chain exactly as an unpromoted failure would."""
-        local = _route("local", provider="ollama")
+        backup = _route("backup", provider="openai_compatible")
         cloud = _route("cloud", provider="claude_subscription")
-        local_backend = _Backend(chat_result={"message": {"content": "local"}})
+        backup_backend = _Backend(chat_result={"message": {"content": "backup"}})
         cloud_backend = _Backend(chat_error=ProviderError("claude-agent-sdk is not installed"))
-        router = _router(tmp_path, [cloud, local], {
+        router = _router(tmp_path, [cloud, backup], {
             cloud: cloud_backend,
-            local: local_backend,
+            backup: backup_backend,
         })
 
         result = router.chat("chat", [{"role": "user", "content": "hi"}],
                               preferred_provider="claude_subscription")
 
-        assert result == {"message": {"content": "local"}}
+        assert result == {"message": {"content": "backup"}}
         assert cloud_backend.chat_calls == 1
-        assert local_backend.chat_calls == 1
+        assert backup_backend.chat_calls == 1
 
     def test_preferred_provider_not_configured_falls_back_to_normal_order(self, tmp_path):
         """Forcing a provider that has no route in the chain at all must
         behave exactly like no preference was set — this is the "unavailable"
         case the manual override's fail-open depends on."""
-        local = _route("local", provider="ollama")
-        local_backend = _Backend(chat_result={"message": {"content": "local"}})
-        router = _router(tmp_path, [local], {local: local_backend})
+        normal = _route("normal", provider="openai_compatible")
+        normal_backend = _Backend(chat_result={"message": {"content": "normal"}})
+        router = _router(tmp_path, [normal], {normal: normal_backend})
 
         result = router.chat("chat", [{"role": "user", "content": "hi"}],
                               preferred_provider="claude_subscription")
 
-        assert result == {"message": {"content": "local"}}
-        assert local_backend.chat_calls == 1
+        assert result == {"message": {"content": "normal"}}
+        assert normal_backend.chat_calls == 1
 
     def test_no_preferred_provider_keeps_configured_chain_order(self, tmp_path):
         first = _route("first", provider="claude_subscription")
-        second = _route("second", provider="ollama")
+        second = _route("second", provider="openai_compatible")
         first_backend = _Backend(chat_result={"message": {"content": "first"}})
         second_backend = _Backend(chat_result={"message": {"content": "second"}})
         router = _router(tmp_path, [first, second], {

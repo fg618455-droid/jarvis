@@ -721,8 +721,8 @@ class TestChatBackendPreferenceSignal:
         assert signal.get("preference") == "complex"
 
     @pytest.mark.unit
-    def test_local_response_populates_the_signal(self):
-        backend = _llm_backend(return_value="none LOCAL")
+    def test_default_response_populates_the_signal(self):
+        backend = _llm_backend(return_value="none DEFAULT")
         signal: dict = {}
         result = select_tools(
             "hello",
@@ -732,7 +732,7 @@ class TestChatBackendPreferenceSignal:
             llm_model="test",
             chat_backend_signal=signal,
         )
-        assert signal.get("preference") == "local"
+        assert signal.get("preference") == "default"
         # The classification suffix must not break the existing "none"
         # handling — only mandatory tools come back.
         assert result == ["stop"]
@@ -817,7 +817,7 @@ class TestChatBackendPreferenceSignal:
     @pytest.mark.unit
     def test_local_tool_name_does_not_false_positive_as_a_preference(self):
         """A real tool name containing the substring "local" (e.g.
-        localFiles) must not be mistaken for the LOCAL classification
+        localFiles) must not be mistaken for the DEFAULT classification
         token — word-boundary matching keeps the two apart."""
         backend = _llm_backend(return_value="localFiles COMPLEX")
         signal: dict = {}

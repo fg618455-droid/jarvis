@@ -51,7 +51,7 @@ class TestManualOverride:
 
         assert mock_backend.chat.call_args.kwargs["preferred_provider"] == "crew_chat"
 
-    def test_override_wins_over_automatic_preference(self, mock_backend):
+    def test_legacy_ollama_override_is_ignored(self, mock_backend):
         """Manual override is unconditional — it must not be overridden by
         whatever the router classified this turn as."""
         from src.jarvis.reply.engine import chat_with_messages
@@ -63,7 +63,7 @@ class TestManualOverride:
                 chat_backend_preference="complex",
             )
 
-        assert mock_backend.chat.call_args.kwargs["preferred_provider"] == "ollama"
+        assert mock_backend.chat.call_args.kwargs["preferred_provider"] == "claude_subscription"
 
     def test_override_logs_the_decision(self, mock_backend):
         from src.jarvis.reply.engine import chat_with_messages
@@ -93,7 +93,7 @@ class TestAutomaticRouting:
 
         assert mock_backend.chat.call_args.kwargs["preferred_provider"] == "claude_subscription"
 
-    def test_local_preference_selects_ollama(self, mock_backend):
+    def test_legacy_local_preference_means_default_chain(self, mock_backend):
         from src.jarvis.reply.engine import chat_with_messages
 
         cfg = _cfg()
@@ -103,7 +103,7 @@ class TestAutomaticRouting:
                 chat_backend_preference="local",
             )
 
-        assert mock_backend.chat.call_args.kwargs["preferred_provider"] == "ollama"
+        assert mock_backend.chat.call_args.kwargs["preferred_provider"] is None
 
     def test_hermes_preference_selects_crew_chat(self, mock_backend):
         from src.jarvis.reply.engine import chat_with_messages

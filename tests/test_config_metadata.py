@@ -191,7 +191,7 @@ class TestProviderSettings:
         that leaves the interface altogether is one nobody can change.
         """
         for key in (
-            "local_llm_fallback_enabled", "ollama_chat_model", "local_fast_model",
+            "ollama_chat_model",
             "ollama_embed_model", "ollama_base_url",
         ):
             field = self._field(key)

@@ -2,16 +2,16 @@
 Chat Backend Routing Classification Evaluations
 
 Tests that the tool router's reused LLM call (jarvis.tools.selection
-._select_llm) also classifies a turn as needing the local fast route, the
+._select_llm) also classifies a turn as needing the default cloud route, the
 complex-reasoning route, or the crew_chat route, reusing the SAME response
 the router already produces rather than a second LLM call. This demonstrates
 the improvement behind the "auto" chat_backend_override across all three
-legs jointly: a short conversational turn should route local, a turn
+legs jointly: a short conversational turn should use the default chain, a turn
 needing careful structured output or front-end-shaped reasoning should
 route to the complex-reasoning backend, and a turn about backend code,
 infrastructure, or systems work should route to the crew.
 
-The LOCAL and HERMES legs discriminate reliably against a small local judge
+The DEFAULT and HERMES legs discriminate reliably against a fast judge
 (e.g. gemma4:e2b); COMPLEX vs HERMES is a genuinely close call for a model
 that size on some queries, since both read as "needs real thinking" to it.
 A flake on a COMPLEX case here reflects the configured judge's own capacity
@@ -32,13 +32,13 @@ from helpers import JUDGE_MODEL
 CHAT_BACKEND_ROUTING_CASES = [
     pytest.param(
         "hey, how's it going?",
-        "local",
-        id="pure small talk routes local",
+        "default",
+        id="pure small talk uses default chain",
     ),
     pytest.param(
         "what's the weather like tomorrow",
-        "local",
-        id="short single-fact lookup routes local",
+        "default",
+        id="short single-fact lookup uses default chain",
     ),
     pytest.param(
         (
@@ -82,7 +82,7 @@ CHAT_BACKEND_ROUTING_CASES = [
 @pytest.mark.eval
 class TestChatBackendRoutingClassification:
     """The router's single LLM call also names a coarse chat-backend
-    preference; this must actually discriminate local, complex, and hermes
+    preference; this must actually discriminate default, complex, and hermes
     turns from one another for the automatic "auto" override to be worth
     anything across all three legs, not just the newest one in isolation."""
 
@@ -112,7 +112,7 @@ class TestChatBackendRoutingClassification:
 
         preference = signal.get("preference")
         assert preference is not None, (
-            f"[{JUDGE_MODEL}] router response carried no LOCAL/COMPLEX "
+            f"[{JUDGE_MODEL}] router response carried no DEFAULT/COMPLEX "
             "classification at all"
         )
         assert preference == expected_preference, (

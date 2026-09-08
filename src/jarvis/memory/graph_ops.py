@@ -38,11 +38,9 @@ from .write_lock import MEMORY_WRITE_LOCK
 def call_llm_direct(*, cfg, chat_model, system_prompt, user_content,
                     timeout_sec=10.0, thinking=False, num_ctx=4096,
                     temperature=None, max_tokens=None):
-    """Local indirection: route graph-ops LLM calls through the backend
-    configured by ``cfg.llm_provider``. Tests patch this single symbol
-    to intercept every LLM round-trip in this module."""
+    """Keep every graph extraction and category decision on PRIVATE Ollama."""
     return get_llm_backend(cfg).direct(
-        chat_model, system_prompt, user_content,
+        resolve_model(cfg, Tier.PRIVATE), system_prompt, user_content,
         timeout_sec=timeout_sec, thinking=thinking,
         num_ctx=num_ctx, temperature=temperature,
         max_tokens=max_tokens,
@@ -346,10 +344,8 @@ def _llm_pick_best_child(
         f"Categories:\n{options_text}"
     )
 
-    # Picker is a one-digit classification — reuse the small picker_model
-    # when the caller provides one (the fast tier: resolve_model(cfg, Tier.FAST)).
-    # Falls back to the supplied model for minimal callers without settings.
-    effective_model = picker_model or resolve_model(cfg, Tier.FAST) or chat_model
+    # Category selection handles memory fragments and belongs to PRIVATE.
+    effective_model = resolve_model(cfg, Tier.PRIVATE)
     response = call_llm_direct(
         cfg=cfg,
         chat_model=effective_model,

@@ -67,7 +67,9 @@ _LLM_MAX_SELECTED = 5
 # user's words — they are a closed vocabulary the classifying LLM itself
 # must emit, the same kind of fixed sentinel "none" already is in this
 # router.
-_CHAT_BACKEND_PREFERENCE_RE = re.compile(r"\b(local|complex|hermes)\b", re.IGNORECASE)
+_CHAT_BACKEND_PREFERENCE_RE = re.compile(
+    r"\b(default|local|complex|hermes)\b", re.IGNORECASE
+)
 
 # Tool descriptions change only when the catalogue changes, while user queries
 # change every turn. Cache only the description vectors so embedding routing
@@ -362,7 +364,7 @@ def _select_llm(
     has less context and falls back to tool-selection on content.
 
     ``chat_backend_signal``, when supplied, is populated with
-    ``{"preference": "local" | "complex" | "hermes"}`` from the SAME
+    ``{"preference": "default" | "complex" | "hermes"}`` from the SAME
     response this call already produces, so the reply engine can bias which
     Tier.CHAT backend answers the turn without a second LLM round-trip. The
     key is left absent on any fallback path (empty/unparseable response,
@@ -405,12 +407,12 @@ def _select_llm(
         "servers, or data systems — the kind of engineering work suited to "
         "a background crew with deep tool access; COMPLEX if it needs "
         "multi-step reasoning, careful structured output, or front-end or "
-        "user-facing design work that is not HERMES-shaped; or LOCAL for "
+        "user-facing design work that is not HERMES-shaped; or DEFAULT for "
         "everything else, including simple factual lookups through a tool. "
-        "A single-fact lookup stays LOCAL even when it names a future time "
+        "A single-fact lookup stays DEFAULT even when it names a future time "
         "or date (e.g. 'what's the weather tomorrow', 'when is my next "
         "meeting') — one fact about one moment is not multi-step reasoning. "
-        "A short conversational question is LOCAL even when it picks a "
+        "A short conversational question is DEFAULT even when it picks a "
         "tool. "
         "Output nothing else — no explanations, no prose, no code fences."
     )
@@ -456,7 +458,7 @@ def _select_llm(
         f"{hint_section}"
         f"User query: {query}\n\n"
         "Top tools (comma-separated, max 5, or 'none'), then a space and "
-        "LOCAL or COMPLEX:"
+        "DEFAULT or COMPLEX:"
     )
 
     try:
@@ -491,7 +493,12 @@ def _select_llm(
             # Fail-open by default: the key is only set when the router's
             # response actually named a preference. Reusing this response
             # is the entire point — no second classification call is made.
-            chat_backend_signal["preference"] = _preference_matches[-1].lower()
+            preference = _preference_matches[-1].lower()
+            # Accept the old LOCAL token for one transition period, but it no
+            # DEFAULT means configured cloud order, never an Ollama route.
+            chat_backend_signal["preference"] = (
+                "default" if preference == "local" else preference
+            )
         _tool_part = _CHAT_BACKEND_PREFERENCE_RE.sub(" ", resp)
 
     resp_lower = _tool_part.strip().strip("|").strip().lower()
@@ -562,7 +569,7 @@ def select_tools(
         embed_timeout_sec:  Timeout for embedding calls.
         context_hint:       Optional facts/dialogue surface for the LLM router.
         chat_backend_signal: Optional dict populated with
-                            ``{"preference": "local" | "complex" | "hermes"}``
+                            ``{"preference": "default" | "complex" | "hermes"}``
                             when the "llm" strategy's response names one, so
                             a caller can bias Tier.CHAT backend selection
                             without a second LLM call. Ignored by every other

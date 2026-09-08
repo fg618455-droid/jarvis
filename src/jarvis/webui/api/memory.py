@@ -515,7 +515,7 @@ def graph_import_diary() -> Response:
             # Run the best-child picker on the small router-chain model so
             # historical import doesn't page in the big chat model for every
             # placement decision.
-            picker_model = resolve_model(settings, Tier.FAST)
+            picker_model = resolve_model(settings, Tier.PRIVATE)
 
             summaries = db.get_all_conversation_summaries()
             total = len(summaries)
@@ -608,7 +608,7 @@ def graph_consolidate_all() -> Response:
     def generate():
         try:
             settings = load_settings()
-            picker_model = resolve_model(settings, Tier.FAST)
+            picker_model = resolve_model(settings, Tier.PRIVATE)
             store = get_graph_store()
 
             # Count populated nodes upfront so the UI can render a

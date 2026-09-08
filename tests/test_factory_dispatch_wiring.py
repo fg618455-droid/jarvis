@@ -46,11 +46,20 @@ def _ollama_cfg() -> _Cfg:
 
 
 def _openai_cfg() -> _Cfg:
-    return _Cfg(
+    cfg = _Cfg(
         llm_provider="openai_compatible",
-        llm_base_url="http://localhost:1234/v1",
+        llm_base_url="https://provider.example/v1",
         llm_api_key="sk-test",
     )
+    cfg.llm_routes = [
+        {
+            "name": f"cloud-{tier}", "provider": "openai_compatible",
+            "base_url": "https://provider.example/v1", "api_key": "sk-test",
+            "model": "test-chat", "tier": tier, "timeout_sec": 4.0,
+        }
+        for tier in ("fast", "chat")
+    ]
+    return cfg
 
 
 # ── direct() wrappers ───────────────────────────────────────────────────────
@@ -59,17 +68,17 @@ def _openai_cfg() -> _Cfg:
     "module_path, fn_name, cfg_factory, expected_backend_module",
     [
         # Reply path
-        ("src.jarvis.reply.planner", "call_llm_direct", _ollama_cfg, "ollama"),
+        ("src.jarvis.reply.planner", "call_llm_direct", _ollama_cfg, "none"),
         ("src.jarvis.reply.planner", "call_llm_direct", _openai_cfg, "openai_compatible"),
-        ("src.jarvis.reply.evaluator", "call_llm_direct", _ollama_cfg, "ollama"),
+        ("src.jarvis.reply.evaluator", "call_llm_direct", _ollama_cfg, "none"),
         ("src.jarvis.reply.evaluator", "call_llm_direct", _openai_cfg, "openai_compatible"),
-        ("src.jarvis.reply.enrichment", "call_llm_direct", _ollama_cfg, "ollama"),
+        ("src.jarvis.reply.enrichment", "call_llm_direct", _ollama_cfg, "none"),
         ("src.jarvis.reply.enrichment", "call_llm_direct", _openai_cfg, "openai_compatible"),
         # Memory path
         ("src.jarvis.memory.graph_ops", "call_llm_direct", _ollama_cfg, "ollama"),
-        ("src.jarvis.memory.graph_ops", "call_llm_direct", _openai_cfg, "openai_compatible"),
+        ("src.jarvis.memory.graph_ops", "call_llm_direct", _openai_cfg, "ollama"),
         # Builtin tools
-        ("src.jarvis.tools.builtin.nutrition.log_meal", "call_llm_direct", _ollama_cfg, "ollama"),
+        ("src.jarvis.tools.builtin.nutrition.log_meal", "call_llm_direct", _ollama_cfg, "none"),
         ("src.jarvis.tools.builtin.nutrition.log_meal", "call_llm_direct", _openai_cfg, "openai_compatible"),
     ],
 )
@@ -103,10 +112,30 @@ def test_call_llm_direct_wrapper_dispatches_via_factory(
         assert ollama_direct.called, "expected OllamaBackend.direct to be invoked"
         assert not openai_direct.called, "OpenAICompatibleBackend.direct must not be called for llm_provider=ollama"
         assert result == "ollama-result"
-    else:
+    elif expected_backend_module == "openai_compatible":
         assert openai_direct.called, "expected OpenAICompatibleBackend.direct to be invoked"
         assert not ollama_direct.called, "OllamaBackend.direct must not be called for llm_provider=openai_compatible"
         assert result == "openai-result"
+    else:
+        assert not ollama_direct.called
+        assert not openai_direct.called
+        assert result is None
+
+
+def test_private_memory_model_dispatches_to_ollama_only():
+    from src.jarvis.llm import Tier, resolve_model
+    from src.jarvis.llm.ollama import OllamaBackend
+    from src.jarvis.memory.graph_ops import call_llm_direct
+
+    cfg = _ollama_cfg()
+    with patch.object(OllamaBackend, "direct", return_value="private") as direct:
+        result = call_llm_direct(
+            cfg=cfg, chat_model=resolve_model(cfg, Tier.PRIVATE),
+            system_prompt="sys", user_content="user", timeout_sec=1.0,
+        )
+
+    assert result == "private"
+    assert direct.called
 
 
 # ── chat() wrapper (engine) ────────────────────────────────────────────────
@@ -114,7 +143,7 @@ def test_call_llm_direct_wrapper_dispatches_via_factory(
 @pytest.mark.parametrize(
     "cfg_factory, expected_backend_module",
     [
-        (_ollama_cfg, "ollama"),
+        (_ollama_cfg, "none"),
         (_openai_cfg, "openai_compatible"),
     ],
 )
@@ -135,9 +164,12 @@ def test_engine_chat_with_messages_dispatches_via_factory(cfg_factory, expected_
     if expected_backend_module == "ollama":
         assert ollama_chat.called
         assert not openai_chat.called
-    else:
+    elif expected_backend_module == "openai_compatible":
         assert openai_chat.called
         assert not ollama_chat.called
+    else:
+        assert not ollama_chat.called
+        assert not openai_chat.called
 
 
 # ── weather extractor (uses get_llm_backend directly, no local wrapper) ────
@@ -145,7 +177,7 @@ def test_engine_chat_with_messages_dispatches_via_factory(cfg_factory, expected_
 @pytest.mark.parametrize(
     "cfg_factory, expected_backend_module",
     [
-        (_ollama_cfg, "ollama"),
+        (_ollama_cfg, "none"),
         (_openai_cfg, "openai_compatible"),
     ],
 )
@@ -163,9 +195,12 @@ def test_weather_place_extractor_dispatches_via_factory(cfg_factory, expected_ba
     if expected_backend_module == "ollama":
         assert ollama_direct.called
         assert not openai_direct.called
-    else:
+    elif expected_backend_module == "openai_compatible":
         assert openai_direct.called
         assert not ollama_direct.called
+    else:
+        assert not ollama_direct.called
+        assert not openai_direct.called
 
 
 def test_factory_always_returns_one_routing_code_path():
@@ -175,7 +210,7 @@ def test_factory_always_returns_one_routing_code_path():
     assert isinstance(get_llm_backend(_openai_cfg()), RoutedBackend)
 
 
-def test_configured_routes_are_split_by_tier_and_end_locally():
+def test_configured_routes_are_split_by_tier_without_local_fallback():
     from src.jarvis.llm import Tier, get_llm_backend
 
     cfg = _ollama_cfg()
@@ -202,8 +237,8 @@ def test_configured_routes_are_split_by_tier_and_end_locally():
 
     backend = get_llm_backend(cfg)
 
-    assert [route.name for route in backend.routes_for(Tier.CHAT)] == ["chat-cloud", "local-chat"]
-    assert [route.name for route in backend.routes_for(Tier.FAST)] == ["fast-cloud", "local-fast"]
+    assert [route.name for route in backend.routes_for(Tier.CHAT)] == ["chat-cloud"]
+    assert [route.name for route in backend.routes_for(Tier.FAST)] == ["fast-cloud"]
     assert [route.provider for route in backend.routes_for(Tier.PRIVATE)] == ["ollama"]
 
 

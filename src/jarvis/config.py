@@ -1,12 +1,31 @@
 import os
 import sys
 import json
+import logging
+import ipaddress
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 from dotenv import load_dotenv
+
+
+def _is_public_https_llm_url(value: str) -> bool:
+    """Return whether a configured cloud route is structurally non-local."""
+    try:
+        parsed = urlsplit(str(value or ""))
+        host = (parsed.hostname or "").strip().lower()
+    except ValueError:
+        return False
+    if parsed.scheme != "https" or not host or host == "localhost" or host.endswith(".local"):
+        return False
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return True
 
 
 # ============================================================================
@@ -243,8 +262,8 @@ class Settings:
 
     # Effective FAST route model, used for tier selection and prompt sizing.
     # With configured routes this is the first enabled FAST route's model.
-    # ``local_fast_model`` below is deliberately separate: it is the model
-    # an appended loopback Ollama fallback actually runs.
+    # ``local_fast_model`` remains as an empty compatibility attribute for
+    # callers compiled against pre-v7 settings; it never creates a route.
     fast_model: str
     local_fast_model: str
     # Fast-tier timing control. The authoritative context list lives in
@@ -419,7 +438,15 @@ def _save_json(path: Path, data: Dict[str, Any]) -> bool:
                 tmp_path.chmod(0o600)
             except OSError:
                 pass
-            os.replace(tmp_path, path)
+            for attempt in range(4):
+                try:
+                    os.replace(tmp_path, path)
+                    break
+                except PermissionError as exc:
+                    if getattr(exc, "winerror", None) not in (32, 33) or attempt == 3:
+                        raise
+                    # Sync clients may hold a short-lived read handle.
+                    time.sleep(0.05 * (attempt + 1))
         except Exception:
             try:
                 tmp_path.unlink()
@@ -427,7 +454,11 @@ def _save_json(path: Path, data: Dict[str, Any]) -> bool:
                 pass
             raise
         return True
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Configuration save failed (%s, winerror=%s)",
+            type(exc).__name__, getattr(exc, "winerror", None),
+        )
         return False
 
 
@@ -637,6 +668,68 @@ def _migrate_config(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any]:
                 cfg_json["local_fast_model"] = old_fast
         cfg_json.pop("fast_model", None)
         cfg_json["_config_version"] = 6
+        modified = True
+
+    # Migration v7 makes the three privacy lanes structural instead of
+    # conventional: FAST/CHAT contain explicit cloud or subscription routes,
+    # while Ollama is reserved for PRIVATE and embeddings. No network probe is
+    # performed here and no disabled provider is activated by migration.
+    if migration_version < 7:
+        raw_routes = cfg_json.get("llm_routes", [])
+        clean_routes = []
+        if isinstance(raw_routes, list):
+            for raw in raw_routes:
+                if not isinstance(raw, dict):
+                    continue
+                provider = str(raw.get("provider", "") or "").strip().lower()
+                tier = str(raw.get("tier", "") or "").strip().lower()
+                if provider not in {
+                    "openai_compatible", "claude_subscription",
+                    "codex_subscription", "crew_chat",
+                } or tier not in ("fast", "chat"):
+                    continue
+                if provider != "openai_compatible" and tier != "chat":
+                    continue
+                if provider == "openai_compatible" and not _is_public_https_llm_url(
+                    str(raw.get("base_url", "") or "")
+                ):
+                    continue
+                clean_routes.append(raw)
+
+        # A v6 single-endpoint cloud config may not yet have a route list.
+        # Preserve it as explicit routes only when a credential was configured;
+        # an empty environment value is handled as unavailable at runtime.
+        if not clean_routes:
+            provider = str(cfg_json.get("llm_provider", "") or "").strip().lower()
+            base_url = str(cfg_json.get("llm_base_url", "") or "").strip().rstrip("/")
+            model = str(cfg_json.get("llm_chat_model", "") or "").strip()
+            api_key = str(cfg_json.get("llm_api_key", "") or "")
+            api_key_env = str(cfg_json.get("llm_api_key_env", "") or "").strip()
+            if (
+                provider == "openai_compatible"
+                and _is_public_https_llm_url(base_url)
+                and model
+                and (api_key or api_key_env)
+            ):
+                for tier in ("fast", "chat"):
+                    clean_routes.append({
+                        "name": f"configured-{tier}",
+                        "provider": provider,
+                        "base_url": base_url,
+                        "api_key": api_key,
+                        "api_key_env": api_key_env,
+                        "model": model,
+                        "tier": tier,
+                        "timeout_sec": 4.0,
+                        "enabled": True,
+                        "capabilities": ["chat", "stream", "tools"],
+                    })
+        cfg_json["llm_routes"] = clean_routes
+        if str(cfg_json.get("chat_backend_override", "") or "").strip().lower() == "ollama":
+            cfg_json["chat_backend_override"] = "auto"
+        cfg_json.pop("fast_model", None)
+        cfg_json.pop("local_fast_model", None)
+        cfg_json["_config_version"] = 7
         modified = True
 
     # Save migrated config
@@ -1097,11 +1190,15 @@ def load_settings() -> Settings:
             base_url = str(raw.get("base_url", "") or "").strip().rstrip("/")
             model = str(raw.get("model", "") or "").strip()
             if provider not in (
-                "ollama", "openai_compatible", "claude_subscription",
+                "openai_compatible", "claude_subscription",
                 "codex_subscription", "crew_chat",
             ):
                 continue
             if tier not in ("fast", "chat") or not base_url or not model:
+                continue
+            if provider != "openai_compatible" and tier != "chat":
+                continue
+            if provider == "openai_compatible" and not _is_public_https_llm_url(base_url):
                 continue
             try:
                 timeout_sec = max(0.1, float(raw.get("timeout_sec", 4.0)))
@@ -1135,7 +1232,7 @@ def load_settings() -> Settings:
     # with no matching route is a normal, already fail-open "unavailable"
     # case handled by RoutedBackend at call time, not a config error.
     chat_backend_override = str(merged.get("chat_backend_override", "auto") or "auto").strip().lower()
-    if not chat_backend_override:
+    if not chat_backend_override or chat_backend_override == "ollama":
         chat_backend_override = "auto"
 
     # Provider-aware fields. The two field sets are per-provider: the
@@ -1151,10 +1248,7 @@ def load_settings() -> Settings:
         llm_provider = "ollama"
     llm_base_url = str(merged.get("llm_base_url", "") or "").strip() or ollama_base_url
     llm_api_key = str(merged.get("llm_api_key", "") or "").strip()
-    if llm_provider == "openai_compatible":
-        llm_chat_model = str(merged.get("llm_chat_model", "") or "").strip() or ollama_chat_model
-    else:
-        llm_chat_model = ollama_chat_model
+    llm_chat_model = str(merged.get("llm_chat_model", "") or "").strip()
     first_chat_route = next((
         route for route in llm_routes
         if route["tier"] == "chat" and route["enabled"]
@@ -1164,26 +1258,10 @@ def load_settings() -> Settings:
         llm_base_url = first_chat_route["base_url"]
         llm_api_key = first_chat_route["api_key"]
         llm_chat_model = first_chat_route["model"]
-    embedding_provider_raw = str(merged.get("embedding_provider", "") or "").strip().lower()
-    if embedding_provider_raw not in ("", "ollama", "openai_compatible"):
-        embedding_provider_raw = ""
-    embedding_provider = embedding_provider_raw
-    embedding_base_url = str(merged.get("embedding_base_url", "") or "").strip()
-    embedding_api_key = str(merged.get("embedding_api_key", "") or "").strip()
-    if llm_routes:
-        embedding_provider = "ollama"
-        embedding_base_url = ollama_base_url
-        embedding_api_key = ""
-        embedding_model = ollama_embed_model
-    else:
-        effective_embedding_provider = embedding_provider or llm_provider
-        if effective_embedding_provider == "openai_compatible":
-            embedding_model = (
-                str(merged.get("embedding_model", "") or "").strip()
-                or ollama_embed_model
-            )
-        else:
-            embedding_model = ollama_embed_model
+    embedding_provider = "ollama"
+    embedding_base_url = ollama_base_url
+    embedding_api_key = ""
+    embedding_model = ollama_embed_model
     use_stdin = bool(merged.get("use_stdin", False))
     active_profiles = _ensure_list(merged.get("active_profiles"))
     tts_enabled = bool(merged.get("tts_enabled", True))
@@ -1305,15 +1383,8 @@ def load_settings() -> Settings:
     # RoutedBackend invokes each candidate's own model, including the local
     # fallback below. Route-less legacy OpenAI-compatible configs retain their
     # provider model semantics.
-    local_fast_model = str(merged.get("local_fast_model", "") or "").strip()
-    if not local_fast_model:
-        local_fast_model = DEFAULT_FAST_MODEL
-    legacy_fast_model = str(merged.get("fast_model", "") or "").strip()
-    fast_model = (
-        legacy_fast_model or llm_chat_model
-        if llm_provider == "openai_compatible"
-        else local_fast_model
-    )
+    local_fast_model = ""
+    fast_model = ""
     first_fast_route = next((
         route for route in llm_routes
         if route["tier"] == "fast" and route["enabled"]

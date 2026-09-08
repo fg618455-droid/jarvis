@@ -228,20 +228,17 @@ class TestLLMPickBestChild:
         assert result is None
 
     @patch("src.jarvis.memory.graph_ops.call_llm_direct")
-    def test_uses_picker_model_when_provided(self, mock_llm, populated_store):
-        # Behaviour: picker_model overrides the chat model for this classification-
-        # shaped call, so placement runs on the small model without paging in the
-        # big chat model. When absent, the chat model is used (backwards-compatible).
+    def test_picker_cannot_override_private_lane(self, mock_llm, populated_store):
+        from types import SimpleNamespace
+        from src.jarvis.llm import Tier, resolve_model
+        cfg = SimpleNamespace(ollama_chat_model="private", llm_chat_model="cloud", fast_model="cloud-fast")
         children = populated_store.get_children("root")
         mock_llm.return_value = "1"
-
-        _llm_pick_best_child(
-            "fact", children, "http://localhost", "big-chat", picker_model="small-judge"
-        )
-        assert mock_llm.call_args.kwargs["chat_model"] == "small-judge"
-
-        _llm_pick_best_child("fact", children, "http://localhost", "big-chat")
-        assert mock_llm.call_args.kwargs["chat_model"] == "big-chat"
+        _llm_pick_best_child("fact", children, cfg, "cloud",
+                             picker_model=resolve_model(cfg, Tier.FAST))
+        model = mock_llm.call_args.kwargs["chat_model"]
+        assert model.tier is Tier.PRIVATE
+        assert model == "private"
 
 
 # ── find_best_node ─────────────────────────────────────────────────────
@@ -1452,3 +1449,18 @@ class TestFormatWarmProfileBlock:
         out = format_warm_profile_block({"user": "   \n", "directives": "\t"})
 
         assert "NONE RETRIEVED" in out
+
+
+def test_graph_backend_boundary_forces_private_even_with_cloud_model():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+    from jarvis.llm.tiers import Tier, ResolvedModel
+    from jarvis.memory.graph_ops import call_llm_direct
+    cfg = SimpleNamespace(ollama_chat_model="private-local", llm_chat_model="cloud-chat")
+    backend = MagicMock()
+    with patch("jarvis.memory.graph_ops.get_llm_backend", return_value=backend):
+        call_llm_direct(cfg=cfg, chat_model=ResolvedModel("cloud-fast", Tier.FAST),
+                        system_prompt="test", user_content="synthetic memory")
+    model = backend.direct.call_args.args[0]
+    assert model.tier is Tier.PRIVATE
+    assert model == "private-local"

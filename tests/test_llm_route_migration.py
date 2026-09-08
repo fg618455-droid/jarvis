@@ -30,7 +30,7 @@ def test_v5_keeps_tiered_routes_and_adds_safe_defaults(tmp_path):
         "llm_routes": [route],
     })
 
-    assert migrated["_config_version"] == 6
+    assert migrated["_config_version"] == 7
     assert migrated["llm_routes"] == [{
         **route,
         "api_key_env": "",
@@ -69,12 +69,11 @@ def test_v5_converts_priority_routes_into_ordered_tier_entries(tmp_path):
 
     routes = migrated["llm_routes"]
     assert [(route["name"], route["tier"]) for route in routes] == [
-        ("local", "fast"),
         ("cloud", "fast"),
-        ("local", "chat"),
         ("cloud", "chat"),
     ]
-    assert routes[0]["base_url"] == "http://127.0.0.1:11434"
+    assert all(route["provider"] != "ollama" for route in routes)
+    assert routes[0]["base_url"] == "https://cloud.test/v1"
     assert routes[1]["api_key_env"] == "CLOUD_KEY"
     assert routes[1]["api_key"] == ""
     assert "priority" not in routes[1]

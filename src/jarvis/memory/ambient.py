@@ -7,7 +7,7 @@ import time
 from typing import Any, Iterable, Optional
 
 from ..debug import debug_log
-from ..llm import get_llm_backend
+from ..llm import Tier, get_llm_backend, resolve_model
 from ..runtime import get_runtime_state
 from ..utils.redact import redact
 from .conversation import (
@@ -48,7 +48,7 @@ def _direct_llm(
     max_tokens: int,
 ) -> Optional[str]:
     return get_llm_backend(cfg).direct(
-        cfg.llm_chat_model,
+        resolve_model(cfg, Tier.PRIVATE),
         system_prompt,
         user_prompt,
         timeout_sec=timeout_sec,

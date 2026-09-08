@@ -42,7 +42,7 @@ LLM_ROUTE_FIELD_METADATA = (
     FieldMeta("name", "Name", "Display name for this route", "llm_routes", "str",
               default_value="New route"),
     FieldMeta("provider", "Protocol", "Wire protocol used by the endpoint", "llm_routes", "choice",
-              choices=[("openai_compatible", "OpenAI-compatible"), ("ollama", "Ollama"),
+              choices=[("openai_compatible", "OpenAI-compatible"),
                        ("claude_subscription", "Claude subscription"),
                        ("codex_subscription", "Codex subscription"),
                        ("crew_chat", "Crew chat")],
@@ -68,11 +68,6 @@ LLM_ROUTE_FIELD_METADATA = (
 # endpoint/model placeholders, but storing explicit values keeps every route
 # in one stable schema and lets the factory reject malformed network routes.
 LLM_ROUTE_PROVIDER_PLACEHOLDERS = {
-    "ollama": {
-        "base_url": "http://127.0.0.1:11434",
-        "model": "qwen2.5:7b",
-        "api_key_env": "",
-    },
     "openai_compatible": {
         "base_url": "https://provider.example/v1",
         "model": "provider-model-id",
@@ -643,23 +638,10 @@ def _build_field_metadata() -> List[FieldMeta]:
       "confirm can sit at the full confirmation timeout before it gives up",
       "crew", "bool")
     # --- Advanced ---
-    # Ollama is what PRIVATE work and embeddings run on, and the fallback a
-    # remote-only chain can be given if its owner wants one. That is a
-    # smaller job than the provider window, so it is settled here rather
-    # than standing in front of the chains that actually answer.
+    # Local Ollama supplies PRIVATE work and embeddings.
     model_choices = [(mid, info["name"]) for mid, info in SUPPORTED_CHAT_MODELS.items()]
-    f("local_llm_fallback_enabled", "Local Chat/Fast Fallback",
-      "Append a local Ollama route to FAST and CHAT when the configured chain "
-      "has no local entry. Off keeps a remote-only chain remote-only. Memory "
-      "(PRIVATE) and embeddings stay local either way",
-      "advanced", "bool", section="Local Ollama")
-    f("ollama_chat_model", "Chat Model", "Local model used by that fallback",
+    f("ollama_chat_model", "Private Model", "Local model for memory writes and summaries",
       "advanced", "choice", choices=model_choices, section="Local Ollama")
-    f("local_fast_model", "Local Fast Fallback",
-      "Small Ollama model used after configured FAST routes fail. Route models "
-      "remain authoritative for effective FAST requests",
-      "advanced", "choice", choices=[("", "Automatic (recommended)")] + model_choices,
-      section="Local Ollama")
     f("ollama_embed_model", "Embedding Model", "Model for text embeddings",
       "advanced", "str", section="Local Ollama")
     f("ollama_base_url", "Ollama URL", "Ollama server base URL",

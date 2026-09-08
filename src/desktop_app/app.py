@@ -2829,22 +2829,14 @@ def _ollama_runtime_flags(cfg) -> tuple[bool, bool]:
     providers.
 
     Returns ``(ollama_needed, chat_on_ollama)``:
-    - ``ollama_needed`` — the local Ollama server must be up because chat
-      and/or embeddings run on it. False only for a pure OpenAI-compatible
-      setup (both chat and embeddings remote), where there is nothing local
-      to start or verify.
-    - ``chat_on_ollama`` — the chat model is an Ollama model, so the
-      chat-model verification / unsupported-model checks apply. False when
-      chat runs on an OpenAI-compatible server (its model name is not in the
-      Ollama catalogue and would be wrongly flagged as unsupported).
+    - ``ollama_needed`` is always true because PRIVATE work and embeddings
+      are local.
+    - ``chat_on_ollama`` is always false because CHAT is cloud/subscription
+      only; the private model must not be validated as a chat route.
     """
-    llm_provider = getattr(cfg, "llm_provider", "ollama") or "ollama"
-    embed_provider = getattr(cfg, "embedding_provider", "") or llm_provider
-    ollama_needed = not (
-        llm_provider == "openai_compatible" and embed_provider == "openai_compatible"
-    )
-    chat_on_ollama = llm_provider != "openai_compatible"
-    return ollama_needed, chat_on_ollama
+    # PRIVATE completions and embeddings always need local Ollama. FAST and
+    # CHAT never use it, so chat-model compatibility checks must stay off.
+    return True, False
 
 
 def _check_openai_compat_reachable(cfg, timeout_sec: float = 4.0) -> bool:

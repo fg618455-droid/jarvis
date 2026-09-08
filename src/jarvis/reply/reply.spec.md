@@ -28,6 +28,15 @@ Design principles enforced by the engine:
 - Response Language: the initial system message always constrains the reply language, in one of three ways. A Piper voice speaks exactly one language, so when one is configured the reply is pinned to it; the name is read from the voice's own `<model>.onnx.json` metadata via `resolve_voice_language` in `src/jarvis/output/tts.py`, so swapping in a voice of any language needs no code change. A Kokoro voice also speaks exactly one language, named by the voice's own first letter (`resolve_kokoro_voice_language`, e.g. `bm_lewis` → British English, `jf_alpha` → Japanese) rather than a metadata file, since that is the whole, fixed scheme Kokoro's voices use. Chatterbox is English-only and always carries the English constraint. Otherwise, for speech off, a non-Piper/non-Kokoro engine, text chat, an unrecognised Kokoro voice code, or metadata that cannot be read, the model is told to answer in the same language the user used. The constraint applies to every word of the natural-language reply and forbids a mid-reply switch unless the user explicitly asked for translation or code-switching. No language-specific matcher is used. The warm-profile tail repeats the decision procedure after its English metadata so the later block cannot override the earlier language constraint. The engine's own canned messages, the malformed-output guard and the empty-reply backstop, are the one thing the model does not write, so the prompt rule cannot reach them; `in_the_voices_language` in `src/jarvis/reply/fallbacks.py` renders them into the voice's language before delivery, once per message per language, and leaves the English standing whenever no voice names a language or the rendering fails. When `tts_engine` is `cloud`, the helper resolves that language from `tts_local_fallback_engine` and its configured voice, matching the cloud chain's mandatory local final stage.
 - Data Privacy: Inputs are redacted and logging is concise and purposeful via `debug_log`.
 
+### Runtime generation boundary
+
+Each reply turn acquires one `LLMRuntime` generation and uses its settings and
+backend snapshot to completion. A route change during that turn cannot replace
+its adapter underneath it; the next voice, conversation-API, or direct reply
+turn observes the newly published generation. A fully exhausted CHAT chain is
+not handed to Ollama and returns the fixed honest unavailable message. FAST
+background helpers remain fail-soft and record their chain exhaustion.
+
 ### Reply deadlines and memory acknowledgement
 
 Every turn creates a monotonic `RequestDeadline` from `simple_reply_first_audio_sec`. Once the existing language-independent planner and recall gate establish that long-term memory is needed, a caller-unspecified budget is rebased to `memory_reply_first_audio_sec`. Deadline-aware sources share the remaining budget rather than each receiving a fresh full timeout.
@@ -461,3 +470,5 @@ Behaviour:
 - Avoid excessive logging; logs must remain readable and privacy-preserving.
 
 
+
+Memory, tool-result and max-turn loop summaries enforce `Tier.PRIVATE` at the digest boundary, including callers that supply a cloud model. They retain bounded digest timeouts and existing fail-soft behaviour.

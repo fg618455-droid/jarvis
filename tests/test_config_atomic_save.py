@@ -103,3 +103,22 @@ def test_save_json_creates_missing_parent_directory(tmp_path):
     assert json.loads(cfg_path.read_text()) == {"llm_api_key": "first-save"}
     leftover = [p for p in cfg_path.parent.iterdir() if p != cfg_path]
     assert leftover == []
+
+
+def test_save_retries_a_windows_sharing_violation_without_losing_original(tmp_path, monkeypatch):
+    import os
+    path = tmp_path / "config.json"
+    path.write_text('{"version": 1}', encoding="utf-8")
+    replace = os.replace
+    attempts = []
+    def sharing_violation_once(source, target):
+        attempts.append(True)
+        if len(attempts) == 1:
+            assert json.loads(path.read_text())["version"] == 1
+            error = PermissionError("synthetic sharing violation")
+            error.winerror = 32
+            raise error
+        replace(source, target)
+    monkeypatch.setattr("jarvis.config.os.replace", sharing_violation_once)
+    assert _save_json(path, {"version": 2})
+    assert json.loads(path.read_text())["version"] == 2

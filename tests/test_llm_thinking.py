@@ -197,31 +197,16 @@ class TestIntentJudgeThinking:
 class TestDictationThinking:
     """Dictation engine respects the thinking config."""
 
-    def test_llm_clean_dictation_sends_think_false(self):
-        from src.jarvis.dictation.dictation_engine import _llm_clean_dictation
+    @pytest.mark.parametrize("thinking", [False, True])
+    def test_llm_clean_dictation_passes_thinking_to_configured_backend(self, thinking):
+        from jarvis.dictation.dictation_engine import _llm_clean_dictation
 
-        with patch("requests.post") as mock_post:
-            mock_resp = MagicMock()
-            mock_resp.status_code = 200
-            mock_resp.json.return_value = {"response": "cleaned"}
-            mock_post.return_value = mock_resp
-
-            _llm_clean_dictation("um hello", "http://localhost:11434", thinking=False)
-            payload = mock_post.call_args[1].get("json") or mock_post.call_args[0][1] if len(mock_post.call_args[0]) > 1 else mock_post.call_args[1]["json"]
-            assert payload["think"] is False
-
-    def test_llm_clean_dictation_sends_think_true(self):
-        from src.jarvis.dictation.dictation_engine import _llm_clean_dictation
-
-        with patch("requests.post") as mock_post:
-            mock_resp = MagicMock()
-            mock_resp.status_code = 200
-            mock_resp.json.return_value = {"response": "cleaned"}
-            mock_post.return_value = mock_resp
-
-            _llm_clean_dictation("um hello", "http://localhost:11434", thinking=True)
-            payload = mock_post.call_args[1].get("json") or mock_post.call_args[0][1] if len(mock_post.call_args[0]) > 1 else mock_post.call_args[1]["json"]
-            assert payload["think"] is True
+        cfg = object()
+        with patch("jarvis.llm.get_llm_backend") as factory:
+            factory.return_value.direct.return_value = "cleaned"
+            assert _llm_clean_dictation("um hello", cfg, thinking=thinking) == "cleaned"
+            factory.assert_called_once_with(cfg)
+            assert factory.return_value.direct.call_args.kwargs["thinking"] is thinking
 
     def test_engine_stores_thinking(self):
         from src.jarvis.dictation.dictation_engine import DictationEngine

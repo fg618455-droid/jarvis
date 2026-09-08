@@ -28,16 +28,16 @@ class _Cfg:
 
 
 class TestGetLLMBackend:
-    def test_returns_ollama_for_default_provider(self):
+    def test_default_provider_has_no_chat_route_and_private_ollama(self):
         from jarvis.llm import RoutedBackend, Tier, get_llm_backend
 
         backend = get_llm_backend(_Cfg())
 
         assert isinstance(backend, RoutedBackend)
-        assert backend.routes_for(Tier.CHAT)[0].provider == "ollama"
-        assert backend.routes_for(Tier.CHAT)[0].base_url == "http://127.0.0.1:11434"
+        assert backend.routes_for(Tier.CHAT) == ()
+        assert [route.provider for route in backend.routes_for(Tier.PRIVATE)] == ["ollama"]
 
-    def test_returns_openai_compatible_when_provider_set(self):
+    def test_legacy_local_openai_endpoint_is_not_a_chat_route(self):
         from jarvis.llm import RoutedBackend, Tier, get_llm_backend
 
         cfg = _Cfg(
@@ -49,28 +49,28 @@ class TestGetLLMBackend:
         backend = get_llm_backend(cfg)
 
         assert isinstance(backend, RoutedBackend)
-        assert backend.routes_for(Tier.CHAT)[0].provider == "openai_compatible"
-        assert backend.routes_for(Tier.CHAT)[0].base_url == "http://localhost:1234/v1"
+        assert backend.routes_for(Tier.CHAT) == ()
 
-    def test_falls_back_to_ollama_for_unknown_provider(self):
+    def test_unknown_provider_does_not_fall_back_to_ollama(self):
         from jarvis.llm import Tier, get_llm_backend
 
         cfg = _Cfg(llm_provider="lm-studio")  # unknown alias
 
         backend = get_llm_backend(cfg)
 
-        assert backend.routes_for(Tier.CHAT)[0].provider == "ollama"
+        assert backend.routes_for(Tier.CHAT) == ()
 
-    def test_uses_ollama_base_url_when_llm_base_url_empty(self):
+    def test_private_ollama_is_forced_to_loopback(self):
         from jarvis.llm import Tier, get_llm_backend
 
         cfg = _Cfg(ollama_base_url="http://1.2.3.4:11434")
 
         backend = get_llm_backend(cfg)
 
-        assert backend.routes_for(Tier.CHAT)[0].base_url == "http://1.2.3.4:11434"
+        assert backend.routes_for(Tier.CHAT) == ()
+        assert backend.routes_for(Tier.PRIVATE)[0].base_url == "http://127.0.0.1:11434"
 
-    def test_ollama_provider_ignores_stale_llm_base_url(self):
+    def test_ollama_provider_never_creates_chat_route(self):
         """``llm_base_url`` is the OpenAI-compatible server's URL. When the
         provider is Ollama, the backend must use ``ollama_base_url`` and
         ignore any ``llm_base_url`` left over from a previous
@@ -87,13 +87,13 @@ class TestGetLLMBackend:
 
         backend = get_llm_backend(cfg)
 
-        assert backend.routes_for(Tier.CHAT)[0].provider == "ollama"
-        assert backend.routes_for(Tier.CHAT)[0].base_url == "http://127.0.0.1:11434"
+        assert backend.routes_for(Tier.CHAT) == ()
+        assert backend.routes_for(Tier.PRIVATE)[0].base_url == "http://127.0.0.1:11434"
 
 
 class TestGetEmbeddingBackend:
-    def test_defaults_to_llm_provider(self):
-        from jarvis.llm import OpenAICompatibleBackend, get_embedding_backend
+    def test_embeddings_stay_on_loopback_ollama(self):
+        from jarvis.llm import OllamaBackend, get_embedding_backend
 
         cfg = _Cfg(
             llm_provider="openai_compatible",
@@ -102,8 +102,8 @@ class TestGetEmbeddingBackend:
 
         backend = get_embedding_backend(cfg)
 
-        assert isinstance(backend, OpenAICompatibleBackend)
-        assert backend.base_url == "http://localhost:1234/v1"
+        assert isinstance(backend, OllamaBackend)
+        assert backend.base_url == "http://127.0.0.1:11434"
 
     def test_override_to_ollama_when_chat_runs_on_openai_compatible(self):
         """The override exists for runtimes that ship chat without
@@ -122,8 +122,8 @@ class TestGetEmbeddingBackend:
         assert isinstance(backend, OllamaBackend)
         assert backend.base_url == "http://127.0.0.1:11434"
 
-    def test_explicit_embedding_base_url_wins(self):
-        from jarvis.llm import OpenAICompatibleBackend, get_embedding_backend
+    def test_remote_embedding_override_is_ignored(self):
+        from jarvis.llm import OllamaBackend, get_embedding_backend
 
         cfg = _Cfg(
             llm_provider="ollama",
@@ -133,15 +133,15 @@ class TestGetEmbeddingBackend:
 
         backend = get_embedding_backend(cfg)
 
-        assert isinstance(backend, OpenAICompatibleBackend)
-        assert backend.base_url == "http://embed-host:9000/v1"
+        assert isinstance(backend, OllamaBackend)
+        assert backend.base_url == "http://127.0.0.1:11434"
 
-    def test_inherits_llm_base_url_when_embedding_provider_unset(self):
+    def test_does_not_inherit_chat_base_url_for_embeddings(self):
         """Most common LM Studio config: chat and embeddings on the same
         OpenAI-compatible server. With ``embedding_provider`` unset and
         ``embedding_base_url`` empty, the embedding backend must inherit
         ``llm_base_url`` rather than falling back to the Ollama URL."""
-        from jarvis.llm import OpenAICompatibleBackend, get_embedding_backend
+        from jarvis.llm import OllamaBackend, get_embedding_backend
 
         cfg = _Cfg(
             llm_provider="openai_compatible",
@@ -150,11 +150,11 @@ class TestGetEmbeddingBackend:
 
         backend = get_embedding_backend(cfg)
 
-        assert isinstance(backend, OpenAICompatibleBackend)
-        assert backend.base_url == "http://localhost:1234/v1"
+        assert isinstance(backend, OllamaBackend)
+        assert backend.base_url == "http://127.0.0.1:11434"
 
-    def test_inherits_llm_api_key_when_embedding_api_key_unset(self):
-        from jarvis.llm import OpenAICompatibleBackend, get_embedding_backend
+    def test_never_copies_cloud_key_into_embedding_backend(self):
+        from jarvis.llm import OllamaBackend, get_embedding_backend
 
         cfg = _Cfg(
             llm_provider="openai_compatible",
@@ -164,15 +164,15 @@ class TestGetEmbeddingBackend:
 
         backend = get_embedding_backend(cfg)
 
-        assert isinstance(backend, OpenAICompatibleBackend)
-        assert backend._api_key == "sk-shared"
+        assert isinstance(backend, OllamaBackend)
+        assert not hasattr(backend, "_api_key")
 
-    def test_falls_back_to_default_when_provider_openai_but_no_url(self):
+    def test_remote_embedding_provider_without_url_still_uses_local_ollama(self):
         """When the user picks openai_compatible but provides no URL on
         any of llm_base_url, ollama_base_url, embedding_base_url, the
         factory falls back to the Ollama default rather than raising.
         Construction is fail-soft; the request will fail at call time."""
-        from jarvis.llm import OpenAICompatibleBackend, get_embedding_backend
+        from jarvis.llm import OllamaBackend, get_embedding_backend
 
         cfg = _Cfg(
             llm_provider="ollama",
@@ -181,7 +181,7 @@ class TestGetEmbeddingBackend:
 
         backend = get_embedding_backend(cfg)
 
-        assert isinstance(backend, OpenAICompatibleBackend)
+        assert isinstance(backend, OllamaBackend)
         assert backend.base_url == "http://127.0.0.1:11434"
 
 
@@ -202,13 +202,13 @@ class TestPerProviderModelResolution:
         from jarvis.config import load_settings
         return load_settings()
 
-    def test_ollama_chat_model_not_shadowed_by_stale_llm_chat_model(self, tmp_path, monkeypatch):
+    def test_chat_model_is_not_rewritten_from_private_ollama_model(self, tmp_path, monkeypatch):
         settings = self._load(tmp_path, monkeypatch, {
             "llm_provider": "ollama",
             "ollama_chat_model": "new-pick:7b",
             "llm_chat_model": "stale-migrated:70b",
         })
-        assert settings.llm_chat_model == "new-pick:7b"
+        assert settings.llm_chat_model == "stale-migrated:70b"
 
     def test_openai_compatible_uses_llm_chat_model(self, tmp_path, monkeypatch):
         settings = self._load(tmp_path, monkeypatch, {
@@ -219,15 +219,13 @@ class TestPerProviderModelResolution:
         })
         assert settings.llm_chat_model == "lmstudio/gemma"
 
-    def test_openai_compatible_falls_back_to_ollama_model_when_unset(self, tmp_path, monkeypatch):
-        """If the user picked openai_compatible but left the model blank,
-        fall back to the Ollama model name rather than the empty string."""
+    def test_openai_compatible_never_borrows_private_ollama_model(self, tmp_path, monkeypatch):
         settings = self._load(tmp_path, monkeypatch, {
             "llm_provider": "openai_compatible",
             "llm_base_url": "http://localhost:1234/v1",
             "ollama_chat_model": "gemma4:e2b",
         })
-        assert settings.llm_chat_model == "gemma4:e2b"
+        assert settings.llm_chat_model == ""
 
     def test_embedding_model_not_shadowed_on_ollama_path(self, tmp_path, monkeypatch):
         settings = self._load(tmp_path, monkeypatch, {
@@ -237,7 +235,7 @@ class TestPerProviderModelResolution:
         })
         assert settings.embedding_model == "nomic-embed-text"
 
-    def test_embedding_model_used_when_embedding_provider_openai(self, tmp_path, monkeypatch):
+    def test_embedding_provider_is_migrated_back_to_local_ollama(self, tmp_path, monkeypatch):
         settings = self._load(tmp_path, monkeypatch, {
             "llm_provider": "ollama",
             "embedding_provider": "openai_compatible",
@@ -245,7 +243,8 @@ class TestPerProviderModelResolution:
             "embedding_model": "text-embedding-3-small",
             "ollama_embed_model": "nomic-embed-text",
         })
-        assert settings.embedding_model == "text-embedding-3-small"
+        assert settings.embedding_model == "nomic-embed-text"
+        assert settings.embedding_provider == "ollama"
 
 
 class TestConfigMigration:
@@ -281,7 +280,7 @@ class TestConfigMigration:
         assert settings.ollama_base_url == "http://1.2.3.4:11434"
         # Migration is persisted to disk.
         on_disk = json.loads(cfg_path.read_text())
-        assert on_disk["_config_version"] == 6
+        assert on_disk["_config_version"] == 7
         assert on_disk["llm_provider"] == "ollama"
         assert on_disk["llm_base_url"] == "http://1.2.3.4:11434"
 
@@ -333,5 +332,5 @@ class TestConfigMigration:
         assert settings.llm_base_url == settings.ollama_base_url
         # Migration runs without touching keys that have no source.
         on_disk = json.loads(cfg_path.read_text())
-        assert on_disk["_config_version"] == 6
+        assert on_disk["_config_version"] == 7
         assert on_disk["llm_provider"] == "ollama"

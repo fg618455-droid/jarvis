@@ -820,7 +820,7 @@ def _check_and_update_diary(
             # job, so placement runs on the small model instead of paging in the
             # big chat model for every fact.
             from .llm import resolve_model, Tier
-            graph_picker_model = resolve_model(cfg, Tier.FAST)
+            graph_picker_model = resolve_model(cfg, Tier.PRIVATE)
 
             summary_id = update_diary_from_dialogue_memory(
                 db=db,

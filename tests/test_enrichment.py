@@ -933,6 +933,8 @@ class TestDigestLoopForMaxTurns:
             captured["system_prompt"] = kwargs["system_prompt"]
             captured["user_content"] = kwargs["user_content"]
             captured["timeout_sec"] = kwargs["timeout_sec"]
+            from jarvis.llm import Tier
+            assert kwargs["chat_model"].tier is Tier.PRIVATE
             return "I couldn't fully finish this. I found the London forecast looks cloudy today."
 
         loop_messages = [

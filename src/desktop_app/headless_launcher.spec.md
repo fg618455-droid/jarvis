@@ -16,14 +16,14 @@ subprocess.
    a headless launch can never run at once.
 2. Splash screen (`desktop_app.splash_screen.SplashScreen`), shown for the
    whole flow below.
-3. Ollama autostart when the configured provider needs it
-   (`_ollama_runtime_flags`), same 30-attempt/0.5s poll as the tray path, but
+3. Ollama autostart for PRIVATE completions and local embeddings
+   (`_ollama_runtime_flags` always reports runtime-needed and chat-disabled),
+   using the same 30-attempt/0.5s poll as the tray path, but
    without the tray's setup-wizard fallback on timeout: a failure to reach
    Ollama is reported on the splash and startup continues regardless, since
    there is no tray to hand off to for manual diagnosis.
-4. Unsupported chat model warning (`check_model_support` /
-   `show_unsupported_model_dialog`) when chat runs on Ollama, identical to
-   the tray path including the setup wizard offer.
+4. No unsupported CHAT-model warning: Ollama is never a CHAT route. The
+   imported helper remains shared with the tray module but is not reached.
 5. The daemon (`python -m jarvis.main`) as a subprocess, stdin held open as a
    pipe so the daemon's stdin-EOF shutdown watcher does not fire immediately
    (see `jarvis/daemon.py`'s stdin monitor), stdout/stderr redirected to

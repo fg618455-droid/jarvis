@@ -363,7 +363,7 @@ class TestFactoryRouting:
 
         assert isinstance(router._backend(route), CodexSubscriptionBackend)
 
-    def test_codex_routes_are_chat_only_and_follow_faster_candidates(self):
+    def test_codex_routes_are_chat_only_and_preserve_configured_order(self):
         from jarvis.llm import Tier, get_llm_backend
 
         routes = [
@@ -372,10 +372,11 @@ class TestFactoryRouting:
             self._route("codex-fast-attempt", tier="fast"),
             self._route("codex-private-attempt", tier="private"),
         ]
+        routes[1].update(base_url="https://api.example.com/v1", api_key="test-key")
         router = get_llm_backend(self._settings(routes))
 
         assert [r.name for r in router.routes_for(Tier.CHAT)] == [
-            "fast-cloud", "codex-first-in-config", "local-chat"
+            "codex-first-in-config", "fast-cloud"
         ]
         assert all(
             r.provider != "codex_subscription"
@@ -393,7 +394,7 @@ class TestFactoryRouting:
             embedding_provider="codex_subscription",
         )
 
-        assert get_llm_backend(cfg).routes_for(Tier.CHAT)[0].provider == "ollama"
+        assert get_llm_backend(cfg).routes_for(Tier.CHAT) == ()
         assert isinstance(get_embedding_backend(cfg), OllamaBackend)
 
     def test_route_metadata_offers_codex_without_a_settings_duplicate(self):

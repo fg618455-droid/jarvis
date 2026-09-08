@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+import ipaddress
 import os
 import threading
 import time
@@ -94,7 +95,9 @@ def _build_backend(route: Route, settings: Any = None) -> LLMBackend:
             api_key=getattr(settings, "crew_api_key", "") or "",
             agent=getattr(settings, "crew_chat_agent", "") or "",
         )
-    return OllamaBackend(route.base_url, keep_alive=route.keep_alive or None)
+    if route.provider == "ollama":
+        return OllamaBackend(route.base_url, keep_alive=route.keep_alive or None)
+    raise ValueError(f"Unsupported LLM route provider: {route.provider}")
 
 
 class RoutedBackend(LLMBackend):
@@ -109,7 +112,7 @@ class RoutedBackend(LLMBackend):
         clock: Callable[[], float] = time.monotonic,
         local_progress_sec: float = 1.2,
     ) -> None:
-        self._routes = tuple(routes)
+        self._routes = tuple(route for route in routes if self._allowed_route(route))
         self._state = state_store or RouteStateStore()
         self._backend_factory = backend_factory
         self._backends: dict[Route, LLMBackend] = {}
@@ -151,7 +154,7 @@ class RoutedBackend(LLMBackend):
         a promoted route that is unavailable or fails still falls through
         to the normal chain rather than ending the turn. No match for
         ``preferred_provider`` in ``routes`` (or no preference at all)
-        returns the input order unchanged — the fail-open case a caller
+        returns the input order unchanged â€” the fail-open case a caller
         forcing an unconfigured provider depends on."""
         if not preferred_provider:
             return routes
@@ -172,7 +175,44 @@ class RoutedBackend(LLMBackend):
             host = (urlparse(route.base_url).hostname or "").lower()
         except ValueError:
             return False
-        return host in {"localhost", "127.0.0.1", "::1"}
+        if host == "localhost" or host.endswith(".local"):
+            return True
+        try:
+            return not ipaddress.ip_address(host).is_global
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _is_loopback(route: Route) -> bool:
+        try:
+            host = (urlparse(route.base_url).hostname or "").lower()
+        except ValueError:
+            return False
+        if host == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+
+    @classmethod
+    def _allowed_route(cls, route: Route) -> bool:
+        """Enforce the privacy boundary independently of configuration.
+
+        PRIVATE is loopback Ollama only. FAST and CHAT reject Ollama and any
+        loopback endpoint even if a malformed config labels it as cloud.
+        """
+        if route.tier is Tier.PRIVATE:
+            return route.provider == "ollama" and cls._is_loopback(route)
+        return (
+            route.provider in {
+                "openai_compatible", "claude_subscription",
+                "codex_subscription", "crew_chat",
+            }
+            and not cls._is_local(route)
+        )
+
 
     @staticmethod
     def _timeout(caller_timeout: float, route: Route) -> float:
@@ -229,10 +269,7 @@ class RoutedBackend(LLMBackend):
                   deadline: RequestDeadline | None = None):
         deadline = deadline or RequestDeadline.after(timeout_sec, clock=self._clock)
         available = list(self._available(self._tier(chat_model), "stream"))
-        stream_routes = (
-            [route for route in available if self._is_local(route)]
-            + [route for route in available if not self._is_local(route)]
-        )
+        stream_routes = available
         for route in stream_routes:
             remaining = deadline.remaining(clock=self._clock)
             if remaining <= 0.0:
@@ -286,11 +323,7 @@ class RoutedBackend(LLMBackend):
                 name=f"jarvis-route-{route.name}",
             )
             worker.start()
-            progress_wait = (
-                min(remaining, self.local_progress_sec)
-                if self._is_local(route)
-                else remaining
-            )
+            progress_wait = remaining
             progress_or_done.wait(progress_wait)
 
             with lock:
@@ -337,7 +370,7 @@ class RoutedBackend(LLMBackend):
              tools=None, thinking=False, on_token=None, preferred_provider=None,
              deadline: RequestDeadline | None = None):
         # A route that cannot stream still answers, it just answers all at
-        # once — so falling back through the chain never depends on whether
+        # once â€” so falling back through the chain never depends on whether
         # the caller wanted its text early.
         #
         # ``preferred_provider`` promotes routes of that provider to the
@@ -391,13 +424,8 @@ class RoutedBackend(LLMBackend):
         return models
 
     def warm_up(self, model, timeout_sec=60.0, keep_alive="30m") -> bool:
-        routes = self.routes_for(self._tier(model))
         first_healthy = next(self._available(self._tier(model)), None)
-        local = next((route for route in routes if self._is_local(route)), None)
-        targets = []
-        for route in (first_healthy, local):
-            if route is not None and route not in targets:
-                targets.append(route)
+        targets = [first_healthy] if first_healthy is not None else []
         warmed = False
         for route in targets:
             try:
