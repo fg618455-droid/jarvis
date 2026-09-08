@@ -90,7 +90,10 @@ class TestFetchWebPageTool:
         )
         mock_get.return_value = mock_response
 
-        with patch('builtins.__import__', side_effect=ImportError):
+        # Simulate only the optional parser being unavailable. Mocking every
+        # import also breaks lazy imports inside unrelated standard-library
+        # code reached by logging and secret redaction.
+        with patch.dict('sys.modules', {'bs4': None}):
             args = {"url": "https://example.com"}
             result = self.tool.run(args, self.context)
 

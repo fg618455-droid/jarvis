@@ -1066,11 +1066,11 @@ class TestInstallUpdateMacos:
         This test executes the generated script in a sandbox where `open` is
         stubbed to exit non-zero, and asserts the fallback binary runs.
         """
-        # The script is POSIX bash; on Windows this only works when a real
-        # bash (WSL / Git Bash) is on PATH — the wsl.exe shim prints "WSL is
-        # not supported" and exits non-zero on machines without WSL.
-        if sys.platform == "win32" and not _bash_available():
-            pytest.skip("a POSIX bash (WSL or Git Bash) is required on Windows")
+        # This is a macOS runtime test. A Windows-hosted bash cannot execute
+        # the generated script faithfully because its embedded application
+        # paths use host-native semantics, even when WSL or Git Bash exists.
+        if sys.platform == "win32":
+            pytest.skip("the generated macOS update script requires POSIX paths")
         import plistlib
         import re
         import time

@@ -1163,7 +1163,11 @@ class TestModelsPageUI:
     def test_default_chat_model_is_default_config_model(self, qapp):
         from desktop_app.setup_wizard import ModelsPage
         from jarvis.config import DEFAULT_CHAT_MODEL
-        page = ModelsPage()
+        # Keep the constructor default under test independent of the GPU on
+        # the machine running the suite. Hardware-based recommendations have
+        # their own coverage below.
+        with patch("desktop_app.setup_wizard.detect_total_vram_mb", return_value=None):
+            page = ModelsPage()
         assert page._chat_model == DEFAULT_CHAT_MODEL
         assert page._chat_combo.currentData() == DEFAULT_CHAT_MODEL
 
@@ -1187,7 +1191,8 @@ class TestModelsPageUI:
 
     def test_unlinked_mode_allows_independent_selection(self, qapp):
         from desktop_app.setup_wizard import ModelsPage
-        page = ModelsPage()
+        with patch("desktop_app.setup_wizard.detect_total_vram_mb", return_value=None):
+            page = ModelsPage()
         assert page._linked is False
         idx = page._fast_combo.findData("qwen3.5:0.8b")
         assert idx >= 0
@@ -1197,7 +1202,8 @@ class TestModelsPageUI:
 
     def test_auto_downgrades_fast_model_when_smaller_chat_selected(self, qapp):
         from desktop_app.setup_wizard import ModelsPage
-        page = ModelsPage()
+        with patch("desktop_app.setup_wizard.detect_total_vram_mb", return_value=None):
+            page = ModelsPage()
         idx = page._chat_combo.findData("qwen3.5:0.8b")
         assert idx >= 0
         page._chat_combo.setCurrentIndex(idx)
