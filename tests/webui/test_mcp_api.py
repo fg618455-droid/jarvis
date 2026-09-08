@@ -32,13 +32,13 @@ STORED = {
     "mcps": {
         "schulos": {
             "command": "npx",
-            "args": ["-y", "schulos-mcp"],
+            "args": ["-y", "schulos-mcp@1.2.3"],
             "env": {"SCHULOS_TOKEN": "abcd1234SECRET"},
             "timeout_sec": 30,
         },
         "chrome": {
             "command": "npx",
-            "args": ["chrome-devtools-mcp"],
+            "args": ["chrome-devtools-mcp@1.8.0"],
         },
     },
     "_config_version": 3,
@@ -50,6 +50,10 @@ def client(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(STORED), encoding="utf-8")
     monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(
+        "jarvis.webui.api.mcp.reconfigure_mcp_tools",
+        lambda servers, verbose=False: ({}, {}),
+    )
 
     app = create_app(WebUIConfig(host="127.0.0.1", port=5055, token=""))
     app.config.update(TESTING=True)
@@ -82,7 +86,7 @@ class TestReading:
         server = _server(client.get("/api/mcp/servers", headers=HEADERS).get_json(), "schulos")
 
         assert server["command"] == "npx"
-        assert server["args"] == ["-y", "schulos-mcp"]
+        assert server["args"] == ["-y", "schulos-mcp@1.2.3"]
         assert server["timeout_sec"] == 30
 
     def test_a_server_says_whether_it_connected(self, client):
@@ -110,12 +114,12 @@ class TestWriting:
     def test_editing_a_server_rewrites_only_that_server(self, client):
         body = client.get("/api/mcp/servers", headers=HEADERS).get_json()
         servers = body["servers"]
-        _server({"servers": servers}, "chrome")["args"] = ["chrome-devtools-mcp", "--headless"]
+        _server({"servers": servers}, "chrome")["args"] = ["chrome-devtools-mcp@1.8.0", "--headless"]
 
         assert _put(client, servers).status_code == 200
         stored = _stored(client)["mcps"]
-        assert stored["chrome"]["args"] == ["chrome-devtools-mcp", "--headless"]
-        assert stored["schulos"]["args"] == ["-y", "schulos-mcp"]
+        assert stored["chrome"]["args"] == ["chrome-devtools-mcp@1.8.0", "--headless"]
+        assert stored["schulos"]["args"] == ["-y", "schulos-mcp@1.2.3"]
 
     def test_a_masked_credential_returned_unchanged_leaves_the_secret_alone(self, client):
         servers = client.get("/api/mcp/servers", headers=HEADERS).get_json()["servers"]
@@ -205,3 +209,15 @@ class TestWriting:
         response = client.put("/api/mcp/servers", json={"servers": []}, headers=HEADERS)
 
         assert response.status_code == 403
+
+    def test_floating_npm_package_is_refused_before_write(self, client):
+        response = _put(client, [{"name": "unsafe", "command": "npx", "args": ["tool@latest"]}])
+
+        assert response.status_code == 400
+        assert "exact version" in response.get_json()["error"]
+
+    def test_successful_write_is_live_without_restart(self, client):
+        response = _put(client, [])
+
+        assert response.status_code == 200
+        assert response.get_json()["restart_required"] is False

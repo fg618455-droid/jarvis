@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import copy
 import math
 import threading
 import time
@@ -53,7 +54,7 @@ from . import mcp_client as _mcp_client_module
 from .mcp_client import MCPClient
 
 _DEFAULT_INVOKE_TIMEOUT_SEC = 120.0
-_SETUP_TIMEOUT_SEC = 30.0
+_MIN_SETUP_TIMEOUT_SEC = 30.0
 _SHUTDOWN_THREAD_JOIN_SEC = 5.0
 
 def _resolve_invoke_timeout(server_cfg: Dict[str, Any]) -> float:
@@ -126,6 +127,9 @@ class _PersistentMCPRuntime:
         self._thread: Optional[threading.Thread] = None
         self._workers: Dict[str, "_ServerWorker"] = {}
         self._workers_lock = threading.Lock()
+        self._server_locks: Dict[str, threading.Lock] = {}
+        self._config_generation = 0
+        self._configured_servers: Optional[Dict[str, Dict[str, Any]]] = None
         self.closed = False
         self._start_loop()
 
@@ -191,7 +195,7 @@ class _PersistentMCPRuntime:
                 f"MCP worker '{server_name}' died; restarting and retrying once",
                 "mcp",
             )
-            self._drop_worker(server_name)
+            self._drop_worker(server_name, worker)
             worker = self._get_worker(server_name, server_cfg)
             return worker.invoke(tool_name, arguments, timeout)
 
@@ -225,45 +229,46 @@ class _PersistentMCPRuntime:
                 f"MCP worker '{server_name}' died during list_tools; restarting",
                 "mcp",
             )
-            self._drop_worker(server_name)
+            self._drop_worker(server_name, worker)
             worker = self._get_worker(server_name, server_cfg)
             return worker.list_tools(timeout)
 
     def _get_worker(
         self, server_name: str, server_cfg: Dict[str, Any]
     ) -> "_ServerWorker":
-        """Return a live worker for ``server_name``, replacing it if needed.
-
-        Reuses an existing worker iff it is still alive and its cached
-        config equals the requested one. A dead worker or a config
-        change triggers shutdown of the old worker and creation of a
-        fresh one. Callers hold no lock during ``worker.start()`` so
-        startup work happens without blocking other servers.
-        """
+        """Serialise a server's startup without blocking unrelated servers."""
         with self._workers_lock:
-            existing = self._workers.get(server_name)
-            if existing is not None and existing.alive and existing.config == server_cfg:
-                return existing
+            server_lock = self._server_locks.setdefault(server_name, threading.Lock())
+        with server_lock:
+            with self._workers_lock:
+                if self.closed:
+                    raise RuntimeError("Persistent MCP runtime is closed")
+                configured = getattr(self, "_configured_servers", None)
+                if configured is not None and configured.get(server_name) != server_cfg:
+                    raise RuntimeError("MCP server configuration is no longer active")
+                generation = self._config_generation
+                existing = self._workers.get(server_name)
+                if existing is not None and existing.alive and existing.config == server_cfg:
+                    return existing
+                self._workers.pop(server_name, None)
+                loop = self._loop
             if existing is not None:
-                # Config changed or worker dead: replace it.
-                try:
-                    existing.shutdown()
-                except Exception as e:  # noqa: BLE001
-                    debug_log(
-                        f"MCP worker '{server_name}' replacement shutdown error: {e}",
-                        "mcp",
-                    )
-            loop = self._loop
+                existing.shutdown()
             if loop is None:
-                raise RuntimeError(
-                    "Persistent MCP runtime event loop is not available"
-                )
+                raise RuntimeError("Persistent MCP runtime event loop is not available")
             worker = _ServerWorker(loop, server_name, server_cfg)
-            worker.start()
-            self._workers[server_name] = worker
-            return worker
+            try:
+                worker.start()
+                with self._workers_lock:
+                    if self.closed or generation != self._config_generation:
+                        raise RuntimeError("MCP configuration changed during startup")
+                    self._workers[server_name] = worker
+                return worker
+            except BaseException:
+                worker.shutdown()
+                raise
 
-    def _drop_worker(self, server_name: str) -> None:
+    def _drop_worker(self, server_name: str, expected: Optional["_ServerWorker"] = None) -> None:
         """Forcibly evict and shut down the cached worker for ``server_name``.
 
         Used after the worker has signalled it is no longer servicing
@@ -271,6 +276,8 @@ class _PersistentMCPRuntime:
         worker is cached.
         """
         with self._workers_lock:
+            if expected is not None and self._workers.get(server_name) is not expected:
+                return
             worker = self._workers.pop(server_name, None)
         if worker is not None:
             try:
@@ -279,6 +286,16 @@ class _PersistentMCPRuntime:
                 debug_log(
                     f"MCP worker '{server_name}' drop shutdown error: {e}", "mcp"
                 )
+
+    def reconfigure_servers(self, configs: Dict[str, Dict[str, Any]]) -> None:
+        """Atomically detach obsolete workers before shutting them down."""
+        with self._workers_lock:
+            self._configured_servers = copy.deepcopy(configs)
+            self._config_generation += 1
+            stale = [self._workers.pop(name) for name, worker in list(self._workers.items())
+                     if name not in configs or worker.config != configs[name]]
+        for worker in stale:
+            worker.shutdown()
 
     def shutdown(self) -> None:
         if self.closed:
@@ -362,7 +379,14 @@ class _ServerWorker:
         # Block until the worker has initialised the MCP session, or
         # surfaced a startup error. Without this, the first ``invoke``
         # would race the session handshake.
-        self._ready.result(timeout=_SETUP_TIMEOUT_SEC)
+        # A first npx launch may need to populate its package cache. Honour
+        # the server's bounded request budget for that cold start as well,
+        # while preserving the historical 30-second minimum.
+        setup_timeout = max(
+            _MIN_SETUP_TIMEOUT_SEC,
+            _resolve_invoke_timeout(self.config),
+        )
+        self._ready.result(timeout=setup_timeout)
 
     async def _run(self) -> None:
         try:
@@ -423,19 +447,20 @@ class _ServerWorker:
                             if not fut.done():
                                 fut.set_result(res)
                         except BaseException as e:  # noqa: BLE001
-                            # MCP reports tool-level failures in a normal
-                            # CallToolResult with ``isError``. An exception
-                            # here therefore means the session transport is no
-                            # longer trustworthy. Signal the runtime's restart
-                            # path and end this worker instead of leaving a
-                            # poisoned session cached for later calls.
-                            session_error = _WorkerDeadError(
-                                f"MCP server '{self._server_name}' session "
-                                f"request failed ({type(e).__name__})"
-                            )
+                            # CallToolResult(isError=True) stays a normal result.
+                            # Of raised exceptions, only transport/session loss
+                            # poisons the worker; a tool-level exception reaches
+                            # its caller without restarting a healthy session.
+                            if _mcp_client_module.is_mcp_transport_error(e):
+                                session_error = _WorkerDeadError(
+                                    f"MCP server '{self._server_name}' session "
+                                    f"failed ({_mcp_client_module.safe_mcp_error(e)})"
+                                )
+                                if not fut.done():
+                                    fut.set_exception(session_error)
+                                raise session_error from e
                             if not fut.done():
-                                fut.set_exception(session_error)
-                            raise session_error from e
+                                fut.set_exception(e)
         except BaseException as e:  # noqa: BLE001
             # Setup or session loop crashed. Surface to ``start()`` if
             # we never signalled readiness; otherwise log and let the

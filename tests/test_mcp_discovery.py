@@ -104,7 +104,7 @@ def test_discover_mcp_tools_handles_server_errors(monkeypatch):
 
     # Should report the error for the bad server
     assert "bad-server" in errors
-    assert "Server failed" in errors["bad-server"]
+    assert errors["bad-server"] == "Exception"
 
 
 @pytest.mark.unit
@@ -278,7 +278,8 @@ def test_mcp_tool_exception_handling(monkeypatch):
     )
 
     assert result.success is False
-    assert "Connection failed" in result.error_message
+    assert result.error_message == "Exception"
+    assert "Connection failed" not in result.technical_details
 
 
 @pytest.mark.unit

@@ -28,6 +28,61 @@ class MCPServerSessionError(RuntimeError):
     to ``MCPClient`` callers.
     """
 
+
+def _exception_leaves(error: BaseException) -> List[BaseException]:
+    """Recursively unwrap ExceptionGroup/cause chains to their real leaves."""
+    nested = getattr(error, "exceptions", None)
+    if isinstance(nested, (list, tuple)) and nested:
+        leaves: List[BaseException] = []
+        for child in nested:
+            if isinstance(child, BaseException):
+                leaves.extend(_exception_leaves(child))
+        if leaves:
+            return leaves
+    cause = getattr(error, "__cause__", None) or getattr(error, "__context__", None)
+    if isinstance(cause, BaseException) and cause is not error:
+        return _exception_leaves(cause)
+    return [error]
+
+
+def safe_mcp_error(error: BaseException) -> str:
+    """Return a bounded diagnostic that cannot include arbitrary payloads."""
+    leaves = _exception_leaves(error)
+    leaf = leaves[-1] if leaves else error
+    name = type(leaf).__name__
+    message = str(leaf).strip().lower()
+    for marker, public in (
+        ("connection closed", "connection closed"),
+        ("closed resource", "connection closed"),
+        ("end of file", "unexpected EOF"),
+        ("eof", "unexpected EOF"),
+        ("timed out", "timed out"),
+        ("timeout", "timed out"),
+        ("not found", "not found"),
+        ("offline", "offline"),
+    ):
+        if marker in message:
+            return f"{name}: {public}"
+    return name
+
+
+def is_mcp_transport_error(error: BaseException) -> bool:
+    """Whether an exception proves that the MCP session cannot be reused."""
+    for leaf in _exception_leaves(error):
+        name = type(leaf).__name__.lower()
+        message = str(leaf).lower()
+        if any(token in name for token in (
+            "endofstream", "brokenresource", "closedresource",
+            "connectionerror", "brokenpipe", "incompleteread",
+        )):
+            return True
+        if any(token in message for token in (
+            "connection closed", "session closed", "transport closed",
+            "broken pipe", "unexpected eof", "end of file",
+        )):
+            return True
+    return False
+
 # Static directories to search when a command isn't on the daemon's PATH.
 # macOS GUI-launched processes often miss Homebrew, nvm, fnm, and Volta paths.
 _EXTRA_PATH_DIRS: List[str] = [

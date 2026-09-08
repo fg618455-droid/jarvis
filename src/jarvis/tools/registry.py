@@ -32,7 +32,7 @@ from .builtin.memory_provenance import MemoryProvenanceTool
 from .builtin.exam_countdown import ExamCountdownTool
 from .types import ToolExecutionResult
 from ..config import Settings
-from .external.mcp_client import MCPClient
+from .external.mcp_client import MCPClient, safe_mcp_error
 from .external.mcp_preflight import preflight_mcp_config
 from ..debug import debug_log
 from ..runtime import Phase, record_tool, set_phase_if
@@ -94,6 +94,7 @@ _mcp_tools_cache: Dict[str, "ToolSpec"] = {}
 _mcp_tools_cache_lock = threading.Lock()
 _mcp_config_cache: Dict[str, Any] = {}
 _mcp_errors_cache: Dict[str, str] = {}
+_mcp_status_cache: Dict[str, Dict[str, Any]] = {}
 
 
 def initialize_mcp_tools(mcps_config: Dict[str, Any], verbose: bool = True) -> Tuple[Dict[str, "ToolSpec"], Dict[str, str]]:
@@ -107,17 +108,7 @@ def initialize_mcp_tools(mcps_config: Dict[str, Any], verbose: bool = True) -> T
     Returns:
         Tuple of (discovered_tools, errors) where errors maps server name to error message.
     """
-    global _mcp_tools_cache, _mcp_config_cache, _mcp_errors_cache
-
-    with _mcp_tools_cache_lock:
-        _mcp_config_cache = mcps_config or {}
-        _mcp_tools_cache, errors = discover_mcp_tools(mcps_config)
-        _mcp_errors_cache = errors
-
-        if verbose and _mcp_tools_cache:
-            debug_log(f"MCP tools cache initialized with {len(_mcp_tools_cache)} tools", "mcp")
-
-        return _mcp_tools_cache.copy(), errors
+    return reconfigure_mcp_tools(mcps_config, verbose=verbose)
 
 
 def get_cached_mcp_tools() -> Dict[str, "ToolSpec"]:
@@ -132,6 +123,12 @@ def get_cached_mcp_errors() -> Dict[str, str]:
         return _mcp_errors_cache.copy()
 
 
+def get_cached_mcp_status() -> Dict[str, Dict[str, Any]]:
+    """Return secret-free discovery status from the last atomic swap."""
+    with _mcp_tools_cache_lock:
+        return {name: dict(status) for name, status in _mcp_status_cache.items()}
+
+
 def refresh_mcp_tools(verbose: bool = True) -> Tuple[Dict[str, "ToolSpec"], Dict[str, str]]:
     """
     Refresh MCP tools cache by rediscovering all tools.
@@ -139,25 +136,12 @@ def refresh_mcp_tools(verbose: bool = True) -> Tuple[Dict[str, "ToolSpec"], Dict
     Returns:
         Tuple of (discovered_tools, errors) where errors maps server name to error message.
     """
-    global _mcp_tools_cache, _mcp_errors_cache
-
     with _mcp_tools_cache_lock:
-        if not _mcp_config_cache:
-            debug_log("No MCP config cached, skipping refresh", "mcp")
-            _mcp_errors_cache = {}
-            return {}, {}
-
-        if verbose:
-            print("🔄 Refreshing MCP tools...", flush=True)
-
-        _mcp_tools_cache, errors = discover_mcp_tools(_mcp_config_cache)
-        _mcp_errors_cache = errors
-
-        if verbose:
-            print(f"  ✅ Found {len(_mcp_tools_cache)} MCP tools", flush=True)
-
-        debug_log(f"MCP tools cache refreshed with {len(_mcp_tools_cache)} tools", "mcp")
-        return _mcp_tools_cache.copy(), errors
+        config = {name: dict(value) for name, value in _mcp_config_cache.items()}
+    if not config:
+        debug_log("No MCP config cached, skipping refresh", "mcp")
+        return reconfigure_mcp_tools({}, verbose=verbose)
+    return reconfigure_mcp_tools(config, verbose=verbose)
 
 
 def is_mcp_cache_initialized() -> bool:
@@ -175,28 +159,44 @@ class ToolSpec:
     inputSchema: Optional[Dict[str, Any]] = None  # JSON Schema for arguments (matches MCP format)
 
 
-def discover_mcp_tools(mcps_config: Dict[str, Any]) -> Tuple[Dict[str, ToolSpec], Dict[str, str]]:
+def discover_mcp_tools_detailed(
+    mcps_config: Dict[str, Any],
+    *,
+    live_preflight: bool = True,
+) -> Tuple[Dict[str, ToolSpec], Dict[str, str], Dict[str, Dict[str, Any]]]:
     """Discover all tools from configured MCP servers and create ToolSpec entries for them.
 
     Returns:
         Tuple of (discovered_tools, errors) where errors maps server name to error message.
     """
     if not mcps_config:
-        return {}, {}
+        return {}, {}, {}
 
     try:
         client = MCPClient(mcps_config)
         discovered_tools = {}
         errors: Dict[str, str] = {}
+        statuses: Dict[str, Dict[str, Any]] = {}
 
         for server_name in mcps_config.keys():
+            started = time.perf_counter()
             try:
-                preflight = preflight_mcp_config(mcps_config[server_name])
+                preflight = preflight_mcp_config(
+                    mcps_config[server_name], live=live_preflight,
+                )
                 if not preflight.available:
                     errors[server_name] = preflight.reason
+                    statuses[server_name] = {
+                        "connected": False,
+                        "tool_count": 0,
+                        "cold_start_ms": round((time.perf_counter() - started) * 1000.0, 1),
+                        "error_code": preflight.code,
+                        "error": preflight.reason,
+                    }
                     debug_log(f"MCP server '{server_name}' disabled: {preflight.reason}", "mcp")
                     continue
                 tools = client.list_tools(server_name)
+                count = 0
                 for tool_info in tools:
                     tool_name = tool_info.get("name")
                     if not tool_name:
@@ -213,24 +213,61 @@ def discover_mcp_tools(mcps_config: Dict[str, Any]) -> Tuple[Dict[str, ToolSpec]
                         description=description,
                         inputSchema=input_schema
                     )
+                    count += 1
+                statuses[server_name] = {
+                    "connected": True,
+                    "tool_count": count,
+                    "cold_start_ms": round((time.perf_counter() - started) * 1000.0, 1),
+                    "error_code": None,
+                    "error": None,
+                }
 
             except BaseException as e:
-                # ExceptionGroups (from anyio TaskGroup) wrap the real cause;
-                # extract the first sub-exception for a useful error message.
-                cause = e
-                if hasattr(e, "exceptions") and e.exceptions:
-                    cause = e.exceptions[0]
-                detail = str(cause) or type(cause).__name__
+                detail = safe_mcp_error(e)
                 debug_log(f"Failed to discover tools from MCP server '{server_name}': {detail}", "mcp")
                 errors[server_name] = detail
+                statuses[server_name] = {
+                    "connected": False,
+                    "tool_count": 0,
+                    "cold_start_ms": round((time.perf_counter() - started) * 1000.0, 1),
+                    "error_code": "discovery_failed",
+                    "error": detail,
+                }
                 continue
 
-        return discovered_tools, errors
+        return discovered_tools, errors, statuses
 
-    except Exception as e:
-        detail = str(e) or type(e).__name__
+    except BaseException as e:
+        detail = safe_mcp_error(e)
         debug_log(f"Failed to discover MCP tools: {detail}", "mcp")
-        return {}, {"_global": detail}
+        return {}, {"_global": detail}, {}
+
+
+def discover_mcp_tools(mcps_config: Dict[str, Any]) -> Tuple[Dict[str, ToolSpec], Dict[str, str]]:
+    """Compatibility wrapper; subprocess resolution remains MCPClient's job."""
+    tools, errors, _ = discover_mcp_tools_detailed(mcps_config, live_preflight=False)
+    return tools, errors
+
+
+def reconfigure_mcp_tools(
+    mcps_config: Dict[str, Any], verbose: bool = True,
+) -> Tuple[Dict[str, ToolSpec], Dict[str, str]]:
+    """Discover outside the cache lock, then publish one complete generation."""
+    global _mcp_tools_cache, _mcp_config_cache, _mcp_errors_cache, _mcp_status_cache
+    config = {name: dict(value) for name, value in (mcps_config or {}).items()}
+    tools, errors, statuses = discover_mcp_tools_detailed(config)
+    from .external.mcp_runtime import get_runtime
+
+    get_runtime().reconfigure_servers(config)
+    with _mcp_tools_cache_lock:
+        _mcp_config_cache = config
+        _mcp_tools_cache = tools
+        _mcp_errors_cache = errors
+        _mcp_status_cache = statuses
+        published = _mcp_tools_cache.copy()
+    if verbose and published:
+        debug_log(f"MCP tools cache initialized with {len(published)} tools", "mcp")
+    return published, errors.copy()
 
 
 def generate_tools_json_schema(allowed_tools: Optional[List[str]] = None, mcp_tools: Optional[Dict[str, ToolSpec]] = None) -> List[Dict[str, Any]]:
@@ -502,8 +539,8 @@ def _run_tool_with_retries(
                     return ToolExecutionResult.failure("execution_failed", "The MCP tool returned no usable result.",
                         technical_details="empty MCP response")
                 return ToolExecutionResult(success=True, reply_text=text)
-            except Exception as e:
-                detail = str(e) or type(e).__name__
+            except BaseException as e:
+                detail = safe_mcp_error(e)
                 # ``reply_text`` remains the safe user-facing contract while
                 # ``error_message`` preserves the legacy diagnostic detail
                 # for the planner and existing callers.

@@ -19,13 +19,20 @@ door rather than a special case inside someone else's.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from flask import Blueprint, Response, jsonify, request
 
 from jarvis.config import _load_json, _save_json, resolve_config_path
 from jarvis.debug import debug_log
-from jarvis.tools.registry import get_cached_mcp_tools, is_mcp_cache_initialized
+from jarvis.tools.external.mcp_preflight import preflight_mcp_config
+from jarvis.tools.registry import (
+    get_cached_mcp_status,
+    get_cached_mcp_tools,
+    is_mcp_cache_initialized,
+    reconfigure_mcp_tools,
+)
 
 
 bp = Blueprint("mcp", __name__, url_prefix="/api/mcp")
@@ -84,9 +91,16 @@ def _connected_tools() -> dict[str, int]:
     return counts
 
 
-def _reading(index: int, name: str, entry: dict, tool_counts: dict[str, int]) -> dict:
+def _reading(
+    index: int,
+    name: str,
+    entry: dict,
+    tool_counts: dict[str, int],
+    statuses: dict[str, dict[str, Any]],
+) -> dict:
     env = entry.get("env") if isinstance(entry.get("env"), dict) else {}
     served = tool_counts.get(name, 0)
+    status = statuses.get(name, {})
     return {
         # A stable handle on the stored entry, so a rename is an edit rather
         # than a new server whose credentials were left behind under the old
@@ -98,8 +112,11 @@ def _reading(index: int, name: str, entry: dict, tool_counts: dict[str, int]) ->
         "env": {key: _mask(value) for key, value in env.items()},
         "timeout_sec": entry.get("timeout_sec"),
         "idle_timeout_sec": entry.get("idle_timeout_sec"),
-        "tool_count": served,
-        "connected": bool(served),
+        "tool_count": status.get("tool_count", served),
+        "connected": status.get("connected", bool(served)),
+        "cold_start_ms": status.get("cold_start_ms"),
+        "error_code": status.get("error_code"),
+        "error": status.get("error"),
     }
 
 
@@ -107,10 +124,11 @@ def _reading(index: int, name: str, entry: dict, tool_counts: dict[str, int]) ->
 def servers() -> Response:
     """Every configured server, how it launches, and whether it answered."""
     tool_counts = _connected_tools()
+    statuses = get_cached_mcp_status()
     configured = _configured()
     return jsonify({
         "servers": [
-            _reading(index, name, entry if isinstance(entry, dict) else {}, tool_counts)
+            _reading(index, name, entry if isinstance(entry, dict) else {}, tool_counts, statuses)
             for index, (name, entry) in enumerate(configured.items())
         ],
         "server_fields": SERVER_FIELDS,
@@ -145,10 +163,14 @@ def _entry(submitted: dict, configured: dict[str, dict]) -> tuple[str, dict]:
     name = str(submitted.get("name", "")).strip()
     if not name:
         raise ValueError("every server needs a name")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name) or "__" in name:
+        raise ValueError(f"{name}: name must be 1-64 safe identifier characters")
 
     command = str(submitted.get("command", "")).strip()
     if not command:
         raise ValueError(f"{name} needs a command to run")
+    if len(command) > 1024:
+        raise ValueError(f"{name}: command is too long")
 
     raw_args = submitted.get("args") or []
     if isinstance(raw_args, str):
@@ -157,6 +179,8 @@ def _entry(submitted: dict, configured: dict[str, dict]) -> tuple[str, dict]:
         args = [str(arg) for arg in raw_args]
     else:
         raise ValueError(f"{name}: arguments must be a list")
+    if len(args) > 128 or any(len(arg) > 4096 for arg in args):
+        raise ValueError(f"{name}: arguments exceed the supported limit")
 
     previous = _original(submitted.get("_index"), configured)
     previous_env = previous.get("env") if isinstance(previous.get("env"), dict) else {}
@@ -167,7 +191,11 @@ def _entry(submitted: dict, configured: dict[str, dict]) -> tuple[str, dict]:
 
     env: dict[str, str] = {}
     for key, value in submitted_env.items():
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(key)):
+            raise ValueError(f"{name}: invalid environment variable name")
         text = str(value if value is not None else "")
+        if len(text) > 16384:
+            raise ValueError(f"{name}: environment value is too long")
         # The page sent the mask back untouched, so the stored value stands.
         # Without this, opening the editor and pressing save would replace
         # every credential with eight bullets and its own last four.
@@ -186,10 +214,18 @@ def _entry(submitted: dict, configured: dict[str, dict]) -> tuple[str, dict]:
 
     timeout = _number(submitted.get("timeout_sec"), f"{name}: timeout")
     if timeout is not None:
+        if not 0.1 <= timeout <= 3600:
+            raise ValueError(f"{name}: timeout must be between 0.1 and 3600 seconds")
         entry["timeout_sec"] = timeout
     idle = _number(submitted.get("idle_timeout_sec"), f"{name}: idle timeout")
     if idle is not None:
+        if not 1 <= idle <= 86400:
+            raise ValueError(f"{name}: idle timeout must be between 1 and 86400 seconds")
         entry["idle_timeout_sec"] = idle
+
+    preflight = preflight_mcp_config(entry)
+    if not preflight.available:
+        raise ValueError(f"{name}: {preflight.reason}")
 
     return name, entry
 
@@ -219,22 +255,33 @@ def save() -> Response:
             return jsonify(error=f"two servers are both called {name}"), 400
         built[name] = entry
 
-    config = _load_json(resolve_config_path()) or {}
+    config_path = resolve_config_path()
+    previous_config = _load_json(config_path) or {}
+    config = dict(previous_config)
     if built:
         config["mcps"] = built
     else:
         # An empty map is the default, and a default is not written.
         config.pop("mcps", None)
 
-    if not _save_json(resolve_config_path(), config):
-        return jsonify(error=f"could not write {resolve_config_path()}"), 500
+    if not _save_json(config_path, config):
+        return jsonify(error=f"could not write {config_path}"), 500
+
+    try:
+        tools, errors = reconfigure_mcp_tools(built, verbose=False)
+    except BaseException as error:  # fail closed and restore the durable config
+        _save_json(config_path, previous_config)
+        debug_log(f"MCP live reconfigure failed ({type(error).__name__})", "webui")
+        return jsonify(error="MCP runtime could not apply the configuration"), 500
 
     debug_log(
         f"MCP servers written from the control centre: {', '.join(built) or 'none'}",
         "webui",
     )
-    # Connecting a server means launching a subprocess the running daemon
-    # built its tool registry from, so the change is on disk now and in the
-    # assistant after a restart. The page says so rather than implying the
-    # new server is already reachable.
-    return jsonify({"servers": sorted(built), "restart_required": True})
+    return jsonify({
+        "servers": sorted(built),
+        "restart_required": False,
+        "tool_count": len(tools),
+        "status": get_cached_mcp_status(),
+        "errors": errors,
+    })

@@ -34,6 +34,14 @@ Gate errors also deny execution. The denied result is returned to the reply
 engine as a failed tool result, and the tool implementation or MCP client is
 not called.
 
+Release acceptance exercises this boundary rather than calling a protected
+tool implementation directly: the same harmless temporary target is first
+refused and verified unchanged, then explicitly approved and verified changed.
+Nutrition acceptance additionally refuses and approves `deleteMeal` against a
+database whose parsed configured path is proven to be the run's temporary path
+before the first write. A BOM, JSON parse failure, or fallback to the default
+database aborts that live run.
+
 The gate that decides is always the one matching the live settings. The bundled
 desktop app runs the daemon inside its own process, so a daemon restart alone
 would otherwise keep the previous level in force. A gate installed directly by

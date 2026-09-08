@@ -67,7 +67,7 @@ CATALOGUE: List[MCPEntry] = [
         command="npx",
         # A reproducible version is essential: browser automation must not
         # silently gain a new capability during a normal app launch.
-        args=["-y", "chrome-devtools-mcp@0.13.0"],
+        args=["-y", "chrome-devtools-mcp@1.8.0"],
         platforms=["windows", "macos", "linux"],
         wizard_featured=True,
         category="automation",
@@ -78,7 +78,10 @@ CATALOGUE: List[MCPEntry] = [
         description="Extract and summarise transcripts from any YouTube video — "
                     "just paste a link and ask Jarvis about the content",
         command="npx",
-        args=["-y", "@kimtaeyoon83/mcp-server-youtube-transcript@0.1.1"],
+        # The former 0.1.1 package completed discovery but died during a
+        # real transcript call. This maintained replacement passed cold
+        # discovery and get-video-transcript in the live acceptance matrix.
+        args=["-y", "@coyasong/youtube-mcp-server@1.2.0"],
         wizard_featured=True,
         category="media",
     ),
