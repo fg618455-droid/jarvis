@@ -30,6 +30,7 @@ import requests  # noqa: F401  — re-exported for test patching, see module doc
 
 from .backend import (
     AuthError,
+    BillingError,
     LLMBackend,
     ModelUnavailableError,
     ProviderError,
@@ -59,6 +60,7 @@ __all__ = [
     "ProviderError",
     "RateLimitedError",
     "QuotaExhaustedError",
+    "BillingError",
     "AuthError",
     "ModelUnavailableError",
     "OllamaBackend",

@@ -36,6 +36,7 @@ import time
 from ..debug import debug_log
 from .backend import (
     AuthError,
+    BillingError,
     LLMBackend,
     ModelUnavailableError,
     ProviderError,
@@ -119,7 +120,9 @@ def _raise_http_error(error: requests.exceptions.HTTPError, *, tools: bool) -> N
         raise ToolsNotSupportedError("native tools API is not supported") from None
     if status in (401, 403):
         raise AuthError("provider rejected the configured credential") from None
-    if status == 404:
+    if status == 402:
+        raise BillingError("provider billing or credits are unavailable") from None
+    if status in (404, 410):
         raise ModelUnavailableError("configured model is unavailable") from None
     if status == 429:
         payload = _safe_error_payload(response)
@@ -297,6 +300,18 @@ class OpenAICompatibleBackend(LLMBackend):
     def base_url(self) -> str:
         return self._base_url
 
+    def _completion_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Reserve visible-output capacity for Groq's reasoning models."""
+        from urllib.parse import urlparse
+        if (urlparse(self._base_url).hostname == "api.groq.com"
+                and payload.get("model") in {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}):
+            payload = dict(payload)
+            requested = payload.pop("max_tokens", None)
+            budget = payload.get("max_completion_tokens", requested)
+            payload["max_completion_tokens"] = max(1024, int(budget or 1024))
+            payload.setdefault("reasoning_effort", "low")
+        return payload
+
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
@@ -338,7 +353,7 @@ class OpenAICompatibleBackend(LLMBackend):
         try:
             with requests.post(
                 f"{self._base_url}/chat/completions",
-                json=payload,
+                json=self._completion_payload(payload),
                 headers=self._headers(),
                 timeout=timeout_sec,
             ) as resp:
@@ -395,7 +410,7 @@ class OpenAICompatibleBackend(LLMBackend):
         try:
             with requests.post(
                 f"{self._base_url}/chat/completions",
-                json=payload,
+                json=self._completion_payload(payload),
                 headers=self._headers(),
                 timeout=timeout_sec,
                 stream=True,
@@ -512,7 +527,7 @@ class OpenAICompatibleBackend(LLMBackend):
         try:
             with requests.post(
                 f"{self._base_url}/chat/completions",
-                json=payload,
+                json=self._completion_payload(payload),
                 headers=self._headers(),
                 timeout=timeout_sec,
                 stream=on_token is not None,
@@ -652,7 +667,7 @@ class OpenAICompatibleBackend(LLMBackend):
         try:
             with requests.post(
                 f"{self._base_url}/chat/completions",
-                json=payload,
+                json=self._completion_payload(payload),
                 headers=self._headers(),
                 timeout=remaining,
             ) as resp:

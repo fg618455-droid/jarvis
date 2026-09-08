@@ -94,6 +94,10 @@ class QuotaExhaustedError(ProviderError):
         self.reset_at = reset_at
 
 
+class BillingError(ProviderError):
+    """The provider requires billing or credits before it can answer."""
+
+
 class AuthError(ProviderError):
     """The route rejected its configured credential."""
 

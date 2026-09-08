@@ -13,6 +13,8 @@ def _selected_model(endpoint, values: Mapping[str, str], models: list[str]) -> s
     configured = str(values.get(endpoint.model_env, "") or "").strip()
     if configured and configured in models:
         return configured
+    if endpoint.default_model and endpoint.default_model in models:
+        return endpoint.default_model
     return models[0] if models else ""
 
 
@@ -24,7 +26,10 @@ def build_routes(values: Mapping[str, str], probe_results: list[dict]) -> list[d
         for name in order:
             endpoint = endpoints[name]
             key = str(values.get(endpoint.key_env, "") or "").strip()
-            models = list(results.get(name, {}).get("models", []))
+            probe = results.get(name, {})
+            if not probe.get("ok") or not probe.get("import_candidate"):
+                continue
+            models = list(probe.get("models", []))
             model = _selected_model(endpoint, values, models)
             if not key or not model:
                 continue
@@ -32,10 +37,13 @@ def build_routes(values: Mapping[str, str], probe_results: list[dict]) -> list[d
                 "name": name,
                 "provider": "openai_compatible",
                 "base_url": endpoint.base_url,
-                "api_key": key,
+                "api_key": "",
+                "api_key_env": endpoint.key_env,
                 "model": model,
                 "tier": tier,
-                "timeout_sec": 4.0,
+                "timeout_sec": 8.0 if name == "groq" else 4.0,
+                "enabled": True,
+                "capabilities": ["chat", "stream", "tools"],
             })
     return routes
 
@@ -55,7 +63,7 @@ def main() -> int:
 
     path = resolve_config_path()
     config = _load_json(path) or {}
-    config["_config_version"] = max(4, int(config.get("_config_version", 0) or 0))
+    config["_config_version"] = max(7, int(config.get("_config_version", 0) or 0))
     config["llm_routes"] = routes
     if not _save_json(path, config):
         print("❌ Could not write Jarvis configuration", flush=True)
@@ -65,7 +73,7 @@ def main() -> int:
     print(f"   Routes: {len(routes)}", flush=True)
     print("   Keys: ••••••••", flush=True)
     print(f"💾 Configuration: {path}", flush=True)
-    print("   Restart Jarvis to activate the routes", flush=True)
+    print("   The running backend activates them on its next configuration reload", flush=True)
     return 0
 
 

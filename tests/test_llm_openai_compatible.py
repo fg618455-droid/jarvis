@@ -707,6 +707,17 @@ class TestOpenAICompatibleWarmUp:
         cfg.llm_api_key = None
         cfg.fast_model = "gpt-4o-mini"
         cfg.low_power_mode = False
+        cfg.llm_routes = [{
+            "name": "cloud-chat",
+            "provider": "openai_compatible",
+            "base_url": "https://provider.example/v1",
+            "api_key": "synthetic-key",
+            "model": "gpt-4o-mini",
+            "tier": "chat",
+            "timeout_sec": 10.0,
+            "enabled": True,
+            "capabilities": ["chat", "stream"],
+        }]
 
         assert warm_up_chat_model(cfg, "gpt-4o-mini", timeout=10.0) is True
 
@@ -1202,3 +1213,23 @@ class TestOpenAICompatibleChatStreaming:
         )
 
         assert mock_post.call_args.kwargs["json"]["stream"] is False
+
+
+@pytest.mark.parametrize("method", ["direct", "streaming", "chat"])
+def test_groq_oss_reserves_reasoning_budget_for_visible_output(method):
+    from jarvis.llm import OpenAICompatibleBackend
+    response = _make_response(json_data={"choices": [{"message": {"content": "ok"}}]},
+                              iter_lines=[b'data: {"choices":[{"delta":{"content":"ok"}}]}', b'data: [DONE]'])
+    backend = OpenAICompatibleBackend("https://api.groq.com/openai/v1", api_key="synthetic")
+    with patch("jarvis.llm.requests.post", return_value=response) as post:
+        if method == "direct":
+            backend.direct("openai/gpt-oss-20b", "test", "test", max_tokens=64)
+        elif method == "streaming":
+            backend.streaming("openai/gpt-oss-20b", "test", "test")
+        else:
+            backend.chat("openai/gpt-oss-20b", [{"role": "user", "content": "test"}],
+                         extra_options={"max_tokens": 64})
+    payload = post.call_args.kwargs["json"]
+    assert payload["max_completion_tokens"] >= 1024
+    assert payload["reasoning_effort"] == "low"
+    assert "max_tokens" not in payload

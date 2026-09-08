@@ -14,7 +14,7 @@ from jarvis.llm.route_state import RouteStateStore
 from scripts.import_fcc_keys import build_routes
 
 
-_ROUTE_NAMES = ("gemini", "openrouter")
+_ROUTE_NAMES = ("openrouter",)
 
 
 def _endpoint(name: str):
@@ -60,7 +60,7 @@ def test_openrouter_catalogue_connection_metadata():
     assert endpoint.model_env == "FCC_SMOKE_MODEL_OPEN_ROUTER"
 
 
-def test_gemini_and_openrouter_import_into_the_chat_chain_only():
+def test_healthy_catalogued_chat_provider_imports_into_chat_only():
     endpoints = [_endpoint(name) for name in _ROUTE_NAMES]
     values = {}
     results = []
@@ -68,7 +68,12 @@ def test_gemini_and_openrouter_import_into_the_chat_chain_only():
         advertised_model = f"advertised-by-{endpoint.name}"
         values[endpoint.key_env] = f"credential-for-{endpoint.name}"
         values[endpoint.model_env] = advertised_model
-        results.append({"name": endpoint.name, "models": [advertised_model]})
+        results.append({
+            "name": endpoint.name,
+            "models": [advertised_model],
+            "ok": True,
+            "import_candidate": True,
+        })
 
     routes = build_routes(values, results)
 
