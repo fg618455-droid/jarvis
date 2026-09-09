@@ -1,5 +1,6 @@
 """Run-oriented subscription provider contracts."""
 
+from .auth import AuthenticationManager, scrub_provider_environment
 from .base import (
     AuthStatus,
     Capabilities,
@@ -17,6 +18,7 @@ from .models import ModelCatalog
 
 __all__ = [
     "AuthStatus",
+    "AuthenticationManager",
     "Capabilities",
     "HealthReport",
     "ModelInfo",
@@ -28,4 +30,5 @@ __all__ = [
     "RunSpec",
     "SessionInfo",
     "UsageSnapshot",
+    "scrub_provider_environment",
 ]

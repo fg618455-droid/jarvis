@@ -86,6 +86,7 @@ class AuthStatus:
     account: str | None = None
     plan: str | None = None
     expires_at: str | None = None
+    detail: str | None = None
 
 
 @dataclass(frozen=True)

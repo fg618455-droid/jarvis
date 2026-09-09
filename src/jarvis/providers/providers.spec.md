@@ -75,3 +75,26 @@ from a positive result.
 
 Provider values are immutable data objects. Timestamps use serialisable ISO 8601
 strings, and paths remain strings so adapters can preserve native platform paths.
+
+## Authentication
+
+`AuthenticationManager.status(provider)` reads authentication only through the
+provider's status command and caches each result for 60 seconds. Failed commands,
+non-zero exits, malformed output and unrecognised authentication modes all produce
+`AuthStatus(logged_in=False)`. Cache entries can be invalidated explicitly after a
+login or logout.
+
+Claude accepts only the JSON schema from `claude auth status` with
+`authMethod="claude.ai"`. Codex accepts only `Logged in using ChatGPT`. Hermes
+reads `model.provider` from `%LOCALAPPDATA%/hermes/config.yaml`, passes that value to
+`hermes auth status <provider>`, and accepts only the exact successful status line.
+A missing, unreadable or empty provider setting fails closed with
+`detail="hermes provider unknown"`. API-key and other Hermes routes are reported as
+unauthenticated.
+
+`hermes status` is not executed or parsed because it is network-dependent and can
+display masked credential fragments.
+
+Every provider subprocess receives a copied environment with
+`ANTHROPIC_API_KEY` and `OPENAI_API_KEY` removed. Provider output, account details
+and environment values are not written to debug logs.
