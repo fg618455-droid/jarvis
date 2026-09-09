@@ -98,3 +98,18 @@ display masked credential fragments.
 Every provider subprocess receives a copied environment with
 `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` removed. Provider output, account details
 and environment values are not written to debug logs.
+
+## Capability evidence
+
+`ProviderCapabilityRegistry` starts empty. Unknown provider and model capabilities
+therefore resolve to a `Capabilities` value whose flags are all false.
+
+Adapters register complete provider-level evidence when a feature belongs to the
+transport, and complete model-level evidence when the provider reports capabilities
+for a specific model. Model-level evidence replaces the provider-level value rather
+than merging with it. This prevents an unsupported model feature from becoming true
+through an optimistic fallback.
+
+Capability evidence is isolated by provider and can be cleared after a provider or
+model state change. The registry does not contain a guessed built-in capability
+matrix.

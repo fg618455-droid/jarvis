@@ -1,6 +1,7 @@
 """Run-oriented subscription provider contracts."""
 
 from .auth import AuthenticationManager, scrub_provider_environment
+from .capabilities import ProviderCapabilityRegistry
 from .base import (
     AuthStatus,
     Capabilities,
@@ -25,6 +26,7 @@ __all__ = [
     "ModelCatalog",
     "NotSupported",
     "ProviderAdapter",
+    "ProviderCapabilityRegistry",
     "RunEvent",
     "RunHandle",
     "RunSpec",
