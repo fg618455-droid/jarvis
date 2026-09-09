@@ -53,7 +53,7 @@ def test_get_routes_separates_configured_routes_from_effective_chains(
 
     assert [route["name"] for route in body["configured_routes"]] == ["cloud-chat"]
     assert [route["name"] for route in body["effective_chains"]["chat"]] == [
-        "cloud-chat", "local-chat",
+        "cloud-chat",
     ]
     configured = body["configured_routes"][0]
     assert configured["api_key"].endswith("tial")
@@ -73,11 +73,11 @@ def test_get_routes_exposes_the_schema_for_every_supported_provider(
     ]
     provider = next(field for field in body["route_fields"] if field["key"] == "provider")
     assert {choice["value"] for choice in provider["choices"]} == {
-        "ollama", "openai_compatible", "claude_subscription",
+        "openai_compatible", "claude_subscription",
         "codex_subscription", "crew_chat",
     }
     assert set(body["provider_placeholders"]) == {
-        "ollama", "openai_compatible", "claude_subscription",
+        "openai_compatible", "claude_subscription",
         "codex_subscription", "crew_chat",
     }
 
@@ -177,9 +177,9 @@ def test_put_routes_preserves_order_and_every_schema_field(
     monkeypatch.setenv("JARVIS_CONFIG_PATH", str(path))
     routes = [
         {
-            "name": "ollama-fast", "provider": "ollama",
-            "base_url": "http://127.0.0.1:11434", "api_key": "",
-            "api_key_env": "", "model": "qwen3:1.7b", "tier": "fast",
+            "name": "mistral-fast", "provider": "openai_compatible",
+            "base_url": "https://api.mistral.ai/v1", "api_key": "synthetic-key",
+            "api_key_env": "", "model": "mistral-small-latest", "tier": "fast",
             "timeout_sec": 12.5, "enabled": False,
             "capabilities": ["chat"],
         },
