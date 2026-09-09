@@ -648,11 +648,6 @@ def _build_field_metadata() -> List[FieldMeta]:
     # smaller job than the provider window, so it is settled here rather
     # than standing in front of the chains that actually answer.
     model_choices = [(mid, info["name"]) for mid, info in SUPPORTED_CHAT_MODELS.items()]
-    f("local_llm_fallback_enabled", "Local Chat/Fast Fallback",
-      "Append a local Ollama route to FAST and CHAT when the configured chain "
-      "has no local entry. Off keeps a remote-only chain remote-only. Memory "
-      "(PRIVATE) and embeddings stay local either way",
-      "advanced", "bool", section="Local Ollama")
     f("ollama_chat_model", "Chat Model", "Local model used by that fallback",
       "advanced", "choice", choices=model_choices, section="Local Ollama")
     f("local_fast_model", "Local Fast Fallback",
