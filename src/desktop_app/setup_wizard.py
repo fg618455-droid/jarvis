@@ -206,11 +206,11 @@ def get_required_models() -> List[str]:
             if cfg.ollama_embed_model and cfg.ollama_embed_model not in models:
                 models.append(cfg.ollama_embed_model)
 
-        # The fast model powers voice intent classification and the other
-        # real-time passes, but is only an Ollama pull when the chat
-        # provider is Ollama (config load resolves it per provider).
+        # The local fast model powers the Ollama fallback and local real-time
+        # passes.  The effective ``fast_model`` may name a remote route and
+        # must never be handed to ``ollama pull``.
         if llm_provider != "openai_compatible":
-            fast_model = getattr(cfg, "fast_model", "gemma4:e2b")
+            fast_model = getattr(cfg, "local_fast_model", "gemma4:e2b")
             if fast_model and fast_model not in models:
                 models.append(fast_model)
 
@@ -569,6 +569,10 @@ class SetupWizard(QWizard):
                         config_ip=cfg.location_ip_address,
                         auto_detect=cfg.location_auto_detect,
                         resolve_cgnat_public_ip=cfg.location_cgnat_resolve_public_ip,
+                        manual_city=cfg.location_manual_city,
+                        manual_region=cfg.location_manual_region,
+                        manual_country=cfg.location_manual_country,
+                        manual_timezone=cfg.location_manual_timezone,
                     )
                     self._location_working = context != "Location: Unknown"
             except Exception:
@@ -800,6 +804,10 @@ class WelcomePage(QWizardPage):
                     config_ip=cfg.location_ip_address,
                     auto_detect=cfg.location_auto_detect,
                     resolve_cgnat_public_ip=cfg.location_cgnat_resolve_public_ip,
+                    manual_city=cfg.location_manual_city,
+                    manual_region=cfg.location_manual_region,
+                    manual_country=cfg.location_manual_country,
+                    manual_timezone=cfg.location_manual_timezone,
                 )
             except Exception:
                 location_context = get_location_context(auto_detect=True, resolve_cgnat_public_ip=True)
@@ -2210,7 +2218,7 @@ class ModelsPage(QWizardPage):
             cp.parent.mkdir(parents=True, exist_ok=True)
             cfg = _load_json(cp) or {}
             cfg["ollama_chat_model"] = self._chat_model
-            cfg["fast_model"] = self._fast_model
+            cfg["local_fast_model"] = self._fast_model
             return _save_json(cp, cfg)
         except Exception:
             return False
@@ -2221,7 +2229,7 @@ class ModelsPage(QWizardPage):
         try:
             c = load_settings()
             cc = c.ollama_chat_model
-            fc = getattr(c, "fast_model", "gemma4:e2b")
+            fc = getattr(c, "local_fast_model", "gemma4:e2b")
         except Exception:
             pass
         self._chat_model = cc if cc in self._ALL_MODELS else DEFAULT_CHAT_MODEL
@@ -3171,6 +3179,10 @@ class LocationPage(QWizardPage):
                     config_ip=cfg.location_ip_address,
                     auto_detect=cfg.location_auto_detect,
                     resolve_cgnat_public_ip=cfg.location_cgnat_resolve_public_ip,
+                    manual_city=cfg.location_manual_city,
+                    manual_region=cfg.location_manual_region,
+                    manual_country=cfg.location_manual_country,
+                    manual_timezone=cfg.location_manual_timezone,
                 )
             except Exception:
                 location_context = get_location_context(auto_detect=True, resolve_cgnat_public_ip=True)
@@ -3867,8 +3879,8 @@ class CompletePage(QWizardPage):
         tips.setStyleSheet("line-height: 1.8;")
         card_layout.addWidget(tips)
 
-        # Memory viewer tip with special styling
-        brain_tip = QLabel("🧠  Peek inside Jarvis's brain — open the Memory Viewer to see what he remembers")
+        # Control centre tip with special styling
+        brain_tip = QLabel("🧠  Peek inside Jarvis's brain — open the Control Centre to see what he remembers")
         brain_tip.setWordWrap(True)
         brain_tip.setStyleSheet("""
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,

@@ -28,7 +28,7 @@ from ..debug import debug_log
 # Lightweight observer registry so consumers (e.g. DialogueMemory's warm
 # profile cache) can invalidate derived state when a node is created,
 # updated, or deleted. The listener receives the action name, node id, and
-# the FIXED_BRANCH ancestor (e.g. ``"user"``, ``"directives"``, ``"world"``)
+# the FIXED_BRANCH ancestor (for example ``"user"`` or ``"school"``)
 # so it can scope its reaction. Failures in listeners are logged and
 # swallowed so they cannot break a write.
 
@@ -98,7 +98,7 @@ DECAY_HALF_LIFE_DAYS = 14    # days until a node's access score halves
 
 # ── Fixed top-level branches ────────────────────────────────────────────────
 #
-# The root is seeded with three fixed children on first run. The graph
+# The root is seeded with four fixed children on first run. The graph
 # is still self-organising below these — auto-split/merge runs within
 # each branch — but the top level is purpose-shaped, not content-shaped,
 # so the extractor can route each new fact into the right semantic slot.
@@ -109,6 +109,8 @@ DECAY_HALF_LIFE_DAYS = 14    # days until a node's access score halves
 # - DIRECTIVES: imperatives the user issued at the assistant about its
 #   own behaviour ("be concise", "use British English", "stop apologising").
 #   Verbatim rules, never summarised. Warm-loaded on every turn.
+# - SCHOOL: Felix's schooling, including subjects, teachers, homework,
+#   assessments, marks, and timetable. Retrieved on demand.
 # - WORLD: external facts with attribution (current graph content —
 #   films, businesses, recipes, techniques). Unbounded. Not warm-loaded;
 #   retrieved on demand via searchMemory.
@@ -119,6 +121,7 @@ DECAY_HALF_LIFE_DAYS = 14    # days until a node's access score halves
 
 BRANCH_USER = "user"
 BRANCH_DIRECTIVES = "directives"
+BRANCH_SCHOOL = "school"
 BRANCH_WORLD = "world"
 
 FIXED_BRANCHES: tuple[tuple[str, str, str], ...] = (
@@ -126,8 +129,9 @@ FIXED_BRANCHES: tuple[tuple[str, str, str], ...] = (
         BRANCH_USER,
         "User",
         "Everything about the user: identity, location, relationships, "
-        "tastes, preferences, history, plans, opinions. Always injected "
-        "into the system prompt.",
+        "tastes, preferences, history, plans, and opinions, except facts "
+        "specifically about Felix's schooling. Always injected into the "
+        "system prompt.",
     ),
     (
         BRANCH_DIRECTIVES,
@@ -135,6 +139,14 @@ FIXED_BRANCHES: tuple[tuple[str, str, str], ...] = (
         "Imperatives the user issued at the assistant about its own "
         "behaviour — tone, verbosity, language, style rules. Verbatim, "
         "never summarised. Always injected into the system prompt.",
+    ),
+    (
+        BRANCH_SCHOOL,
+        "School",
+        "Felix's schooling only: subjects, teachers, timetable, homework, "
+        "exam dates, marks, and academic progress. Excludes general "
+        "personal traits and knowledge not tied to his participation at "
+        "school. Retrieved on demand.",
     ),
     (
         BRANCH_WORLD,
@@ -233,6 +245,14 @@ CREATE TABLE IF NOT EXISTS memory_nodes (
 CREATE INDEX IF NOT EXISTS idx_nodes_parent ON memory_nodes(parent_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_last_accessed ON memory_nodes(last_accessed DESC);
 CREATE INDEX IF NOT EXISTS idx_nodes_access_count ON memory_nodes(access_count DESC);
+
+CREATE TABLE IF NOT EXISTS memory_import_sources (
+    importer     TEXT NOT NULL,
+    source_id    TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    imported_at  TEXT NOT NULL,
+    PRIMARY KEY (importer, source_id)
+);
 """
 
 
@@ -266,8 +286,8 @@ class GraphMemoryStore:
             self.conn.commit()
 
     def _ensure_root(self) -> None:
-        """Create the root node and the three fixed top-level branches
-        (User / Directives / World) if they don't exist.
+        """Create the root node and the four fixed top-level branches
+        (User / Directives / School / World) if they don't exist.
 
         Idempotent: each branch has a stable string id, so re-opening an
         existing graph never duplicates them. Branches are also created
@@ -308,7 +328,7 @@ class GraphMemoryStore:
     def migrate_legacy_shape(self) -> bool:
         """Wipe the graph if it has a non-conforming (pre-taxonomy) shape.
 
-        The purpose-driven taxonomy (root → User / Directives / World)
+        The purpose-driven taxonomy (root → fixed purpose branches)
         is a hard reorganisation: pre-existing nodes under root that
         don't match this shape would sit invisible to the warm profile
         forever.
@@ -356,11 +376,41 @@ class GraphMemoryStore:
                 "memory",
             )
             self.conn.execute("DELETE FROM memory_nodes")
+            self.conn.execute("DELETE FROM memory_import_sources")
             self.conn.commit()
 
         # Re-seed root + fixed branches from scratch.
         self._ensure_root()
         return True
+
+    def import_source_is_current(
+        self, importer: str, source_id: str, content_hash: str,
+    ) -> bool:
+        """Return whether this importer has processed the same source body."""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT content_hash FROM memory_import_sources "
+                "WHERE importer = ? AND source_id = ?",
+                (str(importer), str(source_id)),
+            ).fetchone()
+        return bool(row and row["content_hash"] == str(content_hash))
+
+    def mark_import_source(
+        self, importer: str, source_id: str, content_hash: str,
+    ) -> None:
+        """Record a successfully processed source body for idempotent import."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            self.conn.execute(
+                """INSERT INTO memory_import_sources
+                   (importer, source_id, content_hash, imported_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(importer, source_id) DO UPDATE SET
+                       content_hash = excluded.content_hash,
+                       imported_at = excluded.imported_at""",
+                (str(importer), str(source_id), str(content_hash), now),
+            )
+            self.conn.commit()
 
     # ── CRUD ────────────────────────────────────────────────────────────
 

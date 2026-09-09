@@ -1,7 +1,8 @@
-"""Wake word and stop command detection logic."""
+"""Wake-word detection and query extraction."""
 
 from typing import List, Optional
 import difflib
+import string
 
 from ..debug import debug_log
 
@@ -78,40 +79,58 @@ def extract_query_after_wake(text_lower: str, wake_word: str, aliases: List[str]
     return fragment if fragment else ""
 
 
-def is_stop_command(text_lower: str, stop_commands: List[str], fuzzy_ratio: float = 0.8) -> bool:
-    """
-    Check if text contains a stop command.
-    
-    Args:
-        text_lower: Lowercase text to check
-        stop_commands: List of stop command phrases
-        fuzzy_ratio: Threshold for fuzzy matching short inputs
-    
-    Returns:
-        True if stop command detected
+def extract_query_from_edge_wake(
+    text_lower: str,
+    wake_word: str,
+    aliases: List[str],
+    fuzzy_ratio: float = 0.78,
+) -> Optional[str]:
+    """Return the query when a wake name is the first or last spoken token.
+
+    Edge position is a language-independent signal that the name is being used
+    as an address. A name inside the utterance remains ambiguous and is left to
+    the contextual intent judge, for example a person's name containing the
+    assistant's name.
+
+    ``None`` means no unambiguous edge address was found. An empty string means
+    the utterance contained only the wake name.
     """
     if not text_lower or not text_lower.strip():
-        return False
-    
-    # Check for exact matches
-    detected_commands = []
-    for cmd in stop_commands:
-        if cmd in text_lower:
-            detected_commands.append(cmd)
-    
-    # Check fuzzy matches for short inputs (2 words or less)
-    if len(text_lower.split()) <= 2:
-        try:
-            for word in text_lower.split():
-                for cmd in stop_commands:
-                    ratio = difflib.SequenceMatcher(a=cmd, b=word).ratio()
-                    if ratio >= fuzzy_ratio:
-                        detected_commands.append(f"{cmd}~{word}")
-        except Exception:
-            pass
-    
-    if detected_commands:
-        debug_log(f"stop command detected: {detected_commands[0]} in '{text_lower}'", "voice")
-        return True
-    
-    return False
+        return None
+
+    raw_tokens = text_lower.split()
+    if not raw_tokens:
+        return None
+
+    edge_punctuation = string.punctuation + "“”‘’«»"
+    clean_tokens = [token.strip(edge_punctuation).lower() for token in raw_tokens]
+    candidates = {
+        alias.strip().lower()
+        for alias in (set(aliases) | {wake_word})
+        if alias and alias.strip()
+    }
+
+    for candidate in sorted(candidates, key=lambda value: len(value.split()), reverse=True):
+        candidate_tokens = [part.strip(edge_punctuation) for part in candidate.split()]
+        width = len(candidate_tokens)
+        if not width or width > len(clean_tokens):
+            continue
+
+        starts = clean_tokens[:width] == candidate_tokens
+        ends = clean_tokens[-width:] == candidate_tokens
+        if width == 1 and not starts and not ends:
+            starts = (
+                difflib.SequenceMatcher(a=candidate_tokens[0], b=clean_tokens[0]).ratio()
+                >= fuzzy_ratio
+            )
+            ends = (
+                difflib.SequenceMatcher(a=candidate_tokens[0], b=clean_tokens[-1]).ratio()
+                >= fuzzy_ratio
+            )
+
+        if starts:
+            return " ".join(raw_tokens[width:]).strip().lstrip(",.!?;:").strip()
+        if ends:
+            return " ".join(raw_tokens[:-width]).strip().rstrip(",.!?;:").strip()
+
+    return None

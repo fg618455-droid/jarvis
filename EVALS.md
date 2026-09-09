@@ -294,6 +294,80 @@
 
 ---
 
+---
+
+## 🖥️ openOnComputer: router comparison (2026-08-21)
+
+> Adding a builtin widens the catalogue every router call carries, so the tool was added to the router evals and the affected files were run **with and without it registered** on the same server. Baseline was produced by popping `openOnComputer` out of `BUILTIN_TOOLS` at session start and deselecting the three new cases.
+
+**Setup:** `EVAL_JUDGE_MODEL=gemma4:e2b` against local Ollama, plain `pytest`, no retries.
+
+| File set | Without openOnComputer | With openOnComputer |
+|----------|-----------------------:|--------------------:|
+| `test_tool_router_implicit`, `test_tool_router_context_aware`, `test_tool_selection`, `test_greeting_no_tools` | 34 passed / 8 xfailed | 37 passed / 8 xfailed |
+
+**Result:** ✅ No regression. The xfail set is identical between the two runs; the three extra passes are the new cases. Router picks for the new tool, all on the first attempt:
+
+| Query | Selected |
+|---|---|
+| "put the new Dune trailer on my screen" | `openOnComputer`, `stop` |
+| "I want to jot something down in a text editor" | `openOnComputer`, `stop` |
+| "take me to my downloads folder" | `openOnComputer`, `stop` |
+
+---
+
+## ⏱️ Tool-router latency on the local chain (2026-08-21)
+
+> Measured on the live config after the disabled-route and residency fixes. The router had been falling open to the whole catalogue on every turn: the local FAST candidate carried a 4-second ceiling, a cold Ollama page-in of a 7B weight set takes longer than that, and the resulting `EmptyResponse` (116 recorded on `local-fast`) made every routing call a guaranteed miss.
+
+| Query | Before | After | Routed to |
+|---|---:|---:|---|
+| "Hallo, wie geht es dir?" | 4022 ms → whole catalogue | 268 ms | `stop` |
+| "Wie ist das Wetter heute?" | 4025 ms → whole catalogue | 268 ms | `getWeather`, `stop` |
+| "kannst du bitte YouTube öffnen" | 4038 ms → whole catalogue | 246 ms | `openOnComputer`, `stop` |
+| "Danke dir!" | 4027 ms → whole catalogue | 238 ms | `stop` |
+| "was liegt in meinem Downloads-Ordner" | — | 245 ms | `localFiles`, `stop` |
+
+**Notes:**
+- The first call after an idle stretch still pays the page-in (~5.7 s on this machine). The `keep_alive` now sent with every request is what stops that recurring mid-session.
+- On an 8 GB card the fastest FAST tier is the chat model itself: it is already resident, so it routes in ~250 ms, while `gemma4:e2b` and `qwen3.5:0.8b` each cost an 8 s eviction-and-load on their first call. `qwen3.5:0.8b` also misrouted "Wie ist das Wetter heute?" to no tool at all.
+
+---
+
+## 🤖 Agent behaviour: before/after the 2026-08-21 changes
+
+> `openOnComputer` widens the catalogue every router call carries, so the agent-behaviour evals were run against the change and against `3804061` (a git worktree at the pre-change commit, same interpreter, same server) to see whether the extra tool displaces one the query needed.
+
+**Setup:** `EVAL_JUDGE_MODEL=gemma4:e2b`, local Ollama, plain `pytest`, no retries.
+
+| File set | Base (`3804061`) | With the change |
+|----------|-----------------:|----------------:|
+| `test_agent_behavior.py`, `test_greeting_no_tools.py` | 35 passed / 4 failed / 3 xfailed | 35 passed / 5 failed / 2 xfailed |
+
+**Result:** ✅ No regression attributable to the change. The pass count is identical and three failures are common to both runs (`test_enrichment_extracts_correct_keywords[time-based recall]`, `test_enrichment_skips_questions_answered_by_context`, `test_open_ended_prompt_grounds_in_graph_context_live`). The differing entries are ambient variance on this model: base failed `test_weather_query_live` where the change passed, and the change failed `test_interest_flavoured_query_live[news-of-interest-to-me]`, which flakes on both sides — repeated three times per side, it failed 1/3 at base and 2/3 with the change, with the same failure mode (the model asks which topics interest the user instead of acting on the seeded ones).
+
+`test_no_deflection_for_weather_forecast_live` appeared in the change's failure list but passes on re-run; its isolated failure was a `cp1252` console encoding error, not agent behaviour. Run evals with `-X utf8` on Windows.
+
+**Router displacement check:** in the observed picks `openOnComputer` appeared *alongside* the tool the query needed, never instead of it (`getWeather, getTime, openOnComputer, askCrew, stop, toolSearchTool` for a forecast; `webSearch, fetchWebPage, openOnComputer, toolSearchTool, stop` for a news query). The one remaining failure had `webSearch` selected and chose not to call it, so it is a model decision rather than a routing loss.
+
+---
+
+## 🗣️ Speaking while writing (2026-08-21)
+
+> Measured on the live config (`qwen2.5:7b-ctx8k`, warm) by running the real reply engine with a speech sink that timestamps each sentence it receives. "Head start" is how long before the reply text was complete the first sentence was ready to speak.
+
+| Prompt | First sentence | Reply complete | Head start |
+|---|---:|---:|---:|
+| "Erkläre mir in vier Sätzen, warum der Himmel blau ist" (through the reply engine) | 7683 ms | 8734 ms | **1051 ms** |
+| Four-sentence explanation (backend only, warm) | 876 ms | 1948 ms | **1072 ms** |
+| Three-sentence summary (backend only, warm) | 963 ms | 980 ms | 17 ms |
+
+**Transport equivalence:** a streamed and an unstreamed request were sent with the same messages and tool schema against live Ollama. Both produced `getWeather` with identical arguments, so streaming changes when the text arrives, not what the model decided.
+
+**Notes:**
+- The gain scales with reply length and is nil on a one-sentence answer, which is the expected shape: there is nothing to overlap.
+- The evals do not supply a speech sink, so they exercise the unstreamed path. The stream fold (tool calls surviving, reasoning kept out of the spoken text, a listener that raises not costing the reply) is covered by unit tests in `tests/test_llm_backend.py`, `tests/test_llm_openai_compatible.py` and `tests/test_tts_streaming.py`.
+
 ### 📖 Legend
 
 | Symbol | Meaning |

@@ -5,10 +5,16 @@ Handles memory enrichment, tool planning and execution.
 """
 
 from __future__ import annotations
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from ..utils.redact import redact
 from ..system_prompt import build_system_prompt
+from ..output.tts import resolve_kokoro_voice_language, resolve_voice_language
+from ..runtime import (
+    current_turn,
+    mark as telemetry_mark,
+    stage as telemetry_stage,
+)
 from ..tools.registry import run_tool_with_retries, generate_tools_description, generate_tools_json_schema, BUILTIN_TOOLS
 from ..tools.builtin.stop import STOP_SIGNAL
 from ..debug import debug_log
@@ -19,34 +25,97 @@ from ..llm import (
     resolve_model,
     Tier,
     ToolsNotSupportedError,
+    RequestDeadline,
 )
 
 
+# Maps the tool router's coarse per-turn classification (see
+# jarvis.tools.selection._select_llm) to the route provider name that
+# classification prefers. Absent from the map (an unrecognised or missing
+# value) resolves to no preference, i.e. today's unmodified chain order.
+_CHAT_BACKEND_PREFERENCE_TO_PROVIDER = {
+    "local": "ollama",
+    "complex": "claude_subscription",
+    "hermes": "crew_chat",
+}
+
+
+def _resolve_preferred_chat_provider(cfg, chat_backend_preference):
+    """Decide which route provider (if any) this reply's Tier.CHAT call
+    should try first.
+
+    A manual ``cfg.chat_backend_override`` (anything other than the default
+    "auto") always wins, regardless of ``chat_backend_preference`` — that is
+    the whole point of a manual override. Under "auto", the router's own
+    per-turn classification (reused from its existing LLM call, not a new
+    one) decides. Returns ``None`` whenever neither applies, which leaves
+    ``RoutedBackend.chat()`` at its existing configured chain order: the
+    fail-open default this feature must never regress.
+    """
+    override = str(getattr(cfg, "chat_backend_override", "auto") or "auto").strip().lower()
+    if override and override != "auto":
+        debug_log(f"chat backend override forces provider {override!r}", "llm")
+        return override
+
+    provider = _CHAT_BACKEND_PREFERENCE_TO_PROVIDER.get(
+        str(chat_backend_preference or "").strip().lower()
+    )
+    if provider and provider != "ollama":
+        debug_log(
+            f"automatic chat backend routing selected {provider!r} "
+            f"(turn classified as {chat_backend_preference!r})",
+            "llm",
+        )
+    return provider
+
+
 def chat_with_messages(cfg, messages, *, timeout_sec=30.0, extra_options=None,
-                       tools=None, thinking=False):
+                       tools=None, thinking=False, on_token=None,
+                       chat_backend_preference=None):
     """Local indirection: route the engine's chat call through the active
     backend (Ollama or OpenAI-compatible, per ``cfg.llm_provider``) so the
     runtime swap is transparent to the rest of the engine.
 
     Kept as a module-level function so tests can patch this single symbol
     to capture every chat call rather than reaching into the backend ABC.
+    It is also the single place every chat call is timed from, so an
+    agentic turn's model time is measured wherever the loop entered it.
+
+    ``on_token`` asks the backend for the reply's text as it is written, so
+    the speech path can start on the first finished sentence.
+
+    ``chat_backend_preference`` is the tool router's optional per-turn
+    classification ("local", "complex", or "hermes", from the same LLM call
+    that picks the tool allow-list — see
+    ``jarvis.tools.selection._select_llm``).
+    Combined with ``cfg.chat_backend_override``, it resolves to a
+    ``preferred_provider`` passed through to ``RoutedBackend.chat()``,
+    which only ever reorders its existing route chain for this one call —
+    the chain's own fail-soft fallback is unchanged, so an unavailable or
+    failing preferred backend still falls through to the normal order.
     """
     backend = get_llm_backend(cfg)
-    return backend.chat(
-        cfg.llm_chat_model, messages,
-        timeout_sec=timeout_sec,
-        extra_options=extra_options,
-        tools=tools,
-        thinking=thinking,
-    )
+    preferred_provider = _resolve_preferred_chat_provider(cfg, chat_backend_preference)
+    with telemetry_stage("llm"):
+        return backend.chat(
+            cfg.llm_chat_model, messages,
+            timeout_sec=timeout_sec,
+            extra_options=extra_options,
+            tools=tools,
+            thinking=thinking,
+            on_token=on_token,
+            preferred_provider=preferred_provider,
+        )
 from .enrichment import (
     extract_search_params_for_memory,
     digest_memory_for_query,
     digest_tool_result_for_query,
     digest_loop_for_max_turns,
 )
+from .fallbacks import in_the_voices_language
 from .prompt_dump import dump_reply_turn, is_enabled as _prompt_dump_enabled, new_session_id
 from .prompts import ModelSize, detect_model_size, get_system_prompts
+from .speech_stream import SpeechSegmenter
 from .compound_query import split_compound_query
 from .planner import (
     plan_query,
@@ -66,6 +135,7 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
+from time import perf_counter as _perf_counter
 from ..utils.location import get_location_context_with_timezone
 from ..utils.time_context import format_time_context
 
@@ -74,6 +144,130 @@ if TYPE_CHECKING:
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
+
+CREW_HANDOFF_CHECKPOINT_MS = 3000.0
+LOCAL_REPLY_HARD_CUTOFF_MS = 5000.0
+
+
+def _automatic_crew_handoff_available(cfg: Any) -> bool:
+    """Whether the deadline may hand this turn to the crew on its own.
+
+    Off by default (``crew_handoff_enabled``) even when the crew transport
+    is fully configured: the handoff still asks for confirmation like any
+    askCrew call, and that wait is not yet bounded to the deadline, so an
+    unattended escalation can sit on the full confirmation timeout before
+    falling through to a refusal instead of an answer. An explicit askCrew
+    call from the model is unaffected by this flag.
+    """
+    return bool(
+        getattr(cfg, "crew_handoff_enabled", False)
+        and str(getattr(cfg, "telegram_bot_token", "") or "").strip()
+        and str(getattr(cfg, "crew_telegram_chat_id", "") or "").strip()
+    )
+
+
+def _automatic_handoff_reason(trace: Any, close_to_done: bool) -> Optional[str]:
+    """Return the deadline reason for handing this turn to the crew.
+
+    ``close_to_done`` is structural rather than linguistic: the router made
+    a positive no-tool decision, or every local tool step has produced a
+    result and only final synthesis remains. No language-specific phrase
+    matching is involved.
+    """
+    if trace is None:
+        return None
+    elapsed_ms = trace.elapsed_ms()
+    if elapsed_ms >= LOCAL_REPLY_HARD_CUTOFF_MS:
+        return "hard_cutoff"
+    if elapsed_ms >= CREW_HANDOFF_CHECKPOINT_MS and not close_to_done:
+        return "not_close_to_done"
+    return None
+
+
+def _bounded_local_timeout(
+    configured_sec: float,
+    trace: Any,
+    close_to_done: bool,
+) -> float:
+    """Cap one blocking local model call at the applicable reply deadline."""
+    if trace is None:
+        return configured_sec
+    cutoff_ms = (
+        LOCAL_REPLY_HARD_CUTOFF_MS
+        if close_to_done
+        else CREW_HANDOFF_CHECKPOINT_MS
+    )
+    remaining_sec = max(0.001, (cutoff_ms - trace.elapsed_ms()) / 1000.0)
+    return min(configured_sec, remaining_sec)
+
+
+def build_reply_prompt_prefix(cfg) -> str:
+    """Build the query-independent head of every main reply prompt."""
+    assistant_name = str(
+        getattr(cfg, "wake_word", "jarvis") or "jarvis"
+    ).strip().capitalize()
+    parts = [build_system_prompt(assistant_name).strip()]
+    parts.extend(get_system_prompts(detect_model_size(cfg.llm_chat_model)).to_list())
+
+    tts_engine = getattr(cfg, "tts_engine", "piper")
+    voice_language = None
+    if tts_engine == "piper":
+        voice_language = resolve_voice_language(
+            getattr(cfg, "tts_piper_model_path", None)
+        )
+    elif tts_engine == "kokoro":
+        voice_language = resolve_kokoro_voice_language(
+            getattr(cfg, "tts_kokoro_voice", None)
+        )
+
+    if voice_language:
+        parts.append(
+            f"Always respond in {voice_language} regardless of the "
+            "language the user speaks in."
+        )
+    elif tts_engine == "chatterbox":
+        parts.append(
+            "Always respond in English regardless of the language the user speaks in."
+        )
+    else:
+        # Nothing names a language: speech is off, the engine is not Piper, or
+        # the voice's metadata could not be read. Silence here is not neutral —
+        # the prompt is English, so the model drifts to English and answers a
+        # German user in the wrong language. Mirroring the user is the only
+        # rule that stays correct for every language the assistant supports.
+        parts.append(
+            "Always respond in the same language the user wrote or spoke in, "
+            "matching their language for every reply."
+        )
+    parts.append(
+        "Keep the entire natural-language reply in that required language. "
+        "Do not switch languages mid-reply unless the user explicitly asks "
+        "for translation or code-switching."
+    )
+    return "\n".join(parts)
+
+
+def warm_up_reply_prefix(cfg, model: str, timeout_sec: float = 60.0) -> bool:
+    """Prefill the stable main-reply prefix in the configured backend cache."""
+    if not model:
+        return False
+    try:
+        response = get_llm_backend(cfg).chat(
+            model,
+            [
+                {"role": "system", "content": build_reply_prompt_prefix(cfg)},
+                {"role": "user", "content": "Reply with OK."},
+            ],
+            timeout_sec=timeout_sec,
+            extra_options={"max_tokens": 1},
+            tools=None,
+            thinking=False,
+        )
+        return bool(response)
+    except Exception as exc:
+        debug_log(f"reply prompt prefill failed: {type(exc).__name__}", "voice")
+        return False
 
 
 def _indent_text(text: str, prefix: str = "  ") -> str:
@@ -185,12 +379,31 @@ def _text_tool_call_guidance(allowed_names: list[str]) -> str:
     for small models.
     """
     allowed_name_list = ", ".join(sorted(allowed_names)) if allowed_names else ""
+    real_names = [
+        name for name in allowed_names
+        if name not in {"stop", "toolSearchTool"}
+    ]
+    if real_names:
+        example_name = real_names[0]
+    elif "toolSearchTool" in allowed_names:
+        example_name = "toolSearchTool"
+    elif allowed_names:
+        example_name = allowed_names[0]
+    else:
+        example_name = "ALLOWED_TOOL_NAME"
+
+    if example_name == "webSearch":
+        example_arguments = r'{\"search_query\": \"example query\"}'
+    elif example_name == "toolSearchTool":
+        example_arguments = r'{\"query\": \"describe the needed capability\"}'
+    else:
+        example_arguments = "{}"
+
     return (
         "\nExact tool-call syntax (copy this shape — emit nothing else on a "
         "tool-calling turn):\n"
         'tool_calls: [{"id": "call_1", "type": "function", "function": '
-        '{"name": "webSearch", "arguments": "{\\"search_query\\": '
-        '\\"example query\\"}"}}]\n'
+        f'{{"name": "{example_name}", "arguments": "{example_arguments}"}}}}]\n'
         "Notes:\n"
         "- `arguments` is a JSON STRING (quotes escaped), not a bare object.\n"
         "- Never emit just a tool name by itself (e.g. `webSearch` or `web`) — "
@@ -249,9 +462,11 @@ def _is_malformed_model_output(content: str) -> bool:
 
     lowered = trimmed.lower()
 
-    # Bare tool_calls literal — tool-call syntax emitted as plain text.
-    if lowered.startswith("tool_calls:"):
-        debug_log("  ⚠️ Detected bare tool_calls literal response", "planning")
+    # Tool-call syntax emitted as plain text, either bare or appended after
+    # prose. The latter is a field-captured small-model failure: accepting the
+    # prose prefix would leak the protocol payload directly to the user.
+    if re.search(r"(?mi)^\s*tool_calls\s*:", trimmed):
+        debug_log("  ⚠️ Detected leaked tool_calls literal response", "planning")
         return True
 
     # Gemma-style tool scaffolding leaks: the model sometimes emits its
@@ -535,6 +750,7 @@ _HINT_MESSAGE_CHAR_LIMIT = 200
 _DIGEST_SKIP_TOOLS = frozenset({
     "getWeather",
     "getTime",
+    "memoryProvenance",
 })
 
 
@@ -584,7 +800,7 @@ def _maybe_digest_tool_result(
             tool_name=tool_name,
             tool_result=raw_tool_result,
             cfg=cfg,
-            chat_model=cfg.llm_chat_model,
+            chat_model=resolve_model(cfg, Tier.FAST),
             timeout_sec=float(getattr(cfg, 'llm_digest_timeout_sec', 8.0)),
             thinking=getattr(cfg, 'llm_thinking_enabled', False),
         )
@@ -632,6 +848,41 @@ def _maybe_digest_tool_result(
     return raw_tool_result
 
 
+def _without_memory_provenance_carryover(messages: list[dict]) -> list[dict]:
+    """Drop provenance calls and results before storing tool carryover."""
+    provenance_call_ids = {
+        str(call.get("id", ""))
+        for message in messages
+        for call in (message.get("tool_calls") or [])
+        if isinstance(call, dict)
+        and call.get("id")
+        and isinstance(call.get("function"), dict)
+        and call["function"].get("name") == "memoryProvenance"
+    }
+    retained: list[dict] = []
+    for message in messages:
+        if message.get("tool_name") == "memoryProvenance":
+            continue
+        tool_call_id = str(message.get("tool_call_id", ""))
+        if tool_call_id and tool_call_id in provenance_call_ids:
+            continue
+        calls = message.get("tool_calls") or []
+        if any(
+            isinstance(call, dict)
+            and isinstance(call.get("function"), dict)
+            and call["function"].get("name") == "memoryProvenance"
+            for call in calls
+        ):
+            continue
+        retained.append(message)
+    return retained
+
+
+# Matches the context block this module injects into the system message, so the
+# same block can be scrubbed back out when a model echoes it into its reply.
+_CONTEXT_ECHO_RE = re.compile(r"\s*\[Context:.*?\]", re.DOTALL)
+
+
 def _live_time_location_string(cfg) -> str:
     """Return a one-liner describing current local time and location, or ""."""
     try:
@@ -644,11 +895,42 @@ def _live_time_location_string(cfg) -> str:
                 auto_detect=getattr(cfg, 'location_auto_detect', True),
                 resolve_cgnat_public_ip=getattr(cfg, 'location_cgnat_resolve_public_ip', True),
                 location_cache_minutes=getattr(cfg, 'location_cache_minutes', 60),
+                manual_city=getattr(cfg, 'location_manual_city', None),
+                manual_region=getattr(cfg, 'location_manual_region', None),
+                manual_country=getattr(cfg, 'location_manual_country', None),
+                manual_timezone=getattr(cfg, 'location_manual_timezone', None),
             )
         return f"Current local time: {format_time_context(tz_name)}. {location_context}"
     except Exception as e:
         debug_log(f"live time/location lookup failed: {e}", "memory")
         return ""
+
+
+def strip_context_echo(reply: Optional[str]) -> Optional[str]:
+    """Remove any `[Context: ...]` block the model copied into its answer.
+
+    The engine appends that block to the system message so the model knows the
+    current time and location. Small models routinely echo it back, and the
+    result gets spoken aloud. Prompt wording alone does not reliably stop this,
+    so the echo is scrubbed deterministically as well.
+
+    The marker is emitted by this module in a fixed shape, so matching it is
+    safe in every language the assistant speaks.
+    """
+    if not reply or not reply.strip():
+        return reply
+
+    cleaned = _CONTEXT_ECHO_RE.sub(" ", reply).strip()
+
+    # A reply that was nothing but the echo leaves us with no answer at all.
+    # Speaking the leak beats speaking silence.
+    if not cleaned:
+        debug_log("Reply was only a context echo; delivering as-is", "planning")
+        return reply
+
+    if cleaned != reply.strip():
+        debug_log("Stripped context echo from reply", "planning")
+    return cleaned
 
 
 def _previous_turn_failed_tool_names(recent_messages: list) -> list[str]:
@@ -780,7 +1062,11 @@ def _build_enrichment_context_hint(cfg, recent_messages: list) -> Optional[str]:
 def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                     text: str, dialogue_memory: "DialogueMemory",
                     language: Optional[str] = None,
-                    quiet: bool = False) -> Optional[str]:
+                    quiet: bool = False,
+                    deadline: Optional[RequestDeadline] = None,
+                    on_memory_lookup_started: Optional[Callable[[], None]] = None,
+                    on_speech_segment: Optional[Callable[[str], None]] = None,
+                    ) -> Optional[str]:
     """
     Main entry point for reply generation.
 
@@ -795,6 +1081,10 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             web_search can pick locale-appropriate resources (e.g. the
             right Wikipedia host). None when invoked outside the voice
             path — tools then fall back to their own default.
+        on_speech_segment: Called with each finished sentence of the reply as
+            it is written, so speech can start on the first one instead of
+            waiting for the last. Absent means no one is listening for early
+            text, and the reply is fetched in one piece as before.
         quiet: When True, the reply is not printed to stdout. The text-chat
             path sets this so chat replies never land in the daemon's
             stdout, which subprocess mode forwards to the desktop app's
@@ -806,6 +1096,14 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     """
     # Step 1: Redact sensitive information
     redacted = redact(text)
+    turn_trace = current_turn()
+    automatic_handoff_enabled = (
+        turn_trace is not None and _automatic_crew_handoff_available(cfg)
+    )
+    caller_supplied_deadline = deadline is not None
+    deadline = deadline or RequestDeadline.after(
+        _first_audio_budget(cfg, "simple_reply_first_audio_sec", 3.0)
+    )
 
     # Step 2: Check for recent dialogue context
     recent_messages = []
@@ -857,22 +1155,21 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             debug_log(f"⚠️ Failed to get cached MCP tools: {e}", "mcp")
             mcp_tools = {}
 
-    # ── Step 3: Pre-flight planner ─────────────────────────────────────
-    # The planner runs FIRST, before any memory lookup or tool routing.
-    # Its job is to decide up front what preparation this turn needs:
+    # ── Step 3: Tool routing and pre-flight planner ────────────────────
+    # The router narrows the catalogue before the planner. The planner then
+    # decides what additional preparation this turn needs:
     #
     #   - Does answering require information the user shared in prior
     #     conversations? If yes, the planner emits a leading
     #     ``searchMemory topic='...'`` directive and we run diary + graph
     #     enrichment; otherwise we skip the keyword-extraction LLM call,
     #     the diary/graph queries, and the memory-digest LLM call.
-    #   - Are any external tools needed? The tool names the planner
-    #     references become the allow-list directly — we skip the
-    #     separate tool-router LLM call.
+    #   - Are any external tools needed? Planner references are unioned into
+    #     the router's authoritative allow-list.
     #
-    # Fail-open: if the planner returns ``[]`` (short query, disabled,
-    # LLM timeout, empty response), we fall through to the legacy safe
-    # defaults — run the memory extractor and the tool router as before.
+    # Fail-open: when an enabled planner returns ``[]`` after a timeout or
+    # invalid response, memory enrichment runs. A disabled planner skips
+    # speculative long-term recall while retaining warm profile and tools.
     # A positive single-step ``["Reply to the user."]`` plan is NOT the
     # same as ``[]``: it's the planner deciding no memory or tools are
     # needed. Both cases are preserved for the engine to distinguish.
@@ -897,10 +1194,15 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # come out concrete ("getWeather location='Paris'") so the direct-exec
     # fast path parses without needing the resolver LLM round-trip.
     context_hint = _build_enrichment_context_hint(cfg, recent_messages)
+    _strategy_config_value = getattr(cfg, "tool_selection_strategy", "llm")
     try:
-        strategy = ToolSelectionStrategy(getattr(cfg, "tool_selection_strategy", "llm"))
+        strategy = ToolSelectionStrategy(_strategy_config_value)
     except ValueError:
         strategy = ToolSelectionStrategy.LLM
+    _strategy_is_explicit_llm = bool(
+        isinstance(_strategy_config_value, str)
+        and _strategy_config_value.strip().lower() == ToolSelectionStrategy.LLM.value
+    )
     # Hot-window cache: router output for the same redacted query and
     # tool catalogue is reused within one conversation. Catalogue
     # signature includes builtin + MCP tool names so a mid-window MCP
@@ -917,10 +1219,36 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         dialogue_memory.hot_cache_get(_router_cache_key)
         if dialogue_memory and hasattr(dialogue_memory, "hot_cache_get") else None
     )
-    if isinstance(_cached_routed, list):
-        routed_tools = list(_cached_routed)
+    # The router's LLM call also classifies how much reasoning this turn
+    # needs (see jarvis.tools.selection._select_llm), reused here to bias
+    # which Tier.CHAT backend answers the turn — no second LLM call. A
+    # cache hit carries the classification forward with the tool pick,
+    # since both came from the same underlying response.
+    _chat_backend_preference = None
+    if isinstance(_cached_routed, dict):
+        routed_tools = list(_cached_routed.get("tools") or [])
+        _chat_backend_preference = _cached_routed.get("chat_backend_preference")
         debug_log("tool router served from hot-window cache", "planning")
     else:
+        _router_timeout_sec = float(
+            getattr(cfg, "llm_tools_timeout_sec", 8.0)
+        )
+        if automatic_handoff_enabled:
+            _router_timeout_sec = _bounded_local_timeout(
+                _router_timeout_sec,
+                turn_trace,
+                close_to_done=False,
+            )
+        _embedding_timeout_sec = float(
+            getattr(cfg, "llm_embedding_timeout_sec", 10.0)
+        )
+        if automatic_handoff_enabled:
+            _embedding_timeout_sec = _bounded_local_timeout(
+                _embedding_timeout_sec,
+                turn_trace,
+                close_to_done=False,
+            )
+        _chat_backend_signal: dict = {}
         routed_tools = select_tools(
             query=redacted,
             builtin_tools=BUILTIN_TOOLS,
@@ -928,12 +1256,14 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             strategy=strategy,
             llm_backend=get_llm_backend(cfg),
             llm_model=resolve_model(cfg, Tier.FAST),
-            llm_timeout_sec=float(getattr(cfg, "llm_tools_timeout_sec", 8.0)),
+            llm_timeout_sec=_router_timeout_sec,
             embedding_backend=get_embedding_backend(cfg),
             embed_model=cfg.embedding_model,
-            embed_timeout_sec=float(getattr(cfg, "llm_embedding_timeout_sec", 10.0)),
+            embed_timeout_sec=_embedding_timeout_sec,
             context_hint=context_hint,
+            chat_backend_signal=_chat_backend_signal,
         )
+        _chat_backend_preference = _chat_backend_signal.get("preference")
         # Don't cache the router's "fall open to all tools" fallback. That
         # path fires when the LLM router times out, returns empty, or emits
         # a response no token of which matches a known tool name — i.e. the
@@ -953,7 +1283,10 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             and hasattr(dialogue_memory, "hot_cache_put")
             and not _router_returned_full_catalog
         ):
-            dialogue_memory.hot_cache_put(_router_cache_key, list(routed_tools or []))
+            dialogue_memory.hot_cache_put(_router_cache_key, {
+                "tools": list(routed_tools or []),
+                "chat_backend_preference": _chat_backend_preference,
+            })
 
     # Tool carry-over guard: when the previous assistant turn invoked a
     # tool that FAILED (success=False on the ToolExecutionResult), union
@@ -998,6 +1331,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 _planner_tool_catalog.append((str(_nm), _first[:120]))
 
     action_plan: list[str] = []
+    planner_enabled = bool(getattr(cfg, "planner_enabled", True))
 
     # Fast-path: skip the planner when the tool router found no real tools
     # AND the query is short. The planner's main job is decomposing multi-step
@@ -1022,7 +1356,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     _skip_planner = (
         _router_said_no_tools
         and _query_word_count <= 8
-        and getattr(cfg, "planner_enabled", True)
+        and planner_enabled
     )
     if _skip_planner:
         # Positive signal: no tools, no memory needed. The warm profile
@@ -1035,17 +1369,27 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             f"{_query_word_count} words — using reply-only plan",
             "planning",
         )
-    else:
+    elif planner_enabled:
         try:
+            _planner_timeout_sec = None
+            if automatic_handoff_enabled:
+                _planner_timeout_sec = _bounded_local_timeout(
+                    float(getattr(cfg, "planner_timeout_sec", 3.0)),
+                    turn_trace,
+                    close_to_done=False,
+                )
             action_plan = plan_query(
                 cfg=cfg,
                 query=redacted,
                 dialogue_context=_dialogue_ctx,
                 tools=_planner_tool_catalog,
+                timeout_sec=_planner_timeout_sec,
             )
         except Exception as _plan_exc:  # pragma: no cover — defensive
             debug_log(f"planner step failed (non-fatal): {_plan_exc}", "planning")
             action_plan = []
+    else:
+        debug_log("planner disabled: skipping speculative long-term recall", "planning")
     if action_plan:
         _plan_preview = " | ".join(s[:50] for s in action_plan)
         print(
@@ -1062,7 +1406,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # - Plan without it → skip memory work entirely (no keyword LLM,
     #   no diary search, no graph search, no digest LLM).
     plan_demands_memory = bool(action_plan) and plan_requires_memory(action_plan)
-    needs_memory = (not action_plan) or plan_demands_memory
+    needs_memory = planner_enabled and ((not action_plan) or plan_demands_memory)
 
     # Recall gate: if the hot-window already carries a fresh tool result
     # covering the query topic, skip diary/graph enrichment for this turn.
@@ -1083,6 +1427,19 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 needs_memory = False
         except Exception as exc:  # noqa: BLE001
             debug_log(f"recall gate failed (fail-open): {exc}", "memory")
+    if needs_memory:
+        if not caller_supplied_deadline:
+            deadline = RequestDeadline.after(
+                _first_audio_budget(cfg, "memory_reply_first_audio_sec", 10.0)
+            )
+        if on_memory_lookup_started is not None:
+            try:
+                on_memory_lookup_started()
+            except Exception as exc:
+                debug_log(
+                    f"memory lookup callback failed: {type(exc).__name__}",
+                    "memory",
+                )
     # Topic hint from the directive (if any) — passed to the memory
     # extractor so keyword selection is anchored on what the planner
     # actually wanted to look up, instead of re-deriving from the raw
@@ -1153,6 +1510,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
 
     # Step 4: Memory enrichment — controlled by cfg.memory_enrichment_source
     # "all" = diary + graph, "diary" = diary only, "graph" = graph only
+    _recall_begun = _perf_counter()
     enrichment_source = getattr(cfg, "memory_enrichment_source", "diary")
     conversation_context = ""
     # For small models, the diary + graph text is replaced by a single
@@ -1163,6 +1521,24 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # marginally-relevant diary / graph text.
     raw_diary_entries: list[str] = []
     raw_graph_parts: list[str] = []
+    raw_vault_parts: list[str] = []
+    retrieved_memory_snippets: list = []
+    previous_memory_snippets: list = []
+    if dialogue_memory and hasattr(dialogue_memory, "hot_cache_get"):
+        try:
+            _provenance_key = getattr(
+                dialogue_memory,
+                "MEMORY_PROVENANCE_CACHE_KEY",
+                "memory_provenance_snippets",
+            )
+            _cached_snippets = dialogue_memory.hot_cache_get(_provenance_key)
+            if isinstance(_cached_snippets, list):
+                previous_memory_snippets = list(_cached_snippets)
+        except Exception as exc:
+            debug_log(
+                f"memory provenance cache read failed: {type(exc).__name__}",
+                "memory",
+            )
     keywords = []
 
     questions: list[str] = []
@@ -1195,9 +1571,18 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 search_params = _cached_params
                 debug_log("memory extractor served from hot-window cache", "memory")
             else:
+                _extractor_timeout_sec = float(
+                    getattr(cfg, 'llm_tools_timeout_sec', 8.0)
+                )
+                if automatic_handoff_enabled:
+                    _extractor_timeout_sec = _bounded_local_timeout(
+                        _extractor_timeout_sec,
+                        turn_trace,
+                        close_to_done=False,
+                    )
                 search_params = extract_search_params_for_memory(
                     _extractor_query, cfg, resolve_model(cfg, Tier.FAST),
-                    timeout_sec=float(getattr(cfg, 'llm_tools_timeout_sec', 8.0)),
+                    timeout_sec=_extractor_timeout_sec,
                     thinking=getattr(cfg, 'llm_thinking_enabled', False),
                     context_hint=context_hint,
                 )
@@ -1215,6 +1600,56 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     else:
         debug_log("memory enrichment skipped: planner did not request it", "memory")
 
+    # Remio is a local, optional source. Start it before the diary query so
+    # both sources spend the same wall-clock budget. The worker is output-free
+    # and its result is accepted only below, before prompt construction.
+    remio_pool = None
+    remio_future = None
+    if (
+        needs_memory
+        and keywords
+        and bool(getattr(cfg, "remio_memory_enabled", False))
+        and deadline.remaining() > 0.15
+        and (
+            not automatic_handoff_enabled
+            or _bounded_local_timeout(
+                60.0, turn_trace, close_to_done=False
+            ) > 0.15
+        )
+    ):
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            from ..memory.remio import RemioAdapter
+
+            remio_pool = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="jarvis-remio",
+            )
+            remio_future = remio_pool.submit(
+                RemioAdapter(
+                    timeout_sec=min(
+                        2.0,
+                        deadline.remaining(),
+                        _bounded_local_timeout(
+                            60.0, turn_trace, close_to_done=False
+                        ) if automatic_handoff_enabled else 60.0,
+                    ),
+                    max_results=min(
+                        3,
+                        int(getattr(cfg, "memory_enrichment_max_results", 3)),
+                    ),
+                ).search,
+                " ".join(keywords[:8]),
+            )
+        except Exception as exc:
+            if remio_pool is not None:
+                remio_pool.shutdown(wait=False, cancel_futures=True)
+                remio_pool = None
+            debug_log(
+                f"remio retrieval start failed (non-fatal): {type(exc).__name__}",
+                "memory",
+            )
+
     # Step 4a: Diary enrichment (episodic conversation history)
     if enrichment_source in ("all", "diary") and keywords:
         try:
@@ -1229,12 +1664,21 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 cfg=cfg,
                 from_time=from_time,
                 to_time=to_time,
-                timeout_sec=float(getattr(cfg, 'llm_embedding_timeout_sec', 10.0)),
+                timeout_sec=(
+                    _bounded_local_timeout(
+                        float(getattr(cfg, 'llm_embedding_timeout_sec', 10.0)),
+                        turn_trace,
+                        close_to_done=False,
+                    )
+                    if automatic_handoff_enabled
+                    else float(getattr(cfg, 'llm_embedding_timeout_sec', 10.0))
+                ),
                 voice_debug=cfg.voice_debug,
                 max_results=cfg.memory_enrichment_max_results,
             )
             if context_results:
                 raw_diary_entries = list(context_results)
+                retrieved_memory_snippets.extend(context_results)
                 conversation_context = "\n".join(context_results)
                 print(f"  📖 Diary: recalled {len(context_results)} entries", flush=True)
                 for entry in context_results[:3]:
@@ -1248,6 +1692,44 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         except Exception as e:
             debug_log(f"diary enrichment failed: {e}", "memory")
 
+    if remio_future is not None:
+        try:
+            from ..memory.remio import format_hits
+
+            wait_budget = min(
+                2.0,
+                deadline.remaining(),
+                _bounded_local_timeout(
+                    60.0, turn_trace, close_to_done=False
+                ) if automatic_handoff_enabled else 60.0,
+            )
+            remio_hits = (
+                remio_future.result(timeout=wait_budget)
+                if wait_budget > 0.0
+                else []
+            )
+            remio_context = format_hits(remio_hits)
+            if remio_context:
+                raw_diary_entries.extend(hit.text for hit in remio_hits)
+                retrieved_memory_snippets.extend(remio_hits)
+                conversation_context = "\n\n".join(
+                    part
+                    for part in (conversation_context, remio_context)
+                    if part
+                )
+                debug_log(
+                    f"remio enrichment: {len(remio_hits)} attributable hits",
+                    "memory",
+                )
+        except Exception as exc:
+            debug_log(
+                f"remio enrichment failed (non-fatal): {type(exc).__name__}",
+                "memory",
+            )
+        finally:
+            if remio_pool is not None:
+                remio_pool.shutdown(wait=False, cancel_futures=True)
+
     # Step 4b: Graph memory enrichment (structured knowledge about the user).
     # The graph is a question-answer index: each node holds knowledge facts the
     # assistant can use to answer implicit questions behind a query. If the
@@ -1260,7 +1742,8 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             debug_log("skipping graph enrichment: no implicit questions to answer", "memory")
         else:
             try:
-                from ..memory.graph import GraphMemoryStore
+                from ..memory.graph import FIXED_BRANCH_IDS, GraphMemoryStore
+                from ..memory.provenance import RetrievedSnippet, graph_snippet
                 graph_store = GraphMemoryStore(cfg.db_path)
 
                 graph_parts: list[str] = []
@@ -1289,7 +1772,25 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                         path = " > ".join(a.name for a in ancestors)
                         data_preview = node.data[:300] if node.data else ""
                         if data_preview:
-                            graph_parts.append(f"[{path}] {data_preview}")
+                            branch = (
+                                node.id if node.id in FIXED_BRANCH_IDS else next(
+                                    (getattr(ancestor, "id", "")
+                                     for ancestor in ancestors
+                                     if getattr(ancestor, "id", "")
+                                     in FIXED_BRANCH_IDS),
+                                    "",
+                                )
+                            )
+                            snippet = (
+                                graph_snippet(
+                                    data_preview,
+                                    node_id=node.id,
+                                    branch=branch,
+                                )
+                                if branch else RetrievedSnippet(data_preview)
+                            )
+                            graph_parts.append(snippet)
+                            retrieved_memory_snippets.append(snippet)
                             matched_q = _match_question(data_preview, questions)
                             node_annotations.append((node.name or path.split(" > ")[-1], matched_q))
                             debug_log(f"graph hit: [{path}] ({node.data_token_count} tokens)", "memory")
@@ -1311,7 +1812,54 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             except Exception as e:
                 debug_log(f"graph enrichment failed: {e}", "memory")
 
-    # Step 4c: Memory digest for small models.
+    # Step 4c: Local vault enrichment. Extractor keywords are already the
+    # topic-shaped input this index needs; the index owns the read gate and
+    # the two-content-word noise floor.
+    vault_context = ""
+    try:
+        from ..memory.vault.index import (
+            format_hits_for_prompt,
+            search_vault_for_enrichment,
+        )
+
+        vault_hits = search_vault_for_enrichment(cfg, keywords)
+        if vault_hits:
+            raw_vault_parts = [
+                f"[Local vault note excerpt]\n{hit.snippet}" for hit in vault_hits
+            ]
+            from ..memory.provenance import RetrievedSnippet
+            retrieved_memory_snippets.extend(
+                RetrievedSnippet(hit.snippet, hit.provenance) for hit in vault_hits
+            )
+            vault_context = format_hits_for_prompt(vault_hits)
+            print(f"  📚 Notes: recalled {len(vault_hits)} files", flush=True)
+            for hit in vault_hits[:3]:
+                preview = hit.snippet.strip().replace("\n", " ")
+                preview = preview[:80] + ("…" if len(preview) > 80 else "")
+                print(f"     · {hit.path}: {preview}", flush=True)
+            debug_log(f"vault enrichment: {len(vault_hits)} results", "vault")
+    except Exception as e:
+        debug_log(f"vault enrichment failed: {e}", "vault")
+
+    telemetry_mark("recall", (_perf_counter() - _recall_begun) * 1000.0)
+
+    # A provenance question normally arrives one turn after the recalled fact.
+    # Current-turn retrieval wins when present; otherwise the tool receives the
+    # prior reply's locally retained records. The attached provenance fields
+    # do not enter the prompt unless the model invokes memoryProvenance.
+    tool_memory_snippets = (
+        list(retrieved_memory_snippets)
+        if retrieved_memory_snippets else list(previous_memory_snippets)
+    )
+    from ..memory.provenance import RetrievedSnippet
+    tool_memory_snippets.append(RetrievedSnippet(""))
+    debug_log(
+        f"memory provenance prepared: current={len(retrieved_memory_snippets)} "
+        f"previous={len(previous_memory_snippets)}",
+        "memory",
+    )
+
+    # Step 4d: Memory digest for small models.
     #
     # Small models (~2B) degrade sharply as the system prompt grows, and the
     # combined diary + graph payload can easily add 2-3 KB of marginally-
@@ -1330,15 +1878,24 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     else:
         digest_enabled = bool(digest_cfg)
 
-    if digest_enabled and (raw_diary_entries or raw_graph_parts):
+    if digest_enabled and (raw_diary_entries or raw_graph_parts or raw_vault_parts):
         try:
+            _memory_digest_timeout_sec = float(
+                getattr(cfg, 'llm_digest_timeout_sec', 8.0)
+            )
+            if automatic_handoff_enabled:
+                _memory_digest_timeout_sec = _bounded_local_timeout(
+                    _memory_digest_timeout_sec,
+                    turn_trace,
+                    close_to_done=False,
+                )
             digest = digest_memory_for_query(
                 query=redacted,
                 diary_entries=raw_diary_entries,
-                graph_parts=raw_graph_parts,
+                graph_parts=raw_graph_parts + raw_vault_parts,
                 cfg=cfg,
-                chat_model=cfg.llm_chat_model,
-                timeout_sec=float(getattr(cfg, 'llm_digest_timeout_sec', 8.0)),
+                chat_model=resolve_model(cfg, Tier.FAST),
+                timeout_sec=_memory_digest_timeout_sec,
                 thinking=getattr(cfg, 'llm_thinking_enabled', False),
             )
             # Replace the raw injections with the digest note (or nothing
@@ -1355,6 +1912,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             # for small models, regardless of whether any relevance survived.
             conversation_context = ""
             graph_context = ""
+            vault_context = ""
         except Exception as e:
             debug_log(f"memory digest step failed (non-fatal): {e}", "memory")
 
@@ -1385,6 +1943,32 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # allow-list mid-loop when the initial routing turned out too narrow.
     if "toolSearchTool" not in allowed_tools:
         allowed_tools.append("toolSearchTool")
+    # A narrowed LLM-router selection containing a real tool is a structural
+    # signal that this reply needs external work. It is deliberately derived
+    # from tool availability, never from words in the query or eventual
+    # prose. ALL is availability-only, keyword matching is deliberately broad,
+    # and embedding selection returns a minimum top-k even without a confident
+    # semantic match. None is strong enough to turn an optional tool into a
+    # mandatory call.
+    _router_real_tools = [
+        name for name in routed_tools
+        if name not in {"stop", "toolSearchTool"}
+    ]
+    _routed_full_catalog = (
+        len(routed_tools) == len(_full_catalog_names)
+        and set(routed_tools) == set(_full_catalog_names)
+    )
+    _plan_is_memory_only = bool(
+        plan_demands_memory
+        and not tool_names_in_plan(action_plan, _full_catalog_names)
+    )
+    _router_requires_external_work = bool(
+        strategy == ToolSelectionStrategy.LLM
+        and _strategy_is_explicit_llm
+        and _router_real_tools
+        and not _routed_full_catalog
+        and not _plan_is_memory_only
+    )
     _selected_preview = ", ".join(allowed_tools[:8]) + (
         f" (+{len(allowed_tools) - 8} more)" if len(allowed_tools) > 8 else ""
     )
@@ -1428,14 +2012,17 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # Start with native tool calling. If the model returns HTTP 400 (tools not supported),
     # we automatically switch to text-based tool calling (markdown fences in system prompt).
     #
-    # For SMALL models we force text-based tool calling from the start. Small models like
-    # gemma4:e2b often emit malformed pseudo-native-tool-call syntax (e.g.
-    # `webSearch{search_query:<|"|>...}` or bare `webSearch()`) that the native-tool parser
-    # can't recognise. The markdown-fence format is explicit in the system prompt, so the
-    # model has a concrete template to follow. Using text tools from the start also avoids
-    # the wasted round-trip and prompt confusion of starting native and falling back mid-turn.
-    use_text_tools = (model_size == ModelSize.SMALL)
-    prompts = get_system_prompts(model_size)
+    # Gemma-class SMALL models are the known exception: they emit malformed
+    # pseudo-native syntax such as ``webSearch{...}``, so they start in the
+    # explicit text protocol. Other small models get the native tools API
+    # first. Qwen 2.5, for example, declares native tool support in Ollama;
+    # forcing the text scaffold into every reply degrades its ordinary prose.
+    # A model that rejects native tools still takes the existing HTTP 400
+    # fallback below, so unknown small models fail safely into text mode.
+    _chat_model_name = str(cfg.llm_chat_model or "").strip().lower()
+    use_text_tools = (
+        model_size == ModelSize.SMALL and "gemma" in _chat_model_name
+    )
     debug_log(f"Model size detected: {model_size.value} for {cfg.llm_chat_model} (use_text_tools={use_text_tools})", "planning")
 
     # Compound-query decomposition for small models.
@@ -1462,23 +2049,14 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # steps are preserved unchanged.
     action_plan = strip_memory_directives(action_plan)
 
-    _assistant_name = str(getattr(cfg, "wake_word", "jarvis") or "jarvis").strip().capitalize()
+    _assistant_name = str(
+        getattr(cfg, "wake_word", "jarvis") or "jarvis"
+    ).strip().capitalize()
     _persona_prompt = build_system_prompt(_assistant_name)
+    _reply_prompt_prefix = build_reply_prompt_prefix(cfg)
 
     def _build_initial_system_message() -> str:
-        guidance = [_persona_prompt.strip()]
-
-        # Add model-size-appropriate prompt components
-        guidance.extend(prompts.to_list())
-
-        # Both current TTS engines (Piper, Chatterbox) only support English.
-        # Responding in another language would produce garbled audio.
-        # Remove this constraint when a multilingual TTS engine is added.
-        tts_engine = getattr(cfg, 'tts_engine', 'piper')
-        if tts_engine in ('piper', 'chatterbox'):
-            guidance.append(
-                "Always respond in English regardless of the language the user speaks in."
-            )
+        guidance = [_reply_prompt_prefix]
 
         if warm_profile_block:
             # Pre-query, query-agnostic user context. Lives OUTSIDE the
@@ -1513,6 +2091,9 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
 
         if graph_context:
             guidance.append("\n" + graph_context)
+
+        if vault_context:
+            guidance.append("\n" + vault_context)
 
         if memory_digest_text:
             # Distilled, relevance-filtered note used in place of raw
@@ -1603,6 +2184,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             tool_msgs = [
                 m for m in messages[user_msg_index + 1:] if is_tool_message(m)
             ]
+            tool_msgs = _without_memory_provenance_carryover(tool_msgs)
             if tool_msgs:
                 dialogue_memory.record_tool_turn(tool_msgs)
         except Exception as exc:  # noqa: BLE001
@@ -1803,6 +2385,80 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     last_candidate_reply: Optional[str] = None
     max_turns = cfg.agentic_max_turns
     turn = 0
+    malformed_retry_used = False
+    zero_tool_retry_used = False
+    # Names whose implementations actually ran in this reply. Assistant
+    # prose and emitted tool-call syntax are not evidence; the name only
+    # enters this list immediately before dispatch.
+    executed_tool_names: list[str] = []
+
+    def _grounding_tool_has_run() -> bool:
+        """Whether an external-work tool, rather than loop control, ran."""
+        return any(
+            name not in {"stop", "toolSearchTool"}
+            for name in executed_tool_names
+        )
+
+    _handoff_reply: Optional[str] = None
+
+    def _hand_off_to_crew(reason: str) -> str:
+        """Delegate once and return the only reply this turn may deliver."""
+        nonlocal _handoff_reply
+        if _handoff_reply is not None:
+            return _handoff_reply
+
+        elapsed_ms = turn_trace.elapsed_ms() if turn_trace is not None else 0.0
+        debug_log(
+            f"automatic crew handoff decided at {elapsed_ms:.1f}ms "
+            f"(reason={reason})",
+            "planning",
+        )
+        print(
+            f"  📨 Local reply deadline reached ({elapsed_ms / 1000.0:.1f}s); "
+            "requesting crew delegation",
+            flush=True,
+        )
+        try:
+            with telemetry_stage("crew_handoff"):
+                result = run_tool_with_retries(
+                    db=db,
+                    cfg=cfg,
+                    tool_name="askCrew",
+                    tool_args={"agent": "jarvis", "task": redacted},
+                    system_prompt=build_system_prompt(
+                        str(getattr(cfg, "wake_word", "jarvis") or "jarvis")
+                        .strip()
+                        .capitalize()
+                    ),
+                    original_prompt="",
+                    redacted_text=redacted,
+                    max_retries=1,
+                    language=language,
+                    deadline=deadline,
+                    memory_snippets=tool_memory_snippets,
+                )
+        except Exception as exc:
+            debug_log(
+                f"automatic crew handoff failed: {type(exc).__name__}",
+                "planning",
+            )
+            result = None
+
+        if result is not None and result.success and result.reply_text:
+            _handoff_reply = result.reply_text.strip()
+            debug_log("automatic crew handoff accepted", "planning")
+        else:
+            detail = (
+                getattr(result, "error_message", None)
+                if result is not None else None
+            )
+            detail = str(detail or "The crew channel could not accept it.").strip()
+            _handoff_reply = (
+                "I couldn't hand this request to the crew, so no crew answer "
+                f"will follow. {detail}"
+            )
+            debug_log("automatic crew handoff was not accepted", "planning")
+        return _handoff_reply
 
     # Per-reply session id used to group prompt dumps on disk when
     # JARVIS_DUMP_PROMPTS=1 is set. Generated unconditionally so the
@@ -1820,6 +2476,47 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # counter must ignore these — they belong to earlier plan executions, not
     # to the steps of the current plan.
     _plan_steps_baseline = sum(1 for m in messages if m.get("tool_name"))
+
+    def _stream_speech():
+        """Return a fresh (segmenter, listener) pair for one model turn.
+
+        Each turn of the loop is its own stream: a turn that ends in a tool
+        call and the turn that finally answers must not share a segmenter, or
+        the answer would inherit the tool turn's half-sentence. Returns
+        ``(None, None)`` when nobody asked for early text, which keeps the
+        request unstreamed and the behaviour exactly as it was.
+        """
+        if on_speech_segment is None:
+            return None, None
+        segmenter = SpeechSegmenter()
+
+        def listener(chunk: str) -> None:
+            for sentence in segmenter.feed(chunk):
+                _say(sentence)
+
+        return segmenter, listener
+
+    def _stream_speech_for_turn():
+        """Buffer a router-positive turn until tool grounding is known.
+
+        Token streaming is irreversible. If prose is going to be withheld by
+        the zero-tool gate below, passing it to TTS while it is generated
+        would still expose the false success by voice.
+        """
+        if _router_requires_external_work and not _grounding_tool_has_run():
+            return None, None
+        return _stream_speech()
+
+    def _say(sentence: str) -> None:
+        """Hand one finished sentence to the speech path.
+
+        Speech is a side effect on the user's behalf: a speech path that
+        fails must cost them the sound, never the answer.
+        """
+        try:
+            on_speech_segment(sentence)
+        except Exception as e:
+            debug_log(f"speech segment listener failed: {type(e).__name__}: {e}", "tts")
 
     while turn < max_turns:
         turn += 1
@@ -1839,27 +2536,65 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         # a final reply from the accumulated results.
         # See planner.spec.md.
         _plan_tool_steps = tool_steps_of(action_plan)
+        _tool_results_so_far = (
+            sum(1 for m in messages if m.get("tool_name"))
+            - _plan_steps_baseline
+        )
+        _local_close_to_done = bool(
+            _router_said_no_tools
+            or (
+                _tool_results_so_far > 0
+                and _tool_results_so_far >= len(_plan_tool_steps)
+            )
+        )
+        if automatic_handoff_enabled:
+            _handoff_reason = _automatic_handoff_reason(
+                turn_trace, _local_close_to_done
+            )
+            if _handoff_reason is not None:
+                reply = _hand_off_to_crew(_handoff_reason)
+                break
+            if (
+                turn_trace.elapsed_ms() >= CREW_HANDOFF_CHECKPOINT_MS
+                and _local_close_to_done
+            ):
+                debug_log(
+                    "automatic crew handoff deferred: local turn is close "
+                    "to done",
+                    "planning",
+                )
         if (
             use_text_tools
             and _plan_tool_steps
             and not _plan_under_specified
         ):
-            _tool_results_so_far = (
-                sum(1 for m in messages if m.get("tool_name"))
-                - _plan_steps_baseline
-            )
             if 0 <= _tool_results_so_far < len(_plan_tool_steps):
                 _plan_exec_handled = False
                 try:
                     _prior = list(invoked_tools_history)
+                    _resolver_timeout_sec = None
+                    if automatic_handoff_enabled:
+                        _resolver_timeout_sec = _bounded_local_timeout(
+                            float(getattr(cfg, "planner_timeout_sec", 3.0)),
+                            turn_trace,
+                            close_to_done=False,
+                        )
                     _resolved = _resolve_plan_step(
                         cfg=cfg,
                         next_step_text=_plan_tool_steps[_tool_results_so_far],
                         prior_results=_prior,
                         tools_schema=tools_json_schema or [],
+                        timeout_sec=_resolver_timeout_sec,
                     )
                     if _resolved is not None:
                         _name, _args = _resolved
+                        if automatic_handoff_enabled:
+                            _handoff_reason = _automatic_handoff_reason(
+                                turn_trace, close_to_done=False
+                            )
+                            if _handoff_reason is not None:
+                                reply = _hand_off_to_crew(_handoff_reason)
+                                break
                         try:
                             _cand_sig = (
                                 _name,
@@ -1919,6 +2654,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                                     }
                                 ],
                             })
+                            executed_tool_names.append(_name)
                             _plan_result = run_tool_with_retries(
                                 db=db,
                                 cfg=cfg,
@@ -1929,6 +2665,8 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                                 redacted_text=redacted,
                                 max_retries=1,
                                 language=language,
+                                deadline=deadline,
+                                memory_snippets=tool_memory_snippets,
                             )
                             if _plan_result.reply_text:
                                 _plan_text = _maybe_digest_tool_result(
@@ -2014,14 +2752,26 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         # tools API not supported).
         _dump_tools_schema = None if use_text_tools else tools_json_schema
         _chat_model = cfg.llm_chat_model
+        _segmenter, _on_token = _stream_speech_for_turn()
         try:
+            _chat_timeout_sec = float(
+                getattr(cfg, 'llm_chat_timeout_sec', 45.0)
+            )
+            if automatic_handoff_enabled:
+                _chat_timeout_sec = _bounded_local_timeout(
+                    _chat_timeout_sec,
+                    turn_trace,
+                    _local_close_to_done,
+                )
             llm_resp = chat_with_messages(
                 cfg=cfg,
                 messages=messages,
-                timeout_sec=float(getattr(cfg, 'llm_chat_timeout_sec', 45.0)),
+                timeout_sec=_chat_timeout_sec,
                 extra_options=None,
                 tools=_dump_tools_schema,
                 thinking=getattr(cfg, 'llm_thinking_enabled', False),
+                on_token=_on_token,
+                chat_backend_preference=_chat_backend_preference,
             )
             dump_reply_turn(
                 session_id=_dump_session_id,
@@ -2045,13 +2795,25 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             use_text_tools = True
             messages[0] = {"role": "system", "content": _build_initial_system_message()}
             _update_system_message_with_context(messages)
+            _segmenter, _on_token = _stream_speech_for_turn()
+            _fallback_timeout_sec = float(
+                getattr(cfg, 'llm_chat_timeout_sec', 45.0)
+            )
+            if automatic_handoff_enabled:
+                _fallback_timeout_sec = _bounded_local_timeout(
+                    _fallback_timeout_sec,
+                    turn_trace,
+                    _local_close_to_done,
+                )
             llm_resp = chat_with_messages(
                 cfg=cfg,
                 messages=messages,
-                timeout_sec=float(getattr(cfg, 'llm_chat_timeout_sec', 45.0)),
+                timeout_sec=_fallback_timeout_sec,
                 extra_options=None,
                 tools=None,
                 thinking=getattr(cfg, 'llm_thinking_enabled', False),
+                on_token=_on_token,
+                chat_backend_preference=_chat_backend_preference,
             )
             dump_reply_turn(
                 session_id=_dump_session_id,
@@ -2095,6 +2857,30 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
 
         # Extract tool call if present
         t_name, t_args, t_call_id = _extract_structured_tool_call(llm_resp)
+
+        if automatic_handoff_enabled:
+            # A complete prose response is no longer merely close to done.
+            # It owns the turn below the hard cutoff even when the router
+            # conservatively exposed tools that the model did not use.
+            _response_is_done = bool(content and not t_name)
+            _handoff_reason = _automatic_handoff_reason(
+                turn_trace,
+                _local_close_to_done or _response_is_done,
+            )
+            if _handoff_reason is not None:
+                reply = _hand_off_to_crew(_handoff_reason)
+                break
+
+        # Release the sentence still in hand. A turn that ends in a tool call
+        # was preamble, not an answer, so its tail is dropped: the user hears
+        # what was already said and then the real reply, never a half-thought
+        # left hanging in front of it.
+        if _segmenter is not None:
+            if t_name:
+                _segmenter.flush()
+            else:
+                for _sentence in _segmenter.flush():
+                    _say(_sentence)
 
         # ALWAYS append the assistant's response to messages exactly as received
         assistant_msg = {"role": "assistant", "content": content}
@@ -2207,6 +2993,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 continue
 
             # Execute tool
+            executed_tool_names.append(tool_name)
             result = run_tool_with_retries(
                 db=db,
                 cfg=cfg,
@@ -2217,6 +3004,8 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 redacted_text=redacted,
                 max_retries=1,
                 language=language,
+                deadline=deadline,
+                memory_snippets=tool_memory_snippets,
             )
 
             # Handle stop tool - end conversation without response
@@ -2439,24 +3228,111 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             continue
 
         # Natural-language content from the model. Normalise and deliver.
+        content = strip_context_echo(content)
         extracted = _extract_text_from_json_response(content)
         if extracted:
             candidate_reply = extracted
             malformed_fallback = False
         elif _is_malformed_json_response(content):
-            debug_log(f"  ⚠️ Malformed content — delivering error reply: '{content[:80]}...'", "planning")
+            if not malformed_retry_used and turn < max_turns:
+                malformed_retry_used = True
+                debug_log(
+                    "malformed model output withheld; retrying once with "
+                    "a protocol correction",
+                    "planning",
+                )
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[Retry instruction: Your previous response was invalid "
+                        "and was not shown to the user. Answer the original request "
+                        "again. Return exactly one valid output: either one exact "
+                        "tool call using an available tool, or a complete "
+                        "natural-language answer. Do not combine prose with tool "
+                        "syntax, do not output protocol labels, and never invent "
+                        "facts that are absent from the supplied context.]"
+                    ),
+                })
+                continue
+
+            debug_log(
+                f"  ⚠️ Malformed content after recovery attempt — "
+                f"delivering error reply: '{content[:80]}...'",
+                "planning",
+            )
             is_small = detect_model_size(cfg.llm_chat_model) == ModelSize.SMALL
-            candidate_reply = (
+            candidate_reply = in_the_voices_language(cfg, (
                 "I had trouble understanding that request. "
                 "This can happen with smaller AI models. "
                 "You can switch to a more capable model through the Setup Wizard in the menu bar."
                 if is_small else
                 "I had trouble understanding that request. Could you try rephrasing it?"
-            )
+            ))
             malformed_fallback = True
         else:
             candidate_reply = content
             malformed_fallback = False
+
+        # The router made a positive, narrowed selection for external work,
+        # yet no tool implementation ran. A prose answer in that state is
+        # structurally ungrounded regardless of how plausible or specific it
+        # sounds. Withhold it once and force the model back through the
+        # existing discovery escape hatch. If the model ignores the repair,
+        # replace the repeated claim with an honest failure rather than
+        # delivering an unqualified success.
+        if (
+            not malformed_fallback
+            and candidate_reply
+            and _router_requires_external_work
+            and not _grounding_tool_has_run()
+        ):
+            if not zero_tool_retry_used and turn < max_turns:
+                zero_tool_retry_used = True
+                debug_log(
+                    "zero-tool final withheld; router selected external work "
+                    "but no grounding tool ran, forcing escape-hatch retry",
+                    "planning",
+                )
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[Grounding required: Your previous prose reply was "
+                        "not shown to the user because the tool router found "
+                        "that this request needs external work, but no tool "
+                        "actually ran. Treat every claimed result in that "
+                        "reply as unverified and do not repeat it. Call a "
+                        "fitting available tool now. If the current tools "
+                        "cannot perform or verify the requested work, call "
+                        "toolSearchTool with a short self-contained "
+                        "description of the needed capability, then use a "
+                        "tool it surfaces. Only report an external result "
+                        "after a tool returns evidence. If the work cannot "
+                        "be completed, say so honestly.]"
+                    ),
+                })
+                continue
+
+            debug_log(
+                "zero-tool final rejected after escape-hatch retry; "
+                "delivering explicit unverified-result fallback",
+                "planning",
+            )
+            candidate_reply = in_the_voices_language(
+                cfg,
+                "I couldn't verify the requested external state or complete "
+                "the requested action, so I can't confirm that result.",
+            )
+        elif (
+            not malformed_fallback
+            and candidate_reply
+            and not _grounding_tool_has_run()
+        ):
+            debug_log(
+                "zero-tool final accepted; router supplied no narrowed "
+                "external-work signal",
+                "planning",
+            )
 
         reply = candidate_reply
         last_candidate_reply = candidate_reply
@@ -2494,7 +3370,9 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             )
             reply = last_candidate_reply
     if not reply or not reply.strip():
-        reply = "Sorry, I had trouble processing that. Could you try again?"
+        reply = in_the_voices_language(
+            cfg, "Sorry, I had trouble processing that. Could you try again?"
+        )
         debug_log("no reply generated, returning error message", "planning")
 
         # Print error message
@@ -2519,7 +3397,9 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # Step 10: Output and memory update
     safe_reply = reply.strip()
     if not safe_reply:
-        safe_reply = "Sorry, I had trouble processing that. Could you try again?"
+        safe_reply = in_the_voices_language(
+            cfg, "Sorry, I had trouble processing that. Could you try again?"
+        )
         reply = safe_reply
     if safe_reply:
         # Print reply with appropriate header. Quiet mode (text chat) skips
@@ -2540,6 +3420,16 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # Step 11: Add to dialogue memory
     if dialogue_memory is not None:
         try:
+            if hasattr(dialogue_memory, "hot_cache_put"):
+                _provenance_key = getattr(
+                    dialogue_memory,
+                    "MEMORY_PROVENANCE_CACHE_KEY",
+                    "memory_provenance_snippets",
+                )
+                dialogue_memory.hot_cache_put(
+                    _provenance_key, list(retrieved_memory_snippets),
+                )
+
             # Add user message
             dialogue_memory.add_message("user", redacted)
 
@@ -2549,10 +3439,24 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
 
             # Add assistant reply if we have one
             if reply and reply.strip():
-                dialogue_memory.add_message("assistant", reply.strip())
+                reply_for_memory = reply.strip()
+                if "memoryProvenance" in executed_tool_names:
+                    from ..memory.provenance import redact_vault_paths
+                    reply_for_memory = redact_vault_paths(
+                        reply_for_memory, tool_memory_snippets,
+                    )
+                dialogue_memory.add_message("assistant", reply_for_memory)
 
             debug_log("interaction added to dialogue memory", "memory")
         except Exception as e:
             debug_log(f"dialogue memory error: {e}", "memory")
 
     return reply
+
+
+def _first_audio_budget(cfg: Any, key: str, default: float) -> float:
+    """Read a latency budget without allowing bad config to fail a turn."""
+    try:
+        return float(getattr(cfg, key, default))
+    except (TypeError, ValueError):
+        return default

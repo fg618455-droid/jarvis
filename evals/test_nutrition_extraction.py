@@ -213,8 +213,6 @@ class TestNutritionExtraction:
         """
         Test that the model extracts reasonable nutrition data for common meals.
         """
-        mock_config.ollama_base_url = JUDGE_BASE_URL
-        mock_config.ollama_chat_model = JUDGE_MODEL
         mock_config.llm_chat_timeout_sec = 120.0
 
         print(f"\n[MEAL] Testing meal: {case.description}")
@@ -248,8 +246,6 @@ class TestNutritionExtraction:
         """
         Test that extraction returns properly structured JSON with all expected fields.
         """
-        mock_config.ollama_base_url = JUDGE_BASE_URL
-        mock_config.ollama_chat_model = JUDGE_MODEL
         mock_config.llm_chat_timeout_sec = 120.0
 
         print(f"\n[JSON] Testing JSON structure")
@@ -283,8 +279,6 @@ class TestNutritionExtraction:
         """
         Test that model provides reasonable estimates for ambiguous portion descriptions.
         """
-        mock_config.ollama_base_url = JUDGE_BASE_URL
-        mock_config.ollama_chat_model = JUDGE_MODEL
         mock_config.llm_chat_timeout_sec = 120.0
 
         print(f"\n[AMBIGUOUS] Testing ambiguous portions")
@@ -313,8 +307,6 @@ class TestNutritionExtraction:
         """
         Test that extraction returns NONE for non-food inputs.
         """
-        mock_config.ollama_base_url = JUDGE_BASE_URL
-        mock_config.ollama_chat_model = JUDGE_MODEL
         mock_config.llm_chat_timeout_sec = 120.0
 
         print(f"\n[NON-FOOD] Testing non-food rejection")
@@ -347,8 +339,6 @@ class TestNutritionToolIntegration:
         from jarvis.tools.base import ToolContext
         from jarvis.memory.db import Database
 
-        mock_config.ollama_base_url = JUDGE_BASE_URL
-        mock_config.ollama_chat_model = JUDGE_MODEL
         mock_config.llm_chat_timeout_sec = 120.0
         mock_config.use_stdin = True
 
@@ -438,8 +428,6 @@ class TestNutritionModelComparison:
         """
         Simple meal that any model should handle correctly.
         """
-        mock_config.ollama_base_url = JUDGE_BASE_URL
-        mock_config.ollama_chat_model = JUDGE_MODEL
         mock_config.llm_chat_timeout_sec = 120.0
 
         print(f"\n[SIMPLE] Simple meal test (baseline)")
@@ -472,8 +460,6 @@ class TestNutritionModelComparison:
         """
         Test extraction with explicit quantities (should improve accuracy).
         """
-        mock_config.ollama_base_url = JUDGE_BASE_URL
-        mock_config.ollama_chat_model = JUDGE_MODEL
         mock_config.llm_chat_timeout_sec = 120.0
 
         print(f"\n[QUANTITY] Quantity extraction test")

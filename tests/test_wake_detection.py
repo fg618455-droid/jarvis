@@ -7,7 +7,6 @@ import pytest
 from jarvis.listening.wake_detection import (
     is_wake_word_detected,
     extract_query_after_wake,
-    is_stop_command,
 )
 
 
@@ -65,24 +64,3 @@ class TestExtractQueryAfterWake:
     def test_strips_leading_punctuation(self):
         result = extract_query_after_wake("jarvis, tell me a joke", "jarvis", [])
         assert result == "tell me a joke"
-
-
-@pytest.mark.unit
-class TestStopCommand:
-    """Tests for is_stop_command."""
-
-    def test_exact_stop_command(self):
-        assert is_stop_command("stop", ["stop", "quiet"]) is True
-
-    def test_stop_command_in_phrase(self):
-        assert is_stop_command("please stop talking", ["stop", "quiet"]) is True
-
-    def test_no_stop_command(self):
-        assert is_stop_command("what is the weather", ["stop", "quiet"]) is False
-
-    def test_empty_text(self):
-        assert is_stop_command("", ["stop", "quiet"]) is False
-
-    def test_fuzzy_stop_command(self):
-        """Short input fuzzy-matches stop commands."""
-        assert is_stop_command("stob", ["stop", "quiet"], fuzzy_ratio=0.7) is True

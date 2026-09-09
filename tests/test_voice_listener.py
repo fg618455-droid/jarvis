@@ -9,9 +9,19 @@ import time
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_reply_prefix_warmup():
+    # These tests cover Whisper/startup orchestration, not provider I/O.
+    with patch("jarvis.listening.listener.warm_up_reply_prefix", return_value=True):
+        yield
+
+
 def _create_mock_config(**kwargs):
     """Create a mock config object with default values for voice listener tests."""
     mock_cfg = MagicMock()
+    mock_cfg.llm_chat_model = kwargs.get("llm_chat_model", "")
+    mock_cfg.embedding_model = kwargs.get("embedding_model", "")
+    mock_cfg.tool_selection_strategy = kwargs.get("tool_selection_strategy", "keyword")
     mock_cfg.whisper_model = kwargs.get("whisper_model", "small")
     mock_cfg.whisper_device = kwargs.get("whisper_device", "auto")
     mock_cfg.whisper_compute_type = kwargs.get("whisper_compute_type", "int8")
@@ -58,6 +68,8 @@ class TestWhisperComputeTypeFallback:
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
 
                             # Run will attempt to load model then open audio stream
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             # Should have been called only once with int8
@@ -93,6 +105,8 @@ class TestWhisperComputeTypeFallback:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             # Should have tried int8 first, then float16
@@ -131,6 +145,8 @@ class TestWhisperComputeTypeFallback:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             # Should have tried int8, float16, then float32
@@ -164,6 +180,8 @@ class TestWhisperComputeTypeFallback:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             # Should have only tried once - no fallback for model not found errors
@@ -193,6 +211,8 @@ class TestWhisperComputeTypeFallback:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             # Should have tried all configs: 3 compute types x 2 devices (auto + cpu fallback)
@@ -227,6 +247,8 @@ class TestWhisperComputeTypeFallback:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             # Should have tried float16, then float32 (no duplicate float16)
@@ -259,6 +281,8 @@ class TestWhisperComputeTypeFallback:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             # Should have tried float32 on auto, then cpu fallback
@@ -398,6 +422,8 @@ class TestLargeV3TurboFallback:
 
                                 mock_cfg = _create_mock_config(whisper_model="large-v3-turbo")
                                 listener = VoiceListener(MagicMock(), mock_cfg, MagicMock(), MagicMock())
+                                # Startup path only: the loop is not what these tests assert on.
+                                listener._should_stop = True
                                 listener.run()
 
                                 # Should load large-v3 instead of large-v3-turbo
@@ -425,6 +451,8 @@ class TestLargeV3TurboFallback:
 
                                 mock_cfg = _create_mock_config(whisper_model="large-v3-turbo")
                                 listener = VoiceListener(MagicMock(), mock_cfg, MagicMock(), MagicMock())
+                                # Startup path only: the loop is not what these tests assert on.
+                                listener._should_stop = True
                                 listener.run()
 
                                 # Should keep large-v3-turbo
@@ -573,6 +601,8 @@ class TestCpuOptimisations:
 
                                 mock_cfg = _create_mock_config(whisper_device="cpu")
                                 listener = VoiceListener(MagicMock(), mock_cfg, MagicMock(), MagicMock())
+                                # Startup path only: the loop is not what these tests assert on.
+                                listener._should_stop = True
                                 listener.run()
 
                                 assert mock_class.call_args[1]["cpu_threads"] == 8
@@ -595,6 +625,8 @@ class TestCpuOptimisations:
 
                                 mock_cfg = _create_mock_config(whisper_device="auto")
                                 listener = VoiceListener(MagicMock(), mock_cfg, MagicMock(), MagicMock())
+                                # Startup path only: the loop is not what these tests assert on.
+                                listener._should_stop = True
                                 listener.run()
 
                                 assert mock_class.call_args[1]["cpu_threads"] == 12
@@ -617,6 +649,8 @@ class TestCpuOptimisations:
 
                             mock_cfg = _create_mock_config()
                             listener = VoiceListener(MagicMock(), mock_cfg, MagicMock(), MagicMock())
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             assert listener._whisper_device == "cpu"
@@ -642,6 +676,8 @@ class TestCpuOptimisations:
 
                             mock_cfg = _create_mock_config()
                             listener = VoiceListener(MagicMock(), mock_cfg, MagicMock(), MagicMock())
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             assert listener._whisper_device == "cpu"
@@ -706,6 +742,18 @@ class TestCpuOptimisations:
         call_kwargs = mock_model.transcribe.call_args[1]
         assert call_kwargs["without_timestamps"] is False
         assert call_kwargs["condition_on_previous_text"] is True
+
+    def test_transcription_biases_assistant_and_vault_product_terms(self):
+        """Short product names must be supplied to faster-whisper as hotwords."""
+        listener, mock_model = self._create_listener_for_transcribe_test("cuda")
+        listener.cfg.wake_word = "jarvis"
+        listener.cfg.wake_aliases = []
+
+        listener._finalize_utterance()
+
+        hotwords = mock_model.transcribe.call_args[1]["hotwords"].split()
+        assert "Jarvis" in hotwords
+        assert "Vault" in hotwords
 
 
 class TestRepetitiveHallucinationDetectionExtended:
@@ -844,6 +892,8 @@ class TestCrossPlatformDeviceLogging:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             captured = capsys.readouterr()
@@ -880,6 +930,8 @@ class TestCrossPlatformDeviceLogging:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             captured = capsys.readouterr()
@@ -1094,6 +1146,8 @@ class TestSampleRateFallback:
                             with patch("jarvis.listening.listener.time") as mock_time:
                                 mock_time.time.return_value = 0
                                 mock_time.sleep = time.sleep
+                                # Startup path only: the loop is not what these tests assert on.
+                                listener._should_stop = True
                                 listener.run()
 
                             # InputStream should have been called twice
@@ -1131,6 +1185,8 @@ class TestSampleRateFallback:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             # Should only have tried once — no fallback
@@ -1176,6 +1232,8 @@ class TestCorruptedWhisperCacheRecovery:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             # Should have called WhisperModel twice: first corrupted, then retry
@@ -1212,6 +1270,8 @@ class TestCorruptedWhisperCacheRecovery:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             # The loop tried fallback configs (not just config 1's retry)
@@ -1259,6 +1319,8 @@ class TestCorruptedWhisperCacheRecovery:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             # The entire models-- directory should have been deleted (including blobs)
@@ -1286,6 +1348,8 @@ class TestCorruptedWhisperCacheRecovery:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             # The loop tried fallback configs (not just the first one)
@@ -1324,6 +1388,8 @@ class TestCorruptedWhisperCacheRecovery:
                                 mock_dialogue_memory = MagicMock()
 
                                 listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                                # Startup path only: the loop is not what these tests assert on.
+                                listener._should_stop = True
                                 listener.run()
 
                                 # The loop tried fallback configs (not just the first one)
@@ -1357,6 +1423,8 @@ class TestCorruptedWhisperCacheRecovery:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             # The loop tried fallback configs (not just the first one)
@@ -1402,6 +1470,8 @@ class TestCorruptedWhisperCacheRecovery:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             # Call 1 (config 1 initial), call 2 (config 1 retry), call 3 (config 2, succeeds)
@@ -1445,6 +1515,8 @@ class TestWhisperRateLimitRetry:
                                 mock_dialogue_memory = MagicMock()
 
                                 listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                                # Startup path only: the loop is not what these tests assert on.
+                                listener._should_stop = True
                                 listener.run()
 
                                 assert mock_class.call_count == 2
@@ -1464,7 +1536,9 @@ class TestWhisperRateLimitRetry:
                         with patch("jarvis.listening.listener.sd") as mock_sd:
                             mock_sd.query_devices.return_value = [{"name": "Test Mic", "max_input_channels": 1}]
 
-                            with patch("jarvis.listening.listener.time.sleep") as mock_sleep:
+                            with patch("jarvis.listening.listener.time", wraps=time) as clock_proxy:
+                                mock_sleep = clock_proxy.sleep
+                                mock_sleep.return_value = None
                                 from jarvis.listening.listener import VoiceListener
 
                                 mock_db = MagicMock()
@@ -1473,6 +1547,8 @@ class TestWhisperRateLimitRetry:
                                 mock_dialogue_memory = MagicMock()
 
                                 listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                                # Startup path only: the loop is not what these tests assert on.
+                                listener._should_stop = True
                                 listener.run()
 
                                 # Should have retried multiple times then given up
@@ -1519,6 +1595,8 @@ class TestWhisperRateLimitRetry:
                                 mock_dialogue_memory = MagicMock()
 
                                 listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                                # Startup path only: the loop is not what these tests assert on.
+                                listener._should_stop = True
                                 listener.run()
 
                                 assert mock_class.call_count == 2
@@ -1546,6 +1624,8 @@ class TestWhisperRateLimitRetry:
                             mock_dialogue_memory = MagicMock()
 
                             listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
                             # Should have only tried once — no retry
@@ -1694,7 +1774,13 @@ class TestLlmWarmup:
 
         assert len(threads) == 3
         assert chat_warm.call_args.args[1] == "llama3.1"
-        assert mock_embed_backend.embed.call_args.args == ("ping", "nomic-embed-text")
+        embedded_texts = [call.args[0] for call in mock_embed_backend.embed.call_args_list]
+        assert embedded_texts
+        assert all(":" in text for text in embedded_texts)
+        assert all(
+            call.args[1] == "nomic-embed-text"
+            for call in mock_embed_backend.embed.call_args_list
+        )
         assert listener._llm_warmup_results["embed"] == ("nomic-embed-text", True)
 
     def test_skips_embed_warmup_when_empty(self):
@@ -1834,6 +1920,8 @@ class TestWhisperWarmup:
                             listener = VoiceListener(
                                 MagicMock(), mock_cfg, MagicMock(), MagicMock()
                             )
+                            # Startup path only: the loop is not what these tests assert on.
+                            listener._should_stop = True
                             listener.run()
 
         assert mock_whisper_model.transcribe.called, "warmup transcribe should have fired"

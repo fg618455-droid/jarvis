@@ -325,6 +325,74 @@ class TestOllamaBackendPromptCaching:
         assert sent["cache_prompt"] is True
 
 
+class TestOllamaBackendModelResidency:
+    """A warmup that is never renewed is a warmup that expires mid-session.
+
+    Ollama resets a model's unload timer from the ``keep_alive`` of each
+    request, falling back to its own short default when the field is absent.
+    A voice assistant that idles between conversations then pays a cold
+    page-in — many seconds for a 7B weight set — on the next thing the user
+    says, however recently the model was warmed."""
+
+    @patch("jarvis.llm.requests.post")
+    def test_direct_renews_model_residency(self, mock_post):
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(json_data={"message": {"content": "ok"}})
+        backend = OllamaBackend("http://localhost:11434", keep_alive="30m")
+
+        backend.direct("gemma4:e2b", "sys", "user")
+
+        assert mock_post.call_args.kwargs["json"]["keep_alive"] == "30m"
+
+    @patch("jarvis.llm.requests.post")
+    def test_chat_renews_model_residency(self, mock_post):
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(json_data={"message": {"content": "ok"}})
+        backend = OllamaBackend("http://localhost:11434", keep_alive="30m")
+
+        backend.chat("any", [{"role": "user", "content": "hi"}])
+
+        assert mock_post.call_args.kwargs["json"]["keep_alive"] == "30m"
+
+    @patch("jarvis.llm.requests.post")
+    def test_streaming_renews_model_residency(self, mock_post):
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(
+            iter_lines=[b'{"message": {"content": "hi"}}']
+        )
+        backend = OllamaBackend("http://localhost:11434", keep_alive="30m")
+
+        backend.streaming("gemma4:e2b", "sys", "user")
+
+        assert mock_post.call_args.kwargs["json"]["keep_alive"] == "30m"
+
+    @patch("jarvis.llm.requests.post")
+    def test_a_caller_can_still_override_residency(self, mock_post):
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(json_data={"message": {"content": "ok"}})
+        backend = OllamaBackend("http://localhost:11434", keep_alive="30m")
+
+        backend.chat("any", [{"role": "user", "content": "hi"}],
+                     extra_options={"keep_alive": "1m"})
+
+        assert mock_post.call_args.kwargs["json"]["keep_alive"] == "1m"
+
+    @patch("jarvis.llm.requests.post")
+    def test_residency_is_left_to_the_server_when_unset(self, mock_post):
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(json_data={"message": {"content": "ok"}})
+        backend = OllamaBackend("http://localhost:11434")
+
+        backend.chat("any", [{"role": "user", "content": "hi"}])
+
+        assert "keep_alive" not in mock_post.call_args.kwargs["json"]
+
+
 # ---------------------------------------------------------------------------
 # OllamaBackend — warmup
 # ---------------------------------------------------------------------------
@@ -735,12 +803,16 @@ class TestOllamaBackendWarmUp:
 
 
 class TestFactory:
-    def test_get_llm_backend_returns_ollama_backend_for_default_settings(self, mock_config):
-        from jarvis.llm import OllamaBackend, get_llm_backend
+    def test_get_llm_backend_returns_single_local_route_for_default_settings(self, mock_config):
+        from jarvis.llm import RoutedBackend, Tier, get_llm_backend
 
         backend = get_llm_backend(mock_config)
 
-        assert isinstance(backend, OllamaBackend)
+        assert isinstance(backend, RoutedBackend)
+        chat_routes = backend.routes_for(Tier.CHAT)
+        assert len(chat_routes) == 1
+        assert chat_routes[0].provider == "ollama"
+        assert chat_routes[0].base_url == mock_config.ollama_base_url
 
 
 # ---------------------------------------------------------------------------
@@ -981,3 +1053,122 @@ class TestOllamaBackendSanitizesMessages:
         assert sys_msg["role"] == "system"
         assert sys_msg["content"] == "You are a helpful assistant."
         assert "_is_context_injected" not in sys_msg
+
+
+# ---------------------------------------------------------------------------
+# OllamaBackend — chat that reports its text as it arrives
+# ---------------------------------------------------------------------------
+
+
+class TestOllamaBackendChatStreaming:
+    """A reply is written faster than it is spoken.
+
+    Waiting for the last token before making any sound spends the whole
+    generation in silence, so `chat` reports its text as it arrives while
+    still returning the same assembled response the caller already handles.
+    """
+
+    _LINES = [
+        b'{"message": {"role": "assistant", "content": "Das Wetter "}}',
+        b'{"message": {"role": "assistant", "content": "ist gut."}}',
+        b'{"message": {"role": "assistant", "content": ""}, "done": true}',
+    ]
+
+    @patch("jarvis.llm.requests.post")
+    def test_tokens_are_reported_as_they_arrive(self, mock_post):
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(iter_lines=self._LINES)
+        seen = []
+
+        OllamaBackend("http://localhost:11434").chat(
+            "any", [{"role": "user", "content": "hi"}], on_token=seen.append
+        )
+
+        assert seen == ["Das Wetter ", "ist gut."]
+
+    @patch("jarvis.llm.requests.post")
+    def test_the_assembled_reply_matches_the_unstreamed_shape(self, mock_post):
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(iter_lines=self._LINES)
+
+        response = OllamaBackend("http://localhost:11434").chat(
+            "any", [{"role": "user", "content": "hi"}], on_token=lambda _t: None
+        )
+
+        assert response["message"]["content"] == "Das Wetter ist gut."
+        assert response["message"]["role"] == "assistant"
+
+    @patch("jarvis.llm.requests.post")
+    def test_a_tool_call_survives_the_stream(self, mock_post):
+        from jarvis.llm import OllamaBackend
+
+        call = {"function": {"name": "getWeather", "arguments": {"location": "Berlin"}}}
+        mock_post.return_value = _make_response(iter_lines=[
+            b'{"message": {"role": "assistant", "content": ""}}',
+            json.dumps({"message": {"role": "assistant", "content": "",
+                                    "tool_calls": [call]}, "done": True}).encode(),
+        ])
+
+        response = OllamaBackend("http://localhost:11434").chat(
+            "any", [{"role": "user", "content": "hi"}], on_token=lambda _t: None
+        )
+
+        assert response["message"]["tool_calls"] == [call]
+
+    @patch("jarvis.llm.requests.post")
+    def test_reasoning_is_kept_out_of_the_reported_text(self, mock_post):
+        """Thinking is for the log, not for the speakers."""
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(iter_lines=[
+            b'{"message": {"role": "assistant", "content": "", "thinking": "Let me see"}}',
+            b'{"message": {"role": "assistant", "content": "Es ist gut."}, "done": true}',
+        ])
+        seen = []
+
+        response = OllamaBackend("http://localhost:11434").chat(
+            "any", [{"role": "user", "content": "hi"}], on_token=seen.append
+        )
+
+        assert seen == ["Es ist gut."]
+        assert response["message"]["thinking"] == "Let me see"
+
+    @patch("jarvis.llm.requests.post")
+    def test_without_a_listener_the_request_is_not_streamed(self, mock_post):
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(json_data={"message": {"content": "ok"}})
+
+        OllamaBackend("http://localhost:11434").chat("any", [{"role": "user", "content": "hi"}])
+
+        assert mock_post.call_args.kwargs["json"]["stream"] is False
+
+    @patch("jarvis.llm.requests.post")
+    def test_an_empty_stream_reports_nothing(self, mock_post):
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(iter_lines=[])
+
+        response = OllamaBackend("http://localhost:11434").chat(
+            "any", [{"role": "user", "content": "hi"}], on_token=lambda _t: None
+        )
+
+        assert response is None
+
+    @patch("jarvis.llm.requests.post")
+    def test_a_listener_that_raises_does_not_lose_the_reply(self, mock_post):
+        """Speech is a side effect; it must never cost the user their answer."""
+        from jarvis.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(iter_lines=self._LINES)
+
+        def explode(_token):
+            raise RuntimeError("sound card on fire")
+
+        response = OllamaBackend("http://localhost:11434").chat(
+            "any", [{"role": "user", "content": "hi"}], on_token=explode
+        )
+
+        assert response["message"]["content"] == "Das Wetter ist gut."

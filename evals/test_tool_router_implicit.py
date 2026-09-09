@@ -30,11 +30,12 @@ Run:
 import pytest
 
 from conftest import requires_judge_llm
-from helpers import JUDGE_BASE_URL, JUDGE_MODEL
+from helpers import JUDGE_MODEL, MockConfig
 
 
 def _route(query: str, context_hint=None):
     """Invoke the real LLM router with the full builtin tool catalogue."""
+    from jarvis.llm import get_llm_backend
     from jarvis.tools.registry import BUILTIN_TOOLS
     from jarvis.tools.selection import select_tools, ToolSelectionStrategy
 
@@ -43,7 +44,7 @@ def _route(query: str, context_hint=None):
         builtin_tools=BUILTIN_TOOLS,
         mcp_tools={},
         strategy=ToolSelectionStrategy.LLM,
-        llm_base_url=JUDGE_BASE_URL,
+        llm_backend=get_llm_backend(MockConfig()),
         llm_model=JUDGE_MODEL,
         llm_timeout_sec=30.0,
         context_hint=context_hint,
@@ -96,6 +97,24 @@ IMPLICIT_INTENT_CASES = [
         ["fetchMeals"],
         "Dietary check against logged meals.",
         id="dietary check → fetchMeals",
+    ),
+    pytest.param(
+        "put the new Dune trailer on my screen",
+        ["openOnComputer"],
+        "Asking to see something means opening it here, not being told about it.",
+        id="show a video → openOnComputer",
+    ),
+    pytest.param(
+        "I want to jot something down in a text editor",
+        ["openOnComputer"],
+        "Wanting to use a program is a request to launch it.",
+        id="use an editor → openOnComputer",
+    ),
+    pytest.param(
+        "take me to my downloads folder",
+        ["openOnComputer"],
+        "Navigating to a folder is a desktop action, not a file read.",
+        id="downloads folder → openOnComputer",
     ),
 ]
 

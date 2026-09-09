@@ -69,14 +69,27 @@ def _create_listener(**kwargs):
         from jarvis.listening.listener import VoiceListener
         listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
 
+    # Accepted utterances dispatch immediately. Capture that user-visible
+    # boundary so these tests stay independent of the heavy reply engine.
+    listener._dispatched_queries = []
+    listener._dispatch_query = listener._dispatched_queries.append
+
     return listener, mock_tts
 
 
-def _make_judgment(directed=True, query="", stop=False, confidence="high", reasoning="test"):
+def _make_judgment(
+    directed=True,
+    query="",
+    stop=False,
+    confidence="high",
+    reasoning="test",
+    conversation_mode=False,
+):
     """Build an IntentJudgment."""
     return IntentJudgment(
         directed=directed, query=query, stop=stop,
         confidence=confidence, reasoning=reasoning,
+        conversation_mode=conversation_mode,
     )
 
 
@@ -107,8 +120,8 @@ def _wait_for_hot_window_active(listener, timeout=0.5):
 
 def _accepted_query(listener) -> str:
     """Return the accepted query text, or empty string if input was rejected."""
-    if listener.state_manager.get_pending_query():
-        return listener.state_manager.get_pending_query()
+    if listener._dispatched_queries:
+        return listener._dispatched_queries[-1]
     return ""
 
 
@@ -467,6 +480,27 @@ class TestEchoAndUserSpeechInSameChunk:
             "Mixed echo+speech should not be rejected when text is longer than TTS"
         )
         assert "tomorrow" in query
+        listener.state_manager.stop()
+
+    @patch("builtins.print")
+    def test_judge_cannot_replace_new_speech_with_previous_tts(self, _print):
+        """A judge query that is only Jarvis's last reply is discarded."""
+        listener, _ = _create_listener(echo_tolerance=0.02)
+        previous_reply = (
+            "Interessanter Witz, aber leider kann ich das nicht herausfinden."
+        )
+        listener.echo_detector.track_tts_start(previous_reply)
+        listener.echo_detector.track_tts_finish()
+        listener.state_manager.start_conversation()
+        _install_intent_judge(listener, _make_judgment(
+            directed=True,
+            query=previous_reply,
+        ))
+
+        heard = "Doch, kannst du tatsächlich, du musst nur im Vault schauen."
+        listener._process_transcript(heard, utterance_energy=0.01)
+
+        assert _accepted_query(listener).lower() == heard.lower()
         listener.state_manager.stop()
 
     @patch("builtins.print")
@@ -1454,7 +1488,7 @@ class TestStaleWakeTimestampAcrossUtterances:
 
         # Reset state as if the assistant processed the query (simulates
         # the natural reply cycle that clears state between utterances)
-        listener.state_manager.clear_collection()
+        listener._dispatched_queries.clear()
         # Second utterance: no wake word, judge hallucinates directed=true
         # (e.g. because the earlier "jarvis" is still in its context buffer)
         _install_intent_judge(listener, _make_judgment(
@@ -1509,7 +1543,7 @@ class TestIntentJudgeGating:
 
     @patch("builtins.print")
     def test_judge_called_when_wake_word_detected(self, _print):
-        """Utterances containing the wake word do reach the judge."""
+        """An edge-position wake word bypasses contextual judgement."""
         listener, _ = _create_listener()
 
         mock_judge = _install_intent_judge(
@@ -1520,7 +1554,7 @@ class TestIntentJudgeGating:
             "jarvis what time is it", utterance_energy=0.01,
         )
 
-        assert mock_judge.judge.call_count == 1
+        assert mock_judge.judge.call_count == 0
         listener.state_manager.stop()
 
     @patch("builtins.print")
@@ -1564,14 +1598,8 @@ class TestIntentJudgeGating:
         listener.state_manager.stop()
 
     @patch("builtins.print")
-    def test_judge_called_for_longer_utterance_during_tts(self, _print):
-        """Longer utterances (>3 words) during TTS still reach the judge.
-
-        Active TTS is itself an engagement signal — the user may be
-        interrupting with a real follow-up or correction, and the judge
-        needs to see it to catch intents the fast text-based stop-command
-        check misses.
-        """
+    def test_judge_skipped_for_longer_utterance_during_tts(self, _print):
+        """Playback remains a closed listening interval for long speech too."""
         listener, mock_tts = _create_listener(tts_speaking=True)
 
         mock_judge = _install_intent_judge(
@@ -1584,5 +1612,5 @@ class TestIntentJudgeGating:
             utterance_energy=0.01,
         )
 
-        assert mock_judge.judge.call_count == 1
+        assert mock_judge.judge.call_count == 0
         listener.state_manager.stop()

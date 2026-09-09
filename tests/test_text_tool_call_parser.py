@@ -125,6 +125,11 @@ class TestMalformedModelOutputGuard:
         [
             ("tool_calls: []", "bare tool_calls literal"),
             ("tool_calls: [{}]", "tool_calls with stub entry"),
+            (
+                "I will check that.\n\ntool_calls: "
+                '[{"function": {"name": "webSearch", "arguments": "{}"}}]',
+                "tool_calls literal after prose",
+            ),
             ("tool_code\n  print(google_search.search(query='x'))\n  ", "gemma tool_code block"),
             ("tool_output\n[{'snippet': 'x'}]", "gemma tool_output block"),
             ("Okay, here is your answer <unused88>", "unused sentinel inline"),
@@ -188,6 +193,12 @@ class TestTextToolCallGuidancePrompt:
         text = self._guidance(["webSearch", "stop", "openApp"])
         for name in ("webSearch", "stop", "openApp"):
             assert name in text, f"{name} should appear in the allow-list"
+
+    def test_guidance_example_never_names_an_unavailable_tool(self):
+        text = self._guidance(["stop", "toolSearchTool"])
+
+        assert '"name": "webSearch"' not in text
+        assert '"name": "toolSearchTool"' in text
 
     @pytest.mark.parametrize(
         "forbidden,label",

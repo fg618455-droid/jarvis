@@ -129,10 +129,11 @@ class TestOpenAICompatibleEndToEnd:
     """Drive the real backend over HTTP against the stub."""
 
     def test_factory_dispatches_to_openai_backend_at_configured_url(self, stub):
-        from jarvis.llm import get_llm_backend, OpenAICompatibleBackend
+        from jarvis.llm import RoutedBackend, Tier, get_llm_backend
+
         backend = get_llm_backend(_cfg(stub))
-        assert isinstance(backend, OpenAICompatibleBackend)
-        assert backend.base_url == stub.base_url
+        assert isinstance(backend, RoutedBackend)
+        assert backend.routes_for(Tier.CHAT)[0].base_url == stub.base_url
 
     def test_direct_returns_assistant_text(self, stub):
         from jarvis.llm import get_llm_backend
@@ -303,15 +304,17 @@ class TestConfigRoundTrip:
         monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
 
         from jarvis.config import load_settings
-        from jarvis.llm import get_llm_backend, OpenAICompatibleBackend
+        from jarvis.llm import RoutedBackend, Tier, get_llm_backend
 
         settings = load_settings()
         assert settings.llm_provider == "openai_compatible"
-        # Per-provider resolution: the OpenAI-compatible model wins on this path.
+        # Chat migrates to a cloud route; embeddings remain on the private lane.
         assert settings.llm_chat_model == "stub-chat"
-        assert settings.embedding_model == "stub-embed"
+        assert settings.embedding_provider == "ollama"
+        assert settings.embedding_model == "nomic-embed-text"
 
         backend = get_llm_backend(settings)
-        assert isinstance(backend, OpenAICompatibleBackend)
+        assert isinstance(backend, RoutedBackend)
+        assert backend.routes_for(Tier.CHAT)[0].base_url == stub.base_url
         out = backend.direct(settings.llm_chat_model, "sys", "hi", timeout_sec=5)
         assert out == "Hello from stub"

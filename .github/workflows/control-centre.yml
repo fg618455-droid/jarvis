@@ -1,0 +1,32 @@
+name: control centre
+
+# The suite that renders the interface in a real browser, on every push and
+# every pull request. Nothing else: no lint, no matrix, no secrets. This is
+# the run that catches a view which fails silently in JavaScript and returns
+# 200 all the same, and it is the run a laptop is too idle to catch a race in.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  webui:
+    name: pytest tests/webui/
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y portaudio19-dev libegl1 libxkbcommon0
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Install the browser the suite drives
+        run: python -m playwright install --with-deps chromium
+      - name: Run the control centre tests
+        run: python -m pytest tests/webui/ -q
