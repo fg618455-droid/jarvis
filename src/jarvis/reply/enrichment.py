@@ -346,6 +346,7 @@ def digest_memory_for_query(
         ``_DIGEST_MIN_CHARS`` — digestion wouldn't save enough context to
         justify the round-trip.
     """
+    chat_model = resolve_model(cfg, Tier.PRIVATE)
     diary_entries = [e for e in (diary_entries or []) if e and e.strip()]
     graph_parts = [p for p in (graph_parts or []) if p and p.strip()]
     if not diary_entries and not graph_parts:
@@ -604,6 +605,7 @@ def digest_tool_result_for_query(
       - Returns empty string when the distil decides nothing is relevant,
         when the tool result is empty, or when every LLM call fails.
     """
+    chat_model = resolve_model(cfg, Tier.PRIVATE)
     raw = (tool_result or "").strip()
     if not raw:
         return ""
@@ -836,8 +838,8 @@ def digest_loop_for_max_turns(
     if not activity:
         return None
 
-    # The max-turn digest is a cheap classification-adjacent pass: fast tier.
-    chat_model = resolve_model(cfg, Tier.FAST)
+    # Summaries stay on the private lane, including max-turn fallbacks.
+    chat_model = resolve_model(cfg, Tier.PRIVATE)
     if not chat_model:
         return None
 

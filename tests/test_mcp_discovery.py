@@ -9,13 +9,13 @@ This test suite ensures that:
 """
 
 import pytest
+from tests.conftest import MockConfig
 from jarvis.tools.registry import discover_mcp_tools, generate_tools_description, generate_tools_json_schema, run_tool_with_retries, ToolExecutionResult
 
 
-class DummyCfg:
-    def __init__(self):
-        self.mcps = {}
-        self.voice_debug = False
+def DummyCfg() -> MockConfig:
+    """The shared test config, tuned for the tool registry's needs."""
+    return MockConfig(voice_debug=False, security_confirm_channels=[])
 
 
 class DummyDB:
@@ -104,7 +104,7 @@ def test_discover_mcp_tools_handles_server_errors(monkeypatch):
 
     # Should report the error for the bad server
     assert "bad-server" in errors
-    assert "Server failed" in errors["bad-server"]
+    assert errors["bad-server"] == "Exception"
 
 
 @pytest.mark.unit
@@ -278,7 +278,8 @@ def test_mcp_tool_exception_handling(monkeypatch):
     )
 
     assert result.success is False
-    assert "Connection failed" in result.error_message
+    assert result.error_message == "Exception"
+    assert "Connection failed" not in result.technical_details
 
 
 @pytest.mark.unit

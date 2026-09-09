@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import tempfile
 from typing import Any, Dict, Optional, List
 from contextlib import asynccontextmanager
 
 from mcp import ClientSession  # type: ignore
 from mcp.client.stdio import stdio_client, StdioServerParameters  # type: ignore
+from ...diagnostics import redact
+from ...debug import debug_log
 
 
 import glob as _glob
@@ -24,6 +27,61 @@ class MCPServerSessionError(RuntimeError):
     The persistent runtime retries once internally before this surfaces
     to ``MCPClient`` callers.
     """
+
+
+def _exception_leaves(error: BaseException) -> List[BaseException]:
+    """Recursively unwrap ExceptionGroup/cause chains to their real leaves."""
+    nested = getattr(error, "exceptions", None)
+    if isinstance(nested, (list, tuple)) and nested:
+        leaves: List[BaseException] = []
+        for child in nested:
+            if isinstance(child, BaseException):
+                leaves.extend(_exception_leaves(child))
+        if leaves:
+            return leaves
+    cause = getattr(error, "__cause__", None) or getattr(error, "__context__", None)
+    if isinstance(cause, BaseException) and cause is not error:
+        return _exception_leaves(cause)
+    return [error]
+
+
+def safe_mcp_error(error: BaseException) -> str:
+    """Return a bounded diagnostic that cannot include arbitrary payloads."""
+    leaves = _exception_leaves(error)
+    leaf = leaves[-1] if leaves else error
+    name = type(leaf).__name__
+    message = str(leaf).strip().lower()
+    for marker, public in (
+        ("connection closed", "connection closed"),
+        ("closed resource", "connection closed"),
+        ("end of file", "unexpected EOF"),
+        ("eof", "unexpected EOF"),
+        ("timed out", "timed out"),
+        ("timeout", "timed out"),
+        ("not found", "not found"),
+        ("offline", "offline"),
+    ):
+        if marker in message:
+            return f"{name}: {public}"
+    return name
+
+
+def is_mcp_transport_error(error: BaseException) -> bool:
+    """Whether an exception proves that the MCP session cannot be reused."""
+    for leaf in _exception_leaves(error):
+        name = type(leaf).__name__.lower()
+        message = str(leaf).lower()
+        if any(token in name for token in (
+            "endofstream", "brokenresource", "closedresource",
+            "connectionerror", "brokenpipe", "incompleteread",
+        )):
+            return True
+        if any(token in message for token in (
+            "connection closed", "session closed", "transport closed",
+            "broken pipe", "unexpected eof", "end of file",
+        )):
+            return True
+    return False
 
 # Static directories to search when a command isn't on the daemon's PATH.
 # macOS GUI-launched processes often miss Homebrew, nvm, fnm, and Volta paths.
@@ -132,6 +190,13 @@ class _StdioConnection:
             return await self._cm.__aexit__(exc_type, exc, tb)
         finally:
             try:
+                self._errlog.seek(0)
+                stderr = self._errlog.read()
+                if stderr:
+                    # Server stderr is useful for setup failures, but can
+                    # include inherited environment diagnostics; redact it
+                    # and cap it before sending it to the local debug log.
+                    debug_log(f"MCP subprocess stderr: {redact(stderr)[:2000]}", "mcp")
                 self._errlog.close()
             except Exception:
                 pass
@@ -174,11 +239,16 @@ class MCPClient:
             env = {**os.environ, **user_env}
         else:
             env = None  # inherit parent env as-is
+        if env is not None and "USER" not in env and "HOME" not in env:
+            # Windows normally exposes USERNAME rather than USER; provide the
+            # portable conventional alias expected by several Node MCP tools.
+            env["USER"] = str(env.get("USERNAME", "jarvis"))
         params = StdioServerParameters(command=command, args=args, env=env)
-        # Suppress MCP server stderr noise (npm warnings, usage banners, etc.)
-        # from polluting the daemon's log output.
-        # Must use a real file (not StringIO) because the subprocess needs fileno().
-        devnull = open(os.devnull, "w")
+        # Capture (rather than discard) a bounded amount of server stderr so
+        # failed setup is diagnosable. A real file remains necessary because
+        # the subprocess needs fileno(); TemporaryFile is never exposed to a
+        # child process by name and is deleted on close.
+        devnull = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
         # Build the underlying transport CM eagerly so any synchronous
         # construction error closes devnull instead of leaking it. The
         # wrapper guarantees the handle is also closed on every async

@@ -33,12 +33,16 @@ resident for the daemon's lifetime.
 | First call referencing a server | Creates a `_ServerWorker`, awaits `_ready` (the worker signals readiness once `session.initialize()` returns). |
 | Server config equality holds | Subsequent calls reuse the cached worker. |
 | Server config changes | Old worker is shut down; a fresh worker replaces it. |
-| Worker raises `_WorkerDeadError` | Runtime drops it and retries the call once with a new worker. Second failure surfaces as `MCPServerSessionError` to the public layer. |
+| Worker raises `_WorkerDeadError` | Runtime drops it and retries the call exactly once with a new worker. Only transport/session evidence (closed stream, EOF, broken pipe) creates this sentinel. A raised tool error or a normal result with `isError` reaches the caller without restarting a healthy session. |
+| Live config publish | Discovery runs without the registry cache lock. Removed or changed workers are stopped during reconfiguration; the complete tool/error/status generation is published atomically. Failed startup workers are shut down even before entering the pool. |
 | `idle_timeout_sec` set on a server config | Worker self-terminates after that long without activity. Next call spawns a new worker. |
 | Daemon shutdown calls `shutdown_runtime()` | Each worker is asked to exit (sentinel `None`); any wedged task is cancelled. The loop is stopped, the thread is joined with a 5s timeout. |
 
 ## Invariants
 
+- The main Jarvis environment uses `mcp==1.13.1`. Packages requiring a newer
+  MCP release run behind a separate process and interpreter boundary; they
+  are never installed into the persistent runtime's environment.
 - One in-flight `call_tool` per server at any time. Tool calls to the
   same server are serialised by the queue. Different servers run in
   parallel because each has its own worker.
@@ -73,6 +77,10 @@ Each server entry in `config.mcps` is a dict consumed by
 | `idle_timeout_sec` | float \| null | null | If set, the worker self-terminates after that many seconds with an empty queue. Stateful servers (browser automation) must leave this unset. |
 | `timeout_sec` | float \| null | 120 (`_DEFAULT_INVOKE_TIMEOUT_SEC`) | Bounds a single `call_tool` round trip and `list_tools` discovery. Servers whose tools legitimately run long (e.g. delegating a task to an external CLI agent) should raise this; a bare `concurrent.futures.TimeoutError` propagates on expiry. Non-finite or non-positive values fall back to the default. |
 
+The cold session handshake uses the larger of 30 seconds and this resolved
+request timeout, allowing a first exact-pinned `npx` launch to populate its
+cache without making ordinary configured call budgets shorter.
+
 ## Test contract
 
 Behavioural tests live in `tests/test_mcp_client.py`. The contract
@@ -82,6 +90,8 @@ verified there:
 - `list_tools` followed by `invoke_tool` shares one stdio connection.
 - A `_WorkerDeadError` from a worker triggers exactly one retry, which
   spawns a fresh connection.
+- A transport exception from a live MCP session ends that worker and retries
+  once; a tool exception and `isError` result do not restart it.
 - A config change replaces the worker and spawns a fresh connection.
 - A failure during subprocess spawn propagates to the caller rather
   than hanging.
@@ -95,12 +105,26 @@ verified there:
 - An exception with an empty `str(e)` (e.g. bare `TimeoutError`)
   produces a diagnosable error message via type-name fallback.
 
+Nested `ExceptionGroup`, `__cause__`, and `__context__` chains are recursively
+reduced to a bounded safe leaf classification. Arbitrary tool payloads,
+environment values, and third-party response bodies never enter API status.
+Preflight requires exact semantic-version npm pins, an available executable,
+and, for `mcp-remote`, a reachable public HTTPS endpoint. It rejects private
+or locally resolving hosts and does not follow redirects during the reachability
+probe.
+
 ## Non-goals
 
-- Hot-reloading `config.mcps` proactively. The runtime replaces a
-  worker only when a request arrives carrying the new config.
 - Recovering from SIGKILL of the daemon process. Subprocess children
   (e.g. Chrome) become orphans and must be cleaned up by the OS.
 - Parallel `call_tool` to the same server. The MCP stdio framing is
   request-response per session; parallelism is per-server, not
   per-call.
+
+Startup serialises per server, outside the worker-pool lock. A configuration
+change or shutdown during startup prevents publication and closes that worker.
+Reconfiguration detaches obsolete workers atomically before closing them.
+Real stdio subprocess tests cover discovery, isError without restart, idle
+shutdown, a single crash reconnect and exhaustion after a repeated crash.
+
+Worker startup serialises per server and runs outside the pool lock. A late failure only evicts its own worker instance. After reconfiguration, removed or changed server configurations cannot be restarted by stale callers; a startup spanning a generation change is shut down before publication.

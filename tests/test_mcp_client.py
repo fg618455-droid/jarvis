@@ -168,6 +168,65 @@ def test_invoke_tool_retries_on_transient_session_loss(
 
 
 @pytest.mark.unit
+def test_invoke_tool_restarts_when_the_live_session_request_fails(
+    monkeypatch, shutdown_persistent_runtime
+):
+    """A transport exception raised by ``session.call_tool`` means the
+    session is no longer trustworthy. The public call retries on a fresh
+    connection instead of returning that first session exception directly.
+    """
+    from jarvis.tools.external.mcp_client import MCPClient
+
+    enter_count = {"n": 0}
+
+    class Connection:
+        async def __aenter__(self):
+            enter_count["n"] += 1
+            return object(), object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Session:
+        def __init__(self, read, write):
+            self.connection_number = enter_count["n"]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def initialize(self):
+            return None
+
+        async def call_tool(self, name, arguments):
+            if self.connection_number == 1:
+                raise ConnectionError("session transport closed")
+            return type(
+                "R", (),
+                {"content": "recovered", "isError": False, "meta": None},
+            )()
+
+    monkeypatch.setattr(
+        "jarvis.tools.external.mcp_client.MCPClient._connect_stdio",
+        lambda self, cfg: Connection(),
+    )
+    monkeypatch.setattr(
+        "jarvis.tools.external.mcp_client.ClientSession", Session,
+    )
+
+    client = MCPClient({
+        "flaky": {"transport": "stdio", "command": "/bin/true", "args": []},
+    })
+
+    result = client.invoke_tool("flaky", "alpha", {})
+
+    assert result["text"] == "recovered"
+    assert enter_count["n"] == 2
+
+
+@pytest.mark.unit
 def test_get_worker_replaces_on_config_change(
     monkeypatch, shutdown_persistent_runtime
 ):

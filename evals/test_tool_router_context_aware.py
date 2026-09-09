@@ -27,7 +27,7 @@ Run:
 import pytest
 
 from conftest import requires_judge_llm
-from helpers import JUDGE_BASE_URL, JUDGE_MODEL
+from helpers import JUDGE_MODEL, MockConfig
 
 
 _TIME_LOCATION_HINT = (
@@ -41,6 +41,7 @@ _TIME_ONLY_HINT = "Current local time: Sunday, 2026-04-20 17:42 UTC."
 
 def _route(query: str, context_hint):
     """Invoke the real LLM router with the builtin tool catalogue."""
+    from jarvis.llm import get_llm_backend
     from jarvis.tools.registry import BUILTIN_TOOLS
     from jarvis.tools.selection import select_tools, ToolSelectionStrategy
 
@@ -49,7 +50,7 @@ def _route(query: str, context_hint):
         builtin_tools=BUILTIN_TOOLS,
         mcp_tools={},
         strategy=ToolSelectionStrategy.LLM,
-        llm_base_url=JUDGE_BASE_URL,
+        llm_backend=get_llm_backend(MockConfig()),
         llm_model=JUDGE_MODEL,
         llm_timeout_sec=30.0,
         context_hint=context_hint,

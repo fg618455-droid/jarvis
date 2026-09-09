@@ -26,3 +26,11 @@ class TestBuildSystemPrompt:
         assert "named Jarvis" in build_system_prompt("")
         assert "named Jarvis" in build_system_prompt("   ")
         assert "named Jarvis" in build_system_prompt(None)  # type: ignore[arg-type]
+
+    def test_memory_guidance_contains_no_concrete_user_fact_example(self):
+        prompt = build_system_prompt()
+
+        assert "Trenches Gym" not in prompt
+        assert "Information the user has shared" not in prompt
+        assert "software engineer named" not in prompt
+        assert "never invent a user fact" in prompt

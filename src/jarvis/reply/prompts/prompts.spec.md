@@ -45,12 +45,19 @@ Both model sizes share these base components:
 - `inference_guidance`: Prefer inference over clarification
 - `voice_style`: Concise, conversational responses
 
+The unified persona prefix also carries the hard memory-origin rule. A
+remembered fact does not establish its own origin. The model uses
+`memoryProvenance` for an origin question and says the origin is not recorded
+when the tool or context has no carried record; it never fabricates a diary
+date, graph node, Remio title, or vault path. The rule is semantic and applies
+in every response language.
+
 Model-size-specific components:
 - `tool_incentives`: When/how aggressively to use tools
 - `tool_guidance`: How to handle tool results (both sizes get the anti-confabulation fidelity rule and the "quote Content from top result, don't deflect to links" rule)
 - `tool_constraints`: Explicit behaviour rules. Present on BOTH sizes — the
   large variant is a shorter restatement of the named-entity and tool-
-  auto-derive rules because gpt-oss:20b and similar also confabulate
+  auto-derive rules because qwen3.8:27b and similar also confabulate
   specifics for unfamiliar entities and occasionally ask for arguments
   (e.g. `location` for `getWeather`) the tool already auto-derives.
 

@@ -79,6 +79,17 @@ class ToolSearchTool(Tool):
             debug_log(f"toolSearchTool: MCP cache unavailable: {e}", "tools")
             mcp_tools = {}
 
+        # Bound both sub-calls to whatever remains of the reply turn, not
+        # just their own configured ceilings (llm_tools_timeout_sec is
+        # 300s by default) — otherwise a hung router/embedding call here
+        # could outlive the turn by minutes regardless of the reply
+        # loop's own deadline bookkeeping.
+        llm_timeout_sec = context.bounded_timeout(
+            float(getattr(cfg, "llm_tools_timeout_sec", 8.0))
+        )
+        embed_timeout_sec = context.bounded_timeout(
+            float(getattr(cfg, "llm_embedding_timeout_sec", 10.0))
+        )
         try:
             selected = select_tools(
                 query=query,
@@ -87,10 +98,10 @@ class ToolSearchTool(Tool):
                 strategy=strategy,
                 llm_backend=get_llm_backend(cfg),
                 llm_model=resolve_model(cfg, Tier.FAST),
-                llm_timeout_sec=float(getattr(cfg, "llm_tools_timeout_sec", 8.0)),
+                llm_timeout_sec=llm_timeout_sec,
                 embedding_backend=get_embedding_backend(cfg),
                 embed_model=cfg.embedding_model,
-                embed_timeout_sec=float(getattr(cfg, "llm_embedding_timeout_sec", 10.0)),
+                embed_timeout_sec=embed_timeout_sec,
             )
         except Exception as e:
             debug_log(f"toolSearchTool: select_tools failed: {e}", "tools")
