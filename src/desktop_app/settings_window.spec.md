@@ -198,3 +198,7 @@ These fields are managed elsewhere or are too complex for a simple form:
 - `voice_debug` — environment variable only
 - `whisper_min_audio_duration` / `whisper_min_word_length` — rarely changed advanced params
 - `vad_frame_ms` / `vad_pre_roll_ms` — low-level VAD timing
+
+The metadata registry must not expose "local_llm_fallback_enabled" when that
+key has no persisted/default setting. Local model controls remain
+available for PRIVATE work and embeddings.

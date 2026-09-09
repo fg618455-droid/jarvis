@@ -108,7 +108,7 @@ The System model card makes three different facts explicit. **Effective
 routes** names the first currently available FAST, CHAT, and PRIVATE candidate
 and labels each one local or remote. **Configured local models** names the
 Ollama PRIVATE and embedding roles. **Actually
-resident in Ollama** is populated only from `ollama ps` and carries the local
+resident in Ollama** is populated only from loopback `GET /api/ps` and carries the local
 GPU reading beside it. A remote route model is therefore never presented as
 if it consumed local VRAM. The LLM Routes view applies the same local/remote
 label to every effective-chain entry.
@@ -928,3 +928,9 @@ written to this daemon's own storage.
 | `crew_api_url` | str | `""` | Base URL of the NAS crew endpoint. Empty hides the Mission Control view |
 | `crew_api_key` | str | `""` | Shared key sent as `X-Crew-Key` |
 | `crew_agents` | list | The seven crew roles | Who Mission Control shows, in display order. Emptying it restores the default rather than hiding the crew |
+
+The residency reader never starts the Ollama CLI. It uses the configured loopback
+Ollama HTTP endpoint with a four-second request timeout, redirects disabled and
+no environment proxy. Missing services or malformed responses yield no resident
+models. The existing name/size/processor/context/until response fields remain.
+Endpoint reference: https://docs.ollama.com/api/ps

@@ -9,9 +9,19 @@ import time
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_reply_prefix_warmup():
+    # These tests cover Whisper/startup orchestration, not provider I/O.
+    with patch("jarvis.listening.listener.warm_up_reply_prefix", return_value=True):
+        yield
+
+
 def _create_mock_config(**kwargs):
     """Create a mock config object with default values for voice listener tests."""
     mock_cfg = MagicMock()
+    mock_cfg.llm_chat_model = kwargs.get("llm_chat_model", "")
+    mock_cfg.embedding_model = kwargs.get("embedding_model", "")
+    mock_cfg.tool_selection_strategy = kwargs.get("tool_selection_strategy", "keyword")
     mock_cfg.whisper_model = kwargs.get("whisper_model", "small")
     mock_cfg.whisper_device = kwargs.get("whisper_device", "auto")
     mock_cfg.whisper_compute_type = kwargs.get("whisper_compute_type", "int8")
