@@ -197,31 +197,16 @@ class TestIntentJudgeThinking:
 class TestDictationThinking:
     """Dictation engine respects the thinking config."""
 
-    def test_llm_clean_dictation_sends_think_false(self):
-        from src.jarvis.dictation.dictation_engine import _llm_clean_dictation
+    @pytest.mark.parametrize("thinking", [False, True])
+    def test_llm_clean_dictation_passes_thinking_to_configured_backend(self, thinking):
+        from jarvis.dictation.dictation_engine import _llm_clean_dictation
 
-        with patch("requests.post") as mock_post:
-            mock_resp = MagicMock()
-            mock_resp.status_code = 200
-            mock_resp.json.return_value = {"response": "cleaned"}
-            mock_post.return_value = mock_resp
-
-            _llm_clean_dictation("um hello", "http://localhost:11434", thinking=False)
-            payload = mock_post.call_args[1].get("json") or mock_post.call_args[0][1] if len(mock_post.call_args[0]) > 1 else mock_post.call_args[1]["json"]
-            assert payload["think"] is False
-
-    def test_llm_clean_dictation_sends_think_true(self):
-        from src.jarvis.dictation.dictation_engine import _llm_clean_dictation
-
-        with patch("requests.post") as mock_post:
-            mock_resp = MagicMock()
-            mock_resp.status_code = 200
-            mock_resp.json.return_value = {"response": "cleaned"}
-            mock_post.return_value = mock_resp
-
-            _llm_clean_dictation("um hello", "http://localhost:11434", thinking=True)
-            payload = mock_post.call_args[1].get("json") or mock_post.call_args[0][1] if len(mock_post.call_args[0]) > 1 else mock_post.call_args[1]["json"]
-            assert payload["think"] is True
+        cfg = object()
+        with patch("jarvis.llm.get_llm_backend") as factory:
+            factory.return_value.direct.return_value = "cleaned"
+            assert _llm_clean_dictation("um hello", cfg, thinking=thinking) == "cleaned"
+            factory.assert_called_once_with(cfg)
+            assert factory.return_value.direct.call_args.kwargs["thinking"] is thinking
 
     def test_engine_stores_thinking(self):
         from src.jarvis.dictation.dictation_engine import DictationEngine
@@ -250,22 +235,24 @@ class TestSettingsWindowThinking:
         keys = [fm.key for fm in FIELD_METADATA]
         assert "llm_thinking_enabled" in keys
 
-    def test_chat_thinking_field_is_bool_in_llm_category(self):
+    def test_chat_thinking_field_is_bool_in_local_behaviour_section(self):
         from desktop_app.settings_window import FIELD_METADATA
         field = next(fm for fm in FIELD_METADATA if fm.key == "llm_thinking_enabled")
         assert field.field_type == "bool"
-        assert field.category == "llm"
+        assert field.category == "providers"
+        assert field.section == "Thinking and behaviour"
 
     def test_field_metadata_includes_intent_judge_thinking(self):
         from desktop_app.settings_window import FIELD_METADATA
         keys = [fm.key for fm in FIELD_METADATA]
         assert "intent_judge_thinking_enabled" in keys
 
-    def test_intent_judge_thinking_field_is_bool_in_llm_category(self):
+    def test_intent_judge_thinking_field_is_bool_in_local_behaviour_section(self):
         from desktop_app.settings_window import FIELD_METADATA
         field = next(fm for fm in FIELD_METADATA if fm.key == "intent_judge_thinking_enabled")
         assert field.field_type == "bool"
-        assert field.category == "llm"
+        assert field.category == "providers"
+        assert field.section == "Thinking and behaviour"
 
     def test_field_metadata_includes_dictation_thinking(self):
         from desktop_app.settings_window import FIELD_METADATA

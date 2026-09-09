@@ -5,6 +5,22 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
+
+def pytest_collection_modifyitems(items):
+    """Give every collected test one CI classification."""
+    classifications = {"unit", "integration", "e2e", "performance", "eval"}
+    for item in items:
+        if classifications.intersection(marker.name for marker in item.iter_markers()):
+            continue
+        path = str(item.fspath).replace("\\", "/").lower()
+        if "_e2e" in path:
+            item.add_marker(pytest.mark.e2e)
+        elif "/performance/" in path:
+            item.add_marker(pytest.mark.performance)
+        else:
+            item.add_marker(pytest.mark.unit)
+
+
 # Robustly locate repository root (directory containing src/jarvis)
 _this_file = Path(__file__).resolve()
 ROOT = None
@@ -54,6 +70,11 @@ class MockConfig:
     # ``__post_init__`` — same shape ``load_settings()`` produces.
     llm_chat_model: str = ""
     whisper_model: str = "small"
+    whisper_device: str = "cpu"
+    voice_device: Optional[str] = None
+    sample_rate: int = 16000
+    wake_word: str = "jarvis"
+    webui_enabled: bool = False
     embedding_provider: str = ""
     embedding_base_url: str = ""
     embedding_api_key: str = ""
@@ -66,6 +87,9 @@ class MockConfig:
     voice_debug: bool = True
     tts_enabled: bool = False
     tts_engine: str = "piper"
+    tts_cloud_providers: list = field(default_factory=list)
+    tts_local_fallback_engine: str = "piper"
+    tts_output_device: Optional[str] = None
     tts_voice: Optional[str] = None
     tts_rate: int = 200
     tts_piper_model_path: Optional[str] = None
@@ -78,6 +102,8 @@ class MockConfig:
     tts_chatterbox_audio_prompt: Optional[str] = None
     tts_chatterbox_exaggeration: float = 0.5
     tts_chatterbox_cfg_weight: float = 0.5
+    tts_kokoro_voice: str = "bm_lewis"
+    tts_kokoro_speed: float = 1.0
     web_search_enabled: bool = True
     brave_search_api_key: str = ""
     wikipedia_fallback_enabled: bool = True
@@ -94,6 +120,10 @@ class MockConfig:
     location_auto_detect: bool = False
     location_cgnat_resolve_public_ip: bool = False
     location_cache_minutes: int = 60
+    location_manual_city: Optional[str] = None
+    location_manual_region: Optional[str] = None
+    location_manual_country: Optional[str] = None
+    location_manual_timezone: Optional[str] = None
     dialogue_memory_timeout: int = 300
     llm_thinking_enabled: bool = False
     intent_judge_thinking_enabled: bool = False
@@ -101,6 +131,16 @@ class MockConfig:
     dictation_hotkey: str = "ctrl+alt+space"
     mcps: Dict[str, Any] = field(default_factory=dict)
     use_stdin: bool = True
+    security_level: str = "off"
+    security_confirm_channels: List[str] = field(default_factory=lambda: ["desktop", "telegram", "voice"])
+    security_confirmation_timeout_sec: int = 60
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    telegram_api_base_url: str = "https://api.telegram.org"
+    telegram_chat_enabled: bool = False
+    crew_handoff_enabled: bool = False
+    computer_interaction_enabled: bool = False
+    system_management_enabled: bool = False
 
     def __post_init__(self) -> None:
         # Mirror ``load_settings``: when the provider-aware fields are

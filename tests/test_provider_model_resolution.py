@@ -82,7 +82,7 @@ class TestLegacyJudgeKeyResolution:
             "llm_chat_model": "qwen-27b",
             "intent_judge_model": "my-small-judge",
         })
-        assert settings.fast_model == "my-small-judge"
+        assert settings.fast_model == ""
 
     def test_openai_chat_provider_defaults_fast_to_chat_model(self, tmp_path, monkeypatch):
         settings = _load_settings_from(tmp_path, monkeypatch, {
@@ -90,7 +90,7 @@ class TestLegacyJudgeKeyResolution:
             "llm_base_url": "http://localhost:1234/v1",
             "llm_chat_model": "qwen-27b",
         })
-        assert settings.fast_model == "qwen-27b"
+        assert settings.fast_model == ""
 
 
 class TestTiersResolveToServedModel:
@@ -114,16 +114,15 @@ class TestTiersResolveToServedModel:
         from jarvis.llm import resolve_model, Tier
         assert resolve_model(self._pure_openai_cfg(), Tier.CHAT) == "qwen-27b"
 
-    def test_ollama_path_unchanged(self):
-        """On the Ollama path the tiers carry the resolved Ollama models."""
+    def test_private_tier_uses_ollama_model(self):
         from jarvis.llm import resolve_model, Tier
         cfg = SimpleNamespace(
             llm_provider="ollama",
             llm_chat_model="gpt-oss:20b",  # config load: = ollama_chat_model
-            fast_model="gemma4:e2b",
+            fast_model="",
+            ollama_chat_model="local-private",
         )
-        assert resolve_model(cfg, Tier.FAST) == "gemma4:e2b"
-        assert resolve_model(cfg, Tier.CHAT) == "gpt-oss:20b"
+        assert resolve_model(cfg, Tier.PRIVATE) == "local-private"
 
 
 class TestPureOpenAIDispatchEndToEnd:
@@ -132,7 +131,7 @@ class TestPureOpenAIDispatchEndToEnd:
     configured server with a model it actually serves — never an Ollama
     pull-name, never the Ollama port."""
 
-    def test_planner_hits_openai_server_with_served_model(self, tmp_path, monkeypatch):
+    def test_planner_never_hits_a_local_openai_server(self, tmp_path, monkeypatch):
         stub = _RecordingStub(reply_text="1. Reply to the user.").start()
         try:
             settings = _load_settings_from(tmp_path, monkeypatch, {
@@ -143,12 +142,11 @@ class TestPureOpenAIDispatchEndToEnd:
             from jarvis.reply.planner import plan_query
             plan_query(settings, "what should I cook tonight with what I bought",
                        "", [("webSearch", "search the web")])
-            assert stub.models_requested, "planner never reached the configured server"
-            assert set(stub.models_requested) == {"qwen-27b"}
+            assert stub.models_requested == []
         finally:
             stub.stop()
 
-    def test_graph_knowledge_extraction_hits_openai_server(self, tmp_path, monkeypatch):
+    def test_graph_wrapper_never_hits_a_local_openai_server(self, tmp_path, monkeypatch):
         stub = _RecordingStub(reply_text="NONE").start()
         try:
             settings = _load_settings_from(tmp_path, monkeypatch, {
@@ -160,7 +158,7 @@ class TestPureOpenAIDispatchEndToEnd:
             graph_ops.call_llm_direct(
                 cfg=settings, chat_model=settings.llm_chat_model,
                 system_prompt="sys", user_content="usr", timeout_sec=5)
-            assert stub.models_requested == ["qwen-27b"]
+            assert stub.models_requested == []
         finally:
             stub.stop()
 

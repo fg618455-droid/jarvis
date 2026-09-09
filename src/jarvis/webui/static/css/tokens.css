@@ -1,0 +1,261 @@
+/* Design tokens.
+
+   A measuring instrument, not a film prop. Colour is the exception rather
+   than the rule: one accent, used for what is active, focused, selected,
+   or newly learned. Everything else is graphite and a 1px line.
+
+   Every colour, size, and duration the interface uses is named here. A view
+   that needs a shade it cannot find should gain a token rather than a
+   literal, so the whole instrument can be retuned from one file.
+
+   The file has two halves, and the split is the point. `:root` holds the
+   instrument: the type ladder, the spacing steps, the radii, the motion
+   durations, and the sizes the layout is built from. A `[data-theme]` block
+   holds only paint. A theme therefore changes what the interface looks like
+   and never where anything is or how large it reads, so no heading changes
+   size because someone preferred a different palette.
+
+   Adding a theme is adding one block. Every theme names the same tokens as
+   every other one, because a token a theme forgets does not fall back to a
+   sensible default: it keeps whatever the last theme painted, and one card
+   quietly reads in the wrong palette. `tests/webui/test_theme_tokens.py`
+   holds that rule for themes that do not exist yet.
+
+   Fonts are the system stack. Nothing here reaches the network. */
+
+:root {
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "Consolas", "SF Mono", monospace;
+
+  /* Type scale. Seven steps, so a heading, a label, and a reading are picked
+     from a ladder rather than chosen one view at a time. The interface lives
+     in the bottom four of them: an eighth step at 34px was carried for a long
+     time without a single rule ever asking for it. */
+  --fs-micro: 11px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 24px;
+
+  --s0: 2px;
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+
+  --r: 10px;
+  --r-sm: 6px;
+  /* A pill: a control whose shape says it is a switch rather than a field. */
+  --r-pill: 999px;
+
+  --header: 56px;
+  --content-max: 1200px;
+  /* The gutter around a view. Named because a view that fills the window
+     rather than growing past it has to subtract exactly this. */
+  --main-pad: var(--s5);
+
+  /* The deck. A rail is the column of widgets either side of the face; the
+     face takes whatever is left, so the centre is the flexible one. */
+  --rail: 320px;
+  --panel: 420px;
+  /* How wide the face draws by default. The face widget writes over this on
+     the element itself when someone sizes it, so the token is the starting
+     point rather than the only value. */
+  --face-size: 320px;
+
+  --t-fast: 120ms ease-out;
+  --t-view: 200ms ease-out;
+  /* Long enough that a reading which arrived while you were looking
+     elsewhere is still marked when you look back. */
+  --t-glow: 2400ms;
+}
+
+/* ── Graphite ─────────────────────────────────────────────────────────────
+
+   The established look: a measuring instrument in near-black and one cool
+   accent. Retuned for the deck rather than replaced, so an interface
+   someone already reads fluently still reads the same way. */
+
+[data-theme="graphite"] {
+  --bg: #0d0e11;
+  /* Behind the face, where the page falls away. */
+  --bg-deep: #08090b;
+  --surface-inset: #101216;
+  --surface: #14161b;
+  --surface-2: #191c22;
+  --surface-3: #1e222a;
+  --line: #23262e;
+  --line-soft: #1b1e24;
+
+  --fg: #e8eaed;
+  --fg-dim: #9aa1ac;
+  /* The quietest of the three, and the one that carries the smallest text:
+     widget titles at 11px, units, and the log's time column. It is therefore
+     the token with the least room to be wrong, and it is measured against the
+     surfaces it actually lands on rather than chosen by eye. */
+  --fg-mute: #80899c;
+
+  --accent: #7dd3fc;
+  --accent-soft: rgba(125, 211, 252, 0.12);
+  --accent-line: rgba(125, 211, 252, 0.35);
+
+  /* Status. Each tone carries a fill and a border alongside its text
+     colour, because a chip, a rail, and a meter all need the same reading
+     at three different weights. */
+  --ok: #4ade80;
+  --ok-soft: rgba(74, 222, 128, 0.12);
+  --ok-line: rgba(74, 222, 128, 0.3);
+
+  --warn: #fbbf24;
+  --warn-soft: rgba(251, 191, 36, 0.12);
+  --warn-line: rgba(251, 191, 36, 0.3);
+
+  --bad: #f87171;
+  --bad-soft: rgba(248, 113, 113, 0.12);
+  --bad-line: rgba(248, 113, 113, 0.3);
+
+  /* The light the centre of the page is lit by, behind the face. The face
+     itself is drawn from the accent, so this is the room around it rather
+     than the thing in it. */
+  --face-aura: rgba(125, 211, 252, 0.10);
+
+  --scrim: rgba(8, 9, 11, 0.72);
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
+}
+
+/* ── Arc ──────────────────────────────────────────────────────────────────
+
+   The new one. The same instrument under a colder light: a blue-white
+   filament on deep slate, with the circular motif carrying a little more of
+   the accent than graphite allows. It takes the atmosphere of the reference
+   heads-up displays and none of their density, so the page still reads as
+   an instrument rather than as a film prop. */
+
+[data-theme="arc"] {
+  --bg: #060a14;
+  --bg-deep: #02050c;
+  --surface-inset: #0a1220;
+  --surface: #101a2c;
+  --surface-2: #16233a;
+  --surface-3: #1e2f4a;
+  --line: #27395a;
+  --line-soft: #1a2740;
+
+  --fg: #eaf2ff;
+  --fg-dim: #9db2d0;
+  --fg-mute: #738fad;
+
+  --accent: #58d7ff;
+  --accent-soft: rgba(88, 215, 255, 0.16);
+  --accent-line: rgba(88, 215, 255, 0.45);
+
+  --ok: #34d399;
+  --ok-soft: rgba(52, 211, 153, 0.14);
+  --ok-line: rgba(52, 211, 153, 0.34);
+
+  --warn: #f0b429;
+  --warn-soft: rgba(240, 180, 41, 0.14);
+  --warn-line: rgba(240, 180, 41, 0.34);
+
+  --bad: #fb7185;
+  --bad-soft: rgba(251, 113, 133, 0.14);
+  --bad-line: rgba(251, 113, 133, 0.34);
+
+  --face-aura: rgba(88, 215, 255, 0.2);
+
+  --scrim: rgba(2, 5, 12, 0.78);
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.65);
+}
+
+/* ── Ember ────────────────────────────────────────────────────────────────
+
+   The same instrument in a warm light: a near-black that is brown rather
+   than blue, stepped surfaces, and one orange.
+
+   Written in OKLCH because these are ramps rather than seven separate
+   colours. A surface stepped by lightness in OKLCH stays the same colour
+   getting lighter, where the same step in HSL turns muddy through the middle
+   of the range and has to be corrected by hand at every stop.
+
+   The accent is deliberately quieter than a pure orange: chroma 0.13 against
+   roughly 0.20 for `#ff6a00`. A fully saturated warm hue vibrates against a
+   dark surface, and this one has to be legible as text as well as visible as
+   a face, so it is picked to clear 4.5:1 on `--surface` rather than to be as
+   orange as possible.
+
+   Orange and amber are the hard problem here, because "this is selected" and
+   "this needs your attention" must not be the same colour on an interface
+   whose whole job is reporting state. Separating them by hue is not enough:
+   simulated for a red-green deficient reader, this accent and this warning
+   sit 1.33:1 apart, which is not a difference. So the separation is a rule
+   about form, and it holds in every theme rather than only in this one:
+
+     - what is selected or active is the accent as a *rule*: a border on one
+       edge, accent text, at most `--accent-soft` behind it. Never a filled
+       chip.
+     - what has a status is a filled chip: its own `-soft` fill, its own
+       `-line` border, and a glyph.
+
+   Selected and warning are then different shapes before they are different
+   colours, and the colour is what confirms which, rather than what carries
+   it. */
+
+[data-theme="ember"] {
+  --bg: oklch(14.5% 0.010 58);
+  /* Behind the face, where the page falls away. */
+  --bg-deep: oklch(11% 0.008 58);
+  --surface-inset: oklch(17.5% 0.010 58);
+  --surface: oklch(20.5% 0.011 58);
+  --surface-2: oklch(24.5% 0.013 58);
+  --surface-3: oklch(29% 0.015 58);
+  --line: oklch(34% 0.016 58);
+  --line-soft: oklch(26% 0.013 58);
+
+  --fg: oklch(95% 0.006 75);
+  --fg-dim: oklch(80% 0.014 70);
+  --fg-mute: oklch(68% 0.018 70);
+
+  --accent: oklch(72% 0.130 55);
+  --accent-soft: oklch(72% 0.130 55 / 0.14);
+  --accent-line: oklch(72% 0.130 55 / 0.45);
+
+  --ok: oklch(78% 0.145 158);
+  --ok-soft: oklch(78% 0.145 158 / 0.13);
+  --ok-line: oklch(78% 0.145 158 / 0.34);
+
+  /* Lifted well above the accent in lightness as well as turned towards
+     yellow, so the two are as far apart as a warm palette allows before the
+     rule about form takes over. */
+  --warn: oklch(87% 0.145 95);
+  --warn-soft: oklch(87% 0.145 95 / 0.13);
+  --warn-line: oklch(87% 0.145 95 / 0.36);
+
+  --bad: oklch(68% 0.170 22);
+  --bad-soft: oklch(68% 0.170 22 / 0.13);
+  --bad-line: oklch(68% 0.170 22 / 0.34);
+
+  --face-aura: oklch(72% 0.130 55 / 0.13);
+
+  --scrim: oklch(11% 0.008 58 / 0.76);
+  --shadow: 0 8px 32px oklch(0% 0 0 / 0.55);
+}
+
+/* A page that has not been told which theme to wear still has to be
+   readable, so the established one is the fallback rather than a blank
+   palette. `theme.js` sets the attribute before first paint; this covers the
+   moment before it runs and the case where scripting never arrives. */
+:root:not([data-theme]) {
+  color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

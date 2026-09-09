@@ -125,41 +125,42 @@ def _cfg(stub, **over):
     return SimpleNamespace(**base)
 
 
+def _backend(stub, key="sk-stub"):
+    from jarvis.llm import OpenAICompatibleBackend
+    return OpenAICompatibleBackend(stub.base_url, api_key=key or None)
+
+
 class TestOpenAICompatibleEndToEnd:
     """Drive the real backend over HTTP against the stub."""
 
-    def test_factory_dispatches_to_openai_backend_at_configured_url(self, stub):
-        from jarvis.llm import get_llm_backend, OpenAICompatibleBackend
+    def test_factory_rejects_a_local_openai_chat_endpoint(self, stub):
+        from jarvis.llm import RoutedBackend, Tier, get_llm_backend
+
         backend = get_llm_backend(_cfg(stub))
-        assert isinstance(backend, OpenAICompatibleBackend)
-        assert backend.base_url == stub.base_url
+        assert isinstance(backend, RoutedBackend)
+        assert backend.routes_for(Tier.CHAT) == ()
 
     def test_direct_returns_assistant_text(self, stub):
-        from jarvis.llm import get_llm_backend
-        out = get_llm_backend(_cfg(stub)).direct("stub-chat", "sys", "hi", timeout_sec=5)
+        out = _backend(stub).direct("stub-chat", "sys", "hi", timeout_sec=5)
         assert out == "Hello from stub"
 
     def test_sends_bearer_api_key(self, stub):
-        from jarvis.llm import get_llm_backend
-        get_llm_backend(_cfg(stub)).direct("stub-chat", "sys", "hi", timeout_sec=5)
+        _backend(stub).direct("stub-chat", "sys", "hi", timeout_sec=5)
         auths = [h.get("Authorization") for p, h, _ in stub.calls if p.endswith("/chat/completions")]
         assert auths and auths[0] == "Bearer sk-stub"
 
     def test_no_auth_header_when_key_empty(self, stub):
-        from jarvis.llm import get_llm_backend
-        get_llm_backend(_cfg(stub, llm_api_key="")).direct("stub-chat", "sys", "hi", timeout_sec=5)
+        _backend(stub, "").direct("stub-chat", "sys", "hi", timeout_sec=5)
         auths = [h.get("Authorization") for p, h, _ in stub.calls if p.endswith("/chat/completions")]
         assert auths and auths[0] is None
 
     def test_chat_normalises_message_to_top_level(self, stub):
-        from jarvis.llm import get_llm_backend
-        resp = get_llm_backend(_cfg(stub)).chat(
+        resp = _backend(stub).chat(
             "stub-chat", [{"role": "user", "content": "hi"}], timeout_sec=5)
         assert resp["message"]["content"] == "Hello from stub"
 
     def test_chat_decodes_tool_call_arguments_to_dict(self, stub):
-        from jarvis.llm import get_llm_backend
-        resp = get_llm_backend(_cfg(stub)).chat(
+        resp = _backend(stub).chat(
             "stub-chat", [{"role": "user", "content": "weather?"}],
             tools=[{"type": "function", "function": {"name": "getWeather"}}],
             timeout_sec=5)
@@ -168,22 +169,18 @@ class TestOpenAICompatibleEndToEnd:
         assert isinstance(args, dict) and args["location"] == "London"
 
     def test_streaming_reassembles_sse_and_fires_on_token(self, stub):
-        from jarvis.llm import get_llm_backend
         toks: list[str] = []
-        full = get_llm_backend(_cfg(stub)).streaming(
+        full = _backend(stub).streaming(
             "stub-chat", "sys", "hi", on_token=toks.append, timeout_sec=5)
         assert full == "Hello"
         assert toks == ["Hel", "lo"]
 
-    def test_embeddings_via_inherited_provider(self, stub):
-        from jarvis.llm import get_embedding_backend, OpenAICompatibleBackend
-        eb = get_embedding_backend(_cfg(stub))  # embedding_provider="" inherits chat
-        assert isinstance(eb, OpenAICompatibleBackend)
+    def test_adapter_embedding_wire_shape(self, stub):
+        eb = _backend(stub)
         assert eb.embed("hello", "stub-embed", timeout_sec=5) == [0.1, 0.2, 0.3]
 
     def test_list_models(self, stub):
-        from jarvis.llm import get_llm_backend
-        models = get_llm_backend(_cfg(stub)).list_models(timeout_sec=5)
+        models = _backend(stub).list_models(timeout_sec=5)
         assert "stub-chat" in models and "stub-embed" in models
 
 
@@ -303,15 +300,18 @@ class TestConfigRoundTrip:
         monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
 
         from jarvis.config import load_settings
-        from jarvis.llm import get_llm_backend, OpenAICompatibleBackend
+        from jarvis.llm import RoutedBackend, Tier, get_llm_backend
 
         settings = load_settings()
         assert settings.llm_provider == "openai_compatible"
-        # Per-provider resolution: the OpenAI-compatible model wins on this path.
+        # Local OpenAI-compatible endpoints are discarded by v7; embeddings
+        # remain on the private lane.
         assert settings.llm_chat_model == "stub-chat"
-        assert settings.embedding_model == "stub-embed"
+        assert settings.embedding_provider == "ollama"
+        assert settings.embedding_model == "nomic-embed-text"
 
         backend = get_llm_backend(settings)
-        assert isinstance(backend, OpenAICompatibleBackend)
-        out = backend.direct(settings.llm_chat_model, "sys", "hi", timeout_sec=5)
-        assert out == "Hello from stub"
+        assert isinstance(backend, RoutedBackend)
+        assert backend.routes_for(Tier.CHAT) == ()
+        assert backend.direct(settings.llm_chat_model, "sys", "hi", timeout_sec=5) is None
+        assert stub.calls == []

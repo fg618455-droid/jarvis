@@ -74,6 +74,38 @@ class ToolsNotSupportedError(Exception):
     pass
 
 
+class ProviderError(Exception):
+    """A provider request failed without exposing response credentials."""
+
+
+class RateLimitedError(ProviderError):
+    """The route is temporarily rate limited."""
+
+    def __init__(self, retry_after: Optional[float] = None) -> None:
+        super().__init__("provider rate limited the request")
+        self.retry_after = retry_after
+
+
+class QuotaExhaustedError(ProviderError):
+    """The route's quota is spent until its next reset."""
+
+    def __init__(self, reset_at: Optional[float] = None) -> None:
+        super().__init__("provider quota is exhausted")
+        self.reset_at = reset_at
+
+
+class BillingError(ProviderError):
+    """The provider requires billing or credits before it can answer."""
+
+
+class AuthError(ProviderError):
+    """The route rejected its configured credential."""
+
+
+class ModelUnavailableError(ProviderError):
+    """The configured model is unavailable on this route."""
+
+
 class LLMBackend(ABC):
     """Common interface for local LLM runtimes.
 
@@ -123,12 +155,22 @@ class LLMBackend(ABC):
         extra_options: Optional[Dict[str, Any]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         thinking: bool = False,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Arbitrary-messages chat. Returns the raw response dict so the
         caller (today: the reply engine) can inspect both content and
         ``tool_calls``. Raises :class:`ToolsNotSupportedError` when the
         model rejects the ``tools`` parameter so the caller can fall
-        back to text-based tool calling without losing the turn."""
+        back to text-based tool calling without losing the turn.
+
+        ``on_token`` asks for the assistant's text as it arrives rather
+        than only at the end, so a caller can start speaking the first
+        sentence while the rest is still being written. It changes when
+        the text shows up, not what comes back: the return value is the
+        same assembled response either way, and reasoning is never
+        reported through it. A listener that raises is logged and
+        ignored — reporting text is a side effect and must not cost the
+        caller its reply."""
 
     @abstractmethod
     def embed(

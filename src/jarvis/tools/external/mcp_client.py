@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import tempfile
 from typing import Any, Dict, Optional, List
 from contextlib import asynccontextmanager
 
 from mcp import ClientSession  # type: ignore
 from mcp.client.stdio import stdio_client, StdioServerParameters  # type: ignore
+from ...diagnostics import redact
+from ...debug import debug_log
 
 
 import glob as _glob
@@ -132,6 +135,13 @@ class _StdioConnection:
             return await self._cm.__aexit__(exc_type, exc, tb)
         finally:
             try:
+                self._errlog.seek(0)
+                stderr = self._errlog.read()
+                if stderr:
+                    # Server stderr is useful for setup failures, but can
+                    # include inherited environment diagnostics; redact it
+                    # and cap it before sending it to the local debug log.
+                    debug_log(f"MCP subprocess stderr: {redact(stderr)[:2000]}", "mcp")
                 self._errlog.close()
             except Exception:
                 pass
@@ -174,11 +184,16 @@ class MCPClient:
             env = {**os.environ, **user_env}
         else:
             env = None  # inherit parent env as-is
+        if env is not None and "USER" not in env and "HOME" not in env:
+            # Windows normally exposes USERNAME rather than USER; provide the
+            # portable conventional alias expected by several Node MCP tools.
+            env["USER"] = str(env.get("USERNAME", "jarvis"))
         params = StdioServerParameters(command=command, args=args, env=env)
-        # Suppress MCP server stderr noise (npm warnings, usage banners, etc.)
-        # from polluting the daemon's log output.
-        # Must use a real file (not StringIO) because the subprocess needs fileno().
-        devnull = open(os.devnull, "w")
+        # Capture (rather than discard) a bounded amount of server stderr so
+        # failed setup is diagnosable. A real file remains necessary because
+        # the subprocess needs fileno(); TemporaryFile is never exposed to a
+        # child process by name and is deleted on close.
+        devnull = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
         # Build the underlying transport CM eagerly so any synchronous
         # construction error closes devnull instead of leaking it. The
         # wrapper guarantees the handle is also closed on every async

@@ -28,7 +28,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from conftest import requires_judge_llm
-from helpers import ToolCallCapture, create_mock_tool_run
+from helpers import ToolCallCapture, create_mock_tool_run, JUDGE_MODEL
 
 
 def _fake_graph_nodes():
@@ -152,10 +152,7 @@ class TestPossessorFieldRepro:
     def _run(self, query: str, mock_config, eval_db, eval_dialogue_memory):
         """Run the reply engine with the diary entry injected via memory search."""
         from jarvis.reply.engine import run_reply_engine
-        from helpers import JUDGE_MODEL
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         capture = ToolCallCapture()
 
@@ -200,7 +197,6 @@ class TestPossessorFieldRepro:
     )
 
     def _assert_tool_called(self, response, capture, context_label: str):
-        from helpers import JUDGE_MODEL
 
         if not capture.has_tool("webSearch"):
             lowered = (response or "").lower()
@@ -228,7 +224,6 @@ class TestPossessorFieldRepro:
 
         Small models occasionally produce clipped replies; we xfail for them.
         """
-        from helpers import JUDGE_MODEL
 
         text = response or ""
         if not text.strip():
@@ -265,7 +260,6 @@ class TestPossessorFieldRepro:
         self, mock_config, eval_db, eval_dialogue_memory,
     ):
         """The exact first-turn query from the field session."""
-        from helpers import JUDGE_MODEL
 
         query = "Tell me more about the movie possessor"
         response, capture = self._run(query, mock_config, eval_db, eval_dialogue_memory)
@@ -298,7 +292,6 @@ class TestPossessorFieldRepro:
           (a) hallucinating specific facts (director, year, cast), or
           (b) deflecting to "here are some links" as if that were an answer.
         """
-        from helpers import JUDGE_MODEL
         from jarvis.reply.engine import run_reply_engine
 
         # This mirrors exactly what webSearch now produces when fetch_attempted_any
@@ -325,8 +318,6 @@ class TestPossessorFieldRepro:
             "   Link: https://www.amazon.co.uk/Possessor-Andrea-Riseborough/dp/B08MXZDZCB\n"
         )
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
         capture = ToolCallCapture()
 
         with patch(
@@ -431,7 +422,6 @@ class TestPossessorFieldRepro:
         failure. Without it, this test fails with a response that names neither
         the director nor the cast.
         """
-        from helpers import JUDGE_MODEL
         from jarvis.reply.engine import run_reply_engine
 
         # VERBATIM capture from _fetch_page_content of the Possessor Wikipedia
@@ -500,8 +490,6 @@ class TestPossessorFieldRepro:
             "   Link: https://www.channel4.com/programmes/possessor\n"
         )
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
         capture = ToolCallCapture()
 
         # Mirror the real 2026-04-20 field run: TWO diary entries (same-day +
@@ -614,7 +602,6 @@ class TestPossessorFieldRepro:
         reply model end-to-end. We force digest ON via config, then assert
         the reply reflects the distilled facts and does NOT confabulate.
         """
-        from helpers import JUDGE_MODEL
         from jarvis.reply.engine import run_reply_engine
 
         # Keep this shorter than the links-only tests — the point isn't to
@@ -643,8 +630,6 @@ class TestPossessorFieldRepro:
             "and Christopher Abbott."
         )
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
         # Force digest ON regardless of model-size auto-detection so this
         # case runs the digest path deterministically.
         mock_config.tool_result_digest_enabled = True
@@ -720,7 +705,6 @@ class TestPossessorFieldRepro:
         it appeared in the field log: the assistant asked about 'Possession'
         and the user corrects with 'it's a movie called possessor not possession'.
         """
-        from helpers import JUDGE_MODEL
 
         eval_dialogue_memory.add_message("user", "Tell me more about the movie possessor")
         eval_dialogue_memory.add_message(

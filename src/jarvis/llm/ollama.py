@@ -75,15 +75,86 @@ def extract_text_from_response(data: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _assemble_streamed_chat(
+    resp: Any,
+    on_token: Callable[[str], None],
+) -> Optional[Dict[str, Any]]:
+    """Fold an Ollama chat stream back into one response dict.
+
+    Every consumer downstream reads the unstreamed shape, so streaming is an
+    arrival schedule rather than a different contract: text is handed to
+    ``on_token`` as it lands and the same ``{"message": {...}}`` comes back at
+    the end. Reasoning is collected but never reported — it is written for the
+    log, not for the speakers.
+
+    ``on_token`` is a side effect on the user's behalf, so a listener that
+    raises must not cost them the answer.
+    """
+    content: List[str] = []
+    thinking: List[str] = []
+    tool_calls: List[Any] = []
+    role = "assistant"
+
+    for line in resp.iter_lines():
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        message = data.get("message")
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role") or role
+        calls = message.get("tool_calls")
+        if calls:
+            tool_calls.extend(calls)
+        reasoning = message.get("thinking")
+        if isinstance(reasoning, str) and reasoning:
+            thinking.append(reasoning)
+        chunk = message.get("content")
+        if not isinstance(chunk, str) or not chunk:
+            continue
+        content.append(chunk)
+        try:
+            on_token(chunk)
+        except Exception as e:
+            debug_log(f"OllamaBackend.chat: token listener failed — {e}", "llm")
+
+    if not content and not tool_calls and not thinking:
+        debug_log("OllamaBackend.chat: stream produced nothing", "llm")
+        return None
+
+    message: Dict[str, Any] = {"role": role, "content": "".join(content)}
+    if thinking:
+        message["thinking"] = "".join(thinking)
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    return {"message": message, "done": True}
+
+
 class OllamaBackend(LLMBackend):
     """:class:`LLMBackend` implementation that talks to a local Ollama server."""
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, keep_alive: Optional[str] = None) -> None:
         self._base_url = base_url.rstrip("/")
+        # How long Ollama should hold this backend's models in memory after a
+        # request. Ollama resets the unload timer from every request's own
+        # ``keep_alive`` and applies its short default when the field is
+        # absent, so warming a model once is not enough: each call has to
+        # renew the residency or an idle stretch costs the next reply a cold
+        # page-in. ``None`` leaves the decision to the server.
+        self._keep_alive = keep_alive
 
     @property
     def base_url(self) -> str:
         return self._base_url
+
+    def _with_residency(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Renew model residency unless the caller already asked for a value."""
+        if self._keep_alive and "keep_alive" not in payload:
+            payload["keep_alive"] = self._keep_alive
+        return payload
 
     # ── chat ───────────────────────────────────────────────────────────
 
@@ -137,6 +208,8 @@ class OllamaBackend(LLMBackend):
             "options": options,
             "think": thinking,
         }
+
+        self._with_residency(payload)
 
         try:
             with requests.post(
@@ -196,6 +269,8 @@ class OllamaBackend(LLMBackend):
             "think": thinking,
         }
 
+        self._with_residency(payload)
+
         try:
             with requests.post(
                 f"{self._base_url}/api/chat",
@@ -235,6 +310,7 @@ class OllamaBackend(LLMBackend):
         extra_options: Optional[Dict[str, Any]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         thinking: bool = False,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Send an arbitrary messages array to Ollama and return the
         raw response JSON. Caller is responsible for interpreting
@@ -245,12 +321,18 @@ class OllamaBackend(LLMBackend):
         overflow and force Ollama to truncate the tool schema — small
         models like ``gemma4:e2b`` then fall back to pre-trained
         ``tool_code`` scaffolding instead of producing valid tool calls.
+
+        With ``on_token`` the request is streamed and each piece of
+        assistant text is handed over as it arrives, so a caller can start
+        speaking the first sentence while the rest is still being written.
+        The return value is the same assembled response either way, so
+        nothing downstream needs to know which mode ran.
         """
         sanitised = strip_nonstandard_message_fields(messages)
         payload: Dict[str, Any] = {
             "model": chat_model,
             "messages": sanitised,
-            "stream": False,
+            "stream": on_token is not None,
             "cache_prompt": True,
             "options": {"num_ctx": 8192},
             "think": thinking,
@@ -277,14 +359,21 @@ class OllamaBackend(LLMBackend):
                 else:
                     payload["options"][key] = value
 
+        self._with_residency(payload)
+
         if tools and isinstance(tools, list) and len(tools) > 0:
             payload["tools"] = tools
 
         try:
             with requests.post(
-                f"{self._base_url}/api/chat", json=payload, timeout=timeout_sec
+                f"{self._base_url}/api/chat",
+                json=payload,
+                timeout=timeout_sec,
+                stream=on_token is not None,
             ) as resp:
                 resp.raise_for_status()
+                if on_token is not None:
+                    return _assemble_streamed_chat(resp, on_token)
                 data = resp.json()
             if isinstance(data, dict):
                 return data

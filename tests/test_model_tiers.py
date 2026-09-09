@@ -32,10 +32,9 @@ def _load_settings_from(tmp_path, monkeypatch, cfg: dict, version: int = 2):
 class TestFastModelResolution:
     """cfg.fast_model always carries a resolved, provider-valid model name."""
 
-    def test_ollama_path_defaults_to_small_pull(self, tmp_path, monkeypatch):
-        from jarvis.config import DEFAULT_FAST_MODEL
+    def test_no_cloud_fast_route_leaves_fast_model_empty(self, tmp_path, monkeypatch):
         settings, _ = _load_settings_from(tmp_path, monkeypatch, {})
-        assert settings.fast_model == DEFAULT_FAST_MODEL
+        assert settings.fast_model == ""
 
     def test_openai_path_defaults_to_chat_model(self, tmp_path, monkeypatch):
         settings, _ = _load_settings_from(tmp_path, monkeypatch, {
@@ -43,13 +42,13 @@ class TestFastModelResolution:
             "llm_base_url": "http://localhost:1234/v1",
             "llm_chat_model": "qwen-27b",
         })
-        assert settings.fast_model == "qwen-27b"
+        assert settings.fast_model == ""
 
     def test_explicit_fast_model_wins_on_ollama(self, tmp_path, monkeypatch):
         settings, _ = _load_settings_from(tmp_path, monkeypatch, {
             "fast_model": "qwen3:1.7b",
         })
-        assert settings.fast_model == "qwen3:1.7b"
+        assert settings.fast_model == ""
 
     def test_explicit_fast_model_wins_on_openai(self, tmp_path, monkeypatch):
         settings, _ = _load_settings_from(tmp_path, monkeypatch, {
@@ -58,17 +57,46 @@ class TestFastModelResolution:
             "llm_chat_model": "qwen-27b",
             "fast_model": "small-served-model",
         })
-        assert settings.fast_model == "small-served-model"
+        assert settings.fast_model == ""
 
     def test_embedding_provider_does_not_affect_fast_tier(self, tmp_path, monkeypatch):
-        from jarvis.config import DEFAULT_FAST_MODEL
         settings, _ = _load_settings_from(tmp_path, monkeypatch, {
             "llm_provider": "ollama",
             "embedding_provider": "openai_compatible",
             "embedding_base_url": "http://localhost:1234/v1",
             "embedding_model": "text-embedding-3-small",
         })
-        assert settings.fast_model == DEFAULT_FAST_MODEL
+        assert settings.fast_model == ""
+
+    def test_route_fast_and_local_fast_are_independent(self, tmp_path, monkeypatch):
+        settings, _ = _load_settings_from(tmp_path, monkeypatch, {
+            "local_fast_model": "qwen3:1.7b",
+            "llm_routes": [{
+                "name": "remote-fast", "provider": "openai_compatible",
+                "base_url": "https://example.invalid/v1", "api_key": "",
+                "api_key_env": "REMOTE_KEY", "model": "remote-fast-model",
+                "tier": "fast", "timeout_sec": 4.0, "enabled": True,
+                "capabilities": ["chat"],
+            }],
+        }, version=5)
+
+        assert settings.fast_model == "remote-fast-model"
+        assert settings.local_fast_model == ""
+
+    def test_chat_route_model_is_the_effective_chat_model(self, tmp_path, monkeypatch):
+        settings, _ = _load_settings_from(tmp_path, monkeypatch, {
+            "ollama_chat_model": "local-private-model",
+            "llm_routes": [{
+                "name": "remote-chat", "provider": "openai_compatible",
+                "base_url": "https://example.invalid/v1", "api_key": "",
+                "api_key_env": "REMOTE_KEY", "model": "remote-chat-model",
+                "tier": "chat", "timeout_sec": 4.0, "enabled": True,
+                "capabilities": ["chat"],
+            }],
+        }, version=5)
+
+        assert settings.llm_chat_model == "remote-chat-model"
+        assert settings.ollama_chat_model == "local-private-model"
 
 
 class TestResolveModel:
@@ -89,17 +117,29 @@ class TestResolveModel:
         cfg = SimpleNamespace(fast_model="", llm_chat_model="big")
         assert resolve_model(cfg, Tier.FAST) == "big"
 
+    def test_private_tier_returns_ollama_chat_model(self):
+        from jarvis.llm import resolve_model, Tier
+        cfg = SimpleNamespace(
+            fast_model="cloud-fast",
+            llm_chat_model="cloud-chat",
+            ollama_chat_model="local-private",
+        )
+        model = resolve_model(cfg, Tier.PRIVATE)
+        assert model == "local-private"
+        assert model.tier is Tier.PRIVATE
+
 
 class TestV3Migration:
-    """The retired per-context keys fold into fast_model and disappear."""
+    """Retired local FAST fields are removed by the v7 privacy migration."""
 
     def test_intent_judge_model_becomes_fast_model(self, tmp_path, monkeypatch):
         settings, cfg_path = _load_settings_from(tmp_path, monkeypatch, {
             "intent_judge_model": "my-judge",
         })
-        assert settings.fast_model == "my-judge"
+        assert settings.fast_model == ""
         on_disk = json.loads(cfg_path.read_text())
-        assert on_disk.get("fast_model") == "my-judge"
+        assert "local_fast_model" not in on_disk
+        assert "fast_model" not in on_disk
         for dead in ("intent_judge_model", "tool_router_model",
                      "evaluator_model", "planner_model"):
             assert dead not in on_disk
@@ -109,15 +149,17 @@ class TestV3Migration:
         settings, cfg_path = _load_settings_from(tmp_path, monkeypatch, {
             "tool_router_model": "my-router",
         })
-        assert settings.fast_model == "my-router"
-        assert json.loads(cfg_path.read_text()).get("fast_model") == "my-router"
+        assert settings.fast_model == ""
+        on_disk = json.loads(cfg_path.read_text())
+        assert "local_fast_model" not in on_disk
+        assert "fast_model" not in on_disk
 
     def test_judge_wins_over_router_when_both_present(self, tmp_path, monkeypatch):
         settings, _ = _load_settings_from(tmp_path, monkeypatch, {
             "intent_judge_model": "my-judge",
             "tool_router_model": "my-router",
         })
-        assert settings.fast_model == "my-judge"
+        assert settings.fast_model == ""
 
     def test_evaluator_and_planner_keys_are_dropped(self, tmp_path, monkeypatch):
         _, cfg_path = _load_settings_from(tmp_path, monkeypatch, {
@@ -126,16 +168,17 @@ class TestV3Migration:
         on_disk = json.loads(cfg_path.read_text())
         assert "evaluator_model" not in on_disk
         assert "planner_model" not in on_disk
-        assert "fast_model" not in on_disk  # neither key promotes
+        assert "local_fast_model" not in on_disk  # neither key promotes
 
     def test_existing_fast_model_is_preserved(self, tmp_path, monkeypatch):
         settings, cfg_path = _load_settings_from(tmp_path, monkeypatch, {
             "fast_model": "already-chosen",
             "intent_judge_model": "old-judge",
         })
-        assert settings.fast_model == "already-chosen"
+        assert settings.fast_model == ""
         on_disk = json.loads(cfg_path.read_text())
-        assert on_disk["fast_model"] == "already-chosen"
+        assert "local_fast_model" not in on_disk
+        assert "fast_model" not in on_disk
         assert "intent_judge_model" not in on_disk
 
     def test_v1_config_with_explicit_judge_composes_to_fast_model(self, tmp_path, monkeypatch):
@@ -145,9 +188,10 @@ class TestV3Migration:
             "ollama_chat_model": "gpt-oss:20b",
             "intent_judge_model": "my-judge",
         }, version=1)
-        assert settings.fast_model == "my-judge"
+        assert settings.fast_model == ""
         on_disk = json.loads(cfg_path.read_text())
-        assert on_disk["fast_model"] == "my-judge"
+        assert "local_fast_model" not in on_disk
+        assert "fast_model" not in on_disk
         assert on_disk["_config_version"] >= 3
         # The v2 promotion still happened alongside.
         assert on_disk["llm_chat_model"] == "gpt-oss:20b"
@@ -163,4 +207,77 @@ class TestV3Migration:
         })
         on_disk = json.loads(cfg_path.read_text())
         assert "fast_model" not in on_disk
-        assert settings.fast_model == default_judge  # still resolves via default
+        assert "local_fast_model" not in on_disk
+        assert settings.fast_model == ""
+
+
+class TestV6LocalFastMigration:
+    def test_a_local_fast_choice_moves_to_the_explicit_fallback_key(
+        self, tmp_path, monkeypatch,
+    ):
+        settings, cfg_path = _load_settings_from(tmp_path, monkeypatch, {
+            "fast_model": "my-local-fast",
+            "llm_routes": [{
+                "name": "remote-fast", "provider": "openai_compatible",
+                "base_url": "https://example.invalid/v1", "api_key": "",
+                "api_key_env": "", "model": "different-remote-fast",
+                "tier": "fast", "timeout_sec": 4.0, "enabled": True,
+                "capabilities": ["chat"],
+            }],
+        }, version=5)
+
+        on_disk = json.loads(cfg_path.read_text())
+        assert "local_fast_model" not in on_disk
+        assert "fast_model" not in on_disk
+        assert settings.local_fast_model == ""
+        assert settings.fast_model == "different-remote-fast"
+
+    def test_a_remote_effective_name_is_not_migrated_into_local_ollama(
+        self, tmp_path, monkeypatch,
+    ):
+        settings, cfg_path = _load_settings_from(tmp_path, monkeypatch, {
+            "fast_model": "remote-fast",
+            "llm_routes": [{
+                "name": "remote-fast", "provider": "openai_compatible",
+                "base_url": "https://example.invalid/v1", "api_key": "",
+                "api_key_env": "", "model": "remote-fast",
+                "tier": "fast", "timeout_sec": 4.0, "enabled": True,
+                "capabilities": ["chat"],
+            }],
+        }, version=5)
+
+        on_disk = json.loads(cfg_path.read_text())
+        assert "fast_model" not in on_disk
+        assert "local_fast_model" not in on_disk
+        assert settings.fast_model == "remote-fast"
+        assert settings.local_fast_model == ""
+
+
+class TestV4Migration:
+    def test_openai_compatible_config_becomes_both_routing_chains(
+        self, tmp_path, monkeypatch
+    ):
+        settings, cfg_path = _load_settings_from(tmp_path, monkeypatch, {
+            "llm_provider": "openai_compatible",
+            "llm_base_url": "https://example.invalid/v1",
+            "llm_api_key": "synthetic-credential",
+            "llm_chat_model": "served-chat",
+            "fast_model": "served-fast",
+            "ollama_chat_model": "local-model",
+        }, version=3)
+
+        assert [route["tier"] for route in settings.llm_routes] == ["fast", "chat"]
+        assert [route["model"] for route in settings.llm_routes] == [
+            "served-fast", "served-chat"
+        ]
+        on_disk = json.loads(cfg_path.read_text())
+        assert on_disk["_config_version"] == 7
+        assert on_disk["llm_routes"] == settings.llm_routes
+
+    def test_local_config_keeps_empty_route_list(self, tmp_path, monkeypatch):
+        settings, cfg_path = _load_settings_from(
+            tmp_path, monkeypatch, {"llm_provider": "ollama"}, version=3
+        )
+
+        assert settings.llm_routes == []
+        assert json.loads(cfg_path.read_text())["_config_version"] == 7

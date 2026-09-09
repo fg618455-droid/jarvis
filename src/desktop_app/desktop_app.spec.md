@@ -10,6 +10,8 @@ The desktop app is a **separate package** from the core `jarvis` module. It depe
 - Building alternative UIs (web, mobile) without modifying core logic
 - Keeping PyQt6 dependencies isolated from the core package
 
+Importing `desktop_app` does not import `desktop_app.app` or Qt. Public app exports are resolved lazily on first attribute access, so non-GUI helpers can import the package without a working Qt installation.
+
 ## Package Structure
 
 ```
@@ -23,7 +25,7 @@ src/desktop_app/
 ├── themes.py            # Qt stylesheets and color palette
 ├── diary_dialog.py      # End-of-session diary update dialog
 ├── chat_window.py       # Text chat interface (see chat_window.spec.md)
-├── memory_viewer.py     # Flask-based memory browser
+├── headless_launcher.py # Splash + daemon, no tray/chat/face (see headless_launcher.spec.md)
 ├── updater.py           # Update checking logic
 ├── update_dialog.py     # Update notification dialogs
 └── desktop_assets/      # Icons and images
@@ -88,7 +90,7 @@ The central controller that manages:
 
 - **System tray icon** with context menu
 - **Daemon lifecycle** (start/stop the Jarvis voice assistant)
-- **Window management** (log viewer, memory viewer, face window)
+- **Window management** (face window and control centre)
 - **Update checking** on startup and on-demand
 - **Runtime diagnostics** (`🩺 Runtime Status`): shows whether the assistant is listening, the daemon mode/PID, whether Low Power Mode is active, whether Ollama is needed/running, whether Jarvis owns the current Ollama runtime, active chat/embedding models, and configured MCP server count. The dialog is informational and never starts or stops services.
 
@@ -96,13 +98,17 @@ The central controller that manages:
 
 | Window | Purpose |
 |--------|---------|
-| **LogViewerWindow** | Real-time log output from the daemon, with "Report Issue" button |
-| **MemoryViewerWindow** | Web-based memory browser (Flask server) |
+| **LogViewerWindow** | Optional local terminal-style daemon output, with "Report Issue" button. The Control Centre Logs view is the cross-platform diagnostic surface. |
+| **ControlCentreWindow** | Embeds the control centre served by `jarvis.webui` |
 | **FaceWindow** | Animated face that reacts to speaking state |
 | **SettingsWindow** | Auto-generated config editor with tabbed categories |
 | **SetupWizard** | First-run configuration (Ollama, models, profile) |
 | **DictationHistoryWindow** | Scrollable list of past dictations with copy/delete/clear actions |
 | **ChatWindow** | Text chat interface alongside voice; shares one conversation with the voice path and is enabled only while the daemon is running (see `chat_window.spec.md`) |
+
+Window visibility is user-controlled: starting or stopping the assistant never shows or hides the log viewer or the face window. The windows open automatically once at app launch; after that the tray menu's `📝 View Logs` and `👤 Show Face` actions are the only controls over their visibility (the diary dialog shown while stopping is raised on top but leaves those windows' visibility untouched).
+
+**Face state follows the daemon lifecycle**: the face animates from states written by the daemon (`JarvisStateManager`, file-backed for cross-process use). Whenever the daemon goes down — the tray's Stop/Start Listening toggle, an unexpected exit, or the setup wizard pausing it — the tray resets the face to `ASLEEP` so it never looks awake while no daemon is running. Starting the daemon lets the daemon's own state writes take over again.
 
 ### Tray Menu: GPU Library Recovery (Windows)
 
@@ -278,14 +284,25 @@ sequenceDiagram
 - **Quarantine stripping (macOS)**: The shell script runs `xattr -dr com.apple.quarantine` on the newly-installed bundle. Builds are unsigned (ad-hoc signing breaks Qt WebEngine's symlinks — see `release.yml`), so without this step Gatekeeper may re-trigger the "unidentified developer" prompt on every update
 - **One-generation rollback (macOS, Linux)**: The previous `.app` / directory is moved aside to `<name>.backup` rather than deleted outright, so a user can restore the prior version manually if the new one fails to launch. The backup from the previous update is cleared before creating a new one, so at most one backup exists on disk at a time. This is a simplified version of Squirrel's versioned-folder rollback — enough safety for a single-bundle install, without the architectural overhead
 
-## Memory Viewer
+## Control Centre
 
-A Flask-based web interface for browsing conversation history:
+`ControlCentreWindow` is a frame around the control centre the core serves
+(`src/jarvis/webui/webui.spec.md`), not an interface of its own.
 
-- Runs on `localhost:5050`
-- **Bundled mode**: Flask runs in a daemon thread
-- **Development mode**: Flask runs as subprocess
-- Opens in embedded QWebEngineView or system browser (macOS fallback)
+It includes the local Logs view for recent redacted diagnostics. The animated
+`FaceWindow` remains the reduced desktop interface for listening, thinking,
+and speaking state.
+
+- **Never serves over a running daemon**: the window probes `webui_port`
+  first. Something answering there is the daemon's own instance, which holds
+  the live state, so that is what gets shown. Only when nothing answers does
+  the desktop process start an explicitly standalone copy of its own. That
+  copy reports the daemon offline, carries no daemon uptime or recording/
+  conversation indicators, and reads persisted turn history from disk
+- **Its own copy is stopped when the app exits**, so quitting the tray does
+  not leave a port listening
+- Opens in embedded QWebEngineView, or the system browser when WebEngine is
+  unavailable or the app is a macOS bundle
 
 ## Error Handling
 
@@ -311,7 +328,7 @@ content and the report-issue body, so these aborts become diagnosable.
 ### Fallbacks
 
 - **No Ollama**: Shows setup wizard or auto-starts
-- **No WebEngine**: Opens memory viewer in system browser
+- **No WebEngine**: Opens the control centre in the system browser
 - **Model not supported**: Warning dialog with option to change
 - **Update failed**: Error dialog with details
 
@@ -322,7 +339,7 @@ content and the report-issue body, so these aborts become diagnosable.
 | Tray icon | Native menu bar | System tray | System tray |
 | Ollama start | `open -a Ollama` | `ollama serve` (hidden) | `ollama serve` |
 | Crash logs | `~/Library/Logs/Jarvis` | `%LOCALAPPDATA%\Jarvis` | `~/.jarvis` |
-| Memory viewer | System browser* | Embedded WebEngine | Embedded WebEngine |
+| Control centre | System browser* | Embedded WebEngine | Embedded WebEngine |
 
 *macOS bundled apps use system browser due to QtWebEngine sandbox issues.
 
