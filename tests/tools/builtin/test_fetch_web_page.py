@@ -1,5 +1,6 @@
 """Tests for fetch web page tool."""
 
+import builtins
 import pytest
 from unittest.mock import Mock, patch
 import requests
@@ -90,7 +91,14 @@ class TestFetchWebPageTool:
         )
         mock_get.return_value = mock_response
 
-        with patch('builtins.__import__', side_effect=ImportError):
+        original_import = builtins.__import__
+
+        def import_without_bs4(name, *args, **kwargs):
+            if name == "bs4" or name.startswith("bs4."):
+                raise ImportError("BeautifulSoup deliberately unavailable")
+            return original_import(name, *args, **kwargs)
+
+        with patch('builtins.__import__', side_effect=import_without_bs4):
             args = {"url": "https://example.com"}
             result = self.tool.run(args, self.context)
 
