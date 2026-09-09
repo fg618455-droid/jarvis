@@ -16,11 +16,21 @@ from .base import (
     UsageSnapshot,
 )
 from .models import ModelCatalog
+from .codex import (
+    CodexAdapter,
+    CodexProtocolError,
+    CodexTimeoutError,
+    CodexTransportState,
+)
 
 __all__ = [
     "AuthStatus",
     "AuthenticationManager",
     "Capabilities",
+    "CodexAdapter",
+    "CodexProtocolError",
+    "CodexTimeoutError",
+    "CodexTransportState",
     "HealthReport",
     "ModelInfo",
     "ModelCatalog",
