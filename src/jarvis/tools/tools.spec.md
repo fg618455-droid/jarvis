@@ -25,3 +25,11 @@ date text, and a nullable local-day countdown. It never composes an answer or
 chooses urgency wording. Date normalisation is conservative: an extractor's
 ISO candidate is accepted only when the stored date text supplies explicit
 day and year evidence; all uncertain dates keep `days_remaining: null`.
+
+### Ordered MCP configuration publication
+
+Registry reconfiguration and refresh share a writer lock separate from the cache
+reader lock. Refresh snapshots configuration under that writer lock. The worker
+pool admits the new configuration before discovery, then the complete discovery
+result is published atomically. Slow old discovery cannot restore a removed
+server. Cache reads remain available during discovery; stale calls fail closed.
