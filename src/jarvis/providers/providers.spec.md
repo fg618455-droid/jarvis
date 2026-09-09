@@ -18,7 +18,7 @@ Every adapter implements this complete interface:
 |---|---|---|
 | `id()` | `str` | Stable identifier: `claude`, `codex` or `hermes`. |
 | `auth_status()` | `AuthStatus` | Subscription authentication state. Unknown or malformed state fails closed. |
-| `list_models()` | `ModelCatalog \| NotSupported` | Models obtained from provider-backed evidence. |
+| `list_models()` | `ModelCatalog` | Models obtained from provider-backed evidence. `enumerable` states whether the provider supplies a listing interface. |
 | `capabilities(model)` | `Capabilities` | Known tools, MCP, streaming, image, structured-output and steering support. Unknown flags are false. |
 | `start_run(spec)` | `RunHandle` | Starts a run and pins its execution choices. |
 | `stream(run)` | `Iterator[RunEvent]` | Emits only normalised provider events. |
@@ -30,8 +30,14 @@ Every adapter implements this complete interface:
 | `usage()` | `UsageSnapshot` | Reports provider usage or `available=False`; values are never estimated. |
 | `health()` | `HealthReport` | Reports reachability and measured latency. |
 
-An unsupported operation returns `NotSupported`. Adapters do not simulate missing
-features or switch provider implicitly.
+Unsupported steering, interruption, resume, fork and session-list operations return
+`NotSupported`. Adapters do not simulate missing features or switch provider
+implicitly.
+
+`RunSpec.capability_profile` is one of `read_only`, `project_dev`, `automation` or
+`unrestricted`, and defaults to `read_only`. Each adapter translates that neutral
+profile into its native permissions. `RunSpec.mcp_config` carries an optional path
+to an MCP configuration without prescribing a provider-specific flag.
 
 ## Normalised events
 
@@ -58,6 +64,10 @@ is a first-class terminal state and never triggers an implicit provider switch.
 Model sources are `api`, `verified-probe`, `provider-default` and `unknown`. A
 model identifier must not enter the catalogue from assumption or training
 knowledge.
+
+Every provider returns a `ModelCatalog`. Providers without a model-listing interface
+return `enumerable=False`; their catalogue can still contain models established by
+verified probes or successful run events.
 
 `AuthStatus`, `Capabilities`, `UsageSnapshot` and `HealthReport` default to their
 unavailable or false states. Callers can therefore distinguish absent evidence

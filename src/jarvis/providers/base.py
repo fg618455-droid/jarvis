@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Iterator, Literal, Mapping
-
-if TYPE_CHECKING:
-    from .models import ModelCatalog
+from typing import Any, Iterator, Literal, Mapping
 
 
 ProviderId = Literal["claude", "codex", "hermes"]
 ModelSource = Literal["api", "verified-probe", "provider-default", "unknown"]
+CapabilityProfile = Literal["read_only", "project_dev", "automation", "unrestricted"]
 RunStatus = Literal["ok", "error", "cancelled", "quota", "timeout"]
 RunEventKind = Literal[
     "run.started",
@@ -27,6 +25,7 @@ RunEventKind = Literal[
 ]
 
 MODEL_SOURCES = frozenset({"api", "verified-probe", "provider-default", "unknown"})
+CAPABILITY_PROFILES = frozenset({"read_only", "project_dev", "automation", "unrestricted"})
 RUN_STATUSES = frozenset({"ok", "error", "cancelled", "quota", "timeout"})
 EVENT_REQUIRED_FIELDS: Mapping[str, frozenset[str]] = {
     "run.started": frozenset({"run_id", "provider", "model", "session_id", "cwd", "ts"}),
@@ -54,11 +53,16 @@ class RunSpec:
     model: str | None = None
     cwd: str | None = None
     system_prompt: str | None = None
-    permission_mode: str | None = None
+    capability_profile: CapabilityProfile = "read_only"
+    mcp_config: str | None = None
     allowed_tools: tuple[str, ...] = ()
     additional_directories: tuple[str, ...] = ()
     skills: tuple[str, ...] = ()
     toolsets: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.capability_profile not in CAPABILITY_PROFILES:
+            raise ValueError(f"Unsupported capability profile: {self.capability_profile}")
 
 
 @dataclass(frozen=True)
@@ -181,6 +185,9 @@ class RunEvent:
         object.__setattr__(self, "payload", dict(self.payload))
 
 
+from .models import ModelCatalog
+
+
 class ProviderAdapter(ABC):
     """Run-oriented interface implemented by each subscription provider."""
 
@@ -193,7 +200,7 @@ class ProviderAdapter(ABC):
         """Return subscription authentication state, failing closed."""
 
     @abstractmethod
-    def list_models(self) -> ModelCatalog | NotSupported:
+    def list_models(self) -> ModelCatalog:
         """Return models learned from provider-backed evidence."""
 
     @abstractmethod

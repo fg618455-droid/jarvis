@@ -13,12 +13,14 @@ from .base import (
     SessionInfo,
     UsageSnapshot,
 )
+from .models import ModelCatalog
 
 __all__ = [
     "AuthStatus",
     "Capabilities",
     "HealthReport",
     "ModelInfo",
+    "ModelCatalog",
     "NotSupported",
     "ProviderAdapter",
     "RunEvent",

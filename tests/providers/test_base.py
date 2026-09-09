@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, fields
+from typing import get_type_hints
 
 import pytest
 
@@ -17,6 +18,7 @@ from jarvis.providers.base import (
     SessionInfo,
     UsageSnapshot,
 )
+from jarvis.providers.models import ModelCatalog
 
 
 @pytest.mark.unit
@@ -80,7 +82,25 @@ def test_run_spec_and_session_info_do_not_share_mutable_values():
 
     assert first.allowed_tools == ()
     assert second.allowed_tools == ()
+    assert first.capability_profile == "read_only"
+    assert first.mcp_config is None
+    assert "permission_mode" not in {item.name for item in fields(RunSpec)}
     assert SessionInfo(session_id="external", provider="claude").owned is False
+
+
+@pytest.mark.unit
+def test_run_spec_rejects_unknown_capability_profiles():
+    with pytest.raises(ValueError, match="owner_mode"):
+        RunSpec(prompt="hello", capability_profile="owner_mode")
+
+
+@pytest.mark.unit
+def test_model_catalog_explicitly_reports_whether_it_can_be_enumerated():
+    claude_catalogue = ModelCatalog(enumerable=False)
+
+    assert claude_catalogue.enumerable is False
+    assert claude_catalogue.models == ()
+    assert get_type_hints(ProviderAdapter.list_models)["return"] is ModelCatalog
 
 
 @pytest.mark.unit
