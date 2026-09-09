@@ -44,8 +44,10 @@ submission is **rejected**, not queued, and the caller is notified via the
 `busy` event so the UI can show "Jarvis is busy" rather than silently
 dropping the message. The voice path acquires the same lock blocking (via
 `jarvis.daemon.query_lock`) so a voice query waits for an in-flight text
-query to finish rather than being dropped. Voice and text therefore cannot
-run `run_reply_engine` concurrently against the shared dialogue memory.
+query to finish rather than being dropped. The control centre's typed turns
+take the same lock non-blocking (via `jarvis.daemon.chat_query_lock`) and
+answer 409 when it is held. No two entry points therefore run
+`run_reply_engine` concurrently against the shared dialogue memory.
 
 ### Cancellation
 
@@ -267,8 +269,9 @@ the app.
   `on_complete`. The `on_token` / `on_tool_call` callbacks and IPC event
   types are declared but not emitted by the current engine; they are reserved
   for future streaming and per-tool-call visibility work.
-- **No external integrations** (Slack, Telegram, Discord). Those would route
-  through the same `submit_text_query` entry point but are not wired.
+- **No Slack or Discord integration.** Telegram reaches the assistant through
+  the same `submit_text_query` entry point (see
+  `src/jarvis/telegram/telegram.spec.md`); the others are not wired.
 - **No text-input wake word.** Text is always "directed": there is no intent
   judge, no echo detection, no wake word. The user typing is the intent.
 - **No TTS.** Text chat is silent. If the user wants spoken replies, they use

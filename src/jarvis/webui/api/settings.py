@@ -1,0 +1,222 @@
+"""Reading and writing config.json through the shared field registry.
+
+Same registry and same rules as the Qt settings window: only non-default
+values are written, and keys the registry does not describe are left
+exactly as they were. A credential is writable but never readable, so a
+page left open does not put a bot token on screen.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from flask import Blueprint, Response, current_app, jsonify, request
+
+from jarvis.config import _load_json, _save_json, get_default_config, resolve_config_path
+from jarvis.config_metadata import (
+    CATEGORIES,
+    CATEGORY_DETAILS,
+    FIELD_METADATA,
+    _is_default_value,
+    choices_for,
+)
+from jarvis.debug import debug_log
+
+
+bp = Blueprint("settings", __name__, url_prefix="/api")
+
+SECRET_FIELD_TYPE = "password"
+MASK = "•" * 8
+
+# Changing these mid-run has no effect: Settings is frozen and the objects
+# that read them are built once at start-up.
+RESTART_REQUIRED_PREFIXES = (
+    "whisper_", "vad_", "voice_", "sample_rate", "wake_", "tts_",
+    "webui_", "dictation_", "llm_provider", "llm_routes", "ollama_", "embedding_",
+    "passive_",
+)
+
+
+def _mask(value: Any) -> str:
+    """Show that a credential is set, and its last four, and no more."""
+    text = str(value or "")
+    if not text:
+        return ""
+    return MASK if len(text) <= 4 else f"{MASK}{text[-4:]}"
+
+
+def _needs_restart(key: str) -> bool:
+    if key == "passive_capture_enabled":
+        return False
+    return key.startswith(RESTART_REQUIRED_PREFIXES)
+
+
+def _field_payload(meta, defaults: dict, config: dict) -> dict:
+    value = config.get(meta.key, defaults.get(meta.key))
+    is_secret = meta.field_type == SECRET_FIELD_TYPE
+    return {
+        "key": meta.key,
+        "label": meta.label,
+        "description": meta.description,
+        "category": meta.category,
+        "section": meta.section,
+        "type": meta.field_type,
+        "choices": [{"value": v, "label": label}
+                    for v, label in choices_for(meta, value)] or None,
+        "min": meta.min_val,
+        "max": meta.max_val,
+        "step": meta.step,
+        "suffix": meta.suffix,
+        "nullable": meta.nullable,
+        "default": None if is_secret else defaults.get(meta.key),
+        "value": _mask(value) if is_secret else value,
+        "is_secret": is_secret,
+        "is_set": bool(value) if is_secret else None,
+        "is_default": _is_default_value(value, defaults.get(meta.key)),
+        "restart_required": _needs_restart(meta.key),
+        "item_fields": [_item_field_payload(field) for field in (meta.item_fields or ())] or None,
+    }
+
+
+def _item_field_payload(meta) -> dict:
+    """Describe one column in a structured list without inventing a value."""
+    return {
+        "key": meta.key,
+        "label": meta.label,
+        "description": meta.description,
+        "type": meta.field_type,
+        "choices": [
+            {"value": value, "label": label}
+            for value, label in (meta.choices or [])
+        ] or None,
+        "min": meta.min_val,
+        "max": meta.max_val,
+        "step": meta.step,
+        "suffix": meta.suffix,
+        "nullable": meta.nullable,
+        "is_secret": meta.field_type == SECRET_FIELD_TYPE,
+        "default": meta.default_value,
+    }
+
+
+@bp.route("/settings")
+def settings() -> Response:
+    """Every editable field, its current value, and how to render it."""
+    defaults = get_default_config()
+    config = _load_json(resolve_config_path()) or {}
+
+    return jsonify({
+        "path": str(resolve_config_path()),
+        "daemon_running": current_app.config["JARVIS_WEBUI"].daemon_attached,
+        "categories": [
+            {"key": key, "label": label, **CATEGORY_DETAILS.get(key, {})}
+            for key, label in CATEGORIES
+        ],
+        "fields": [_field_payload(meta, defaults, config) for meta in FIELD_METADATA],
+    })
+
+
+@bp.route("/settings", methods=["PUT"])
+def save() -> Response:
+    """Write changed fields, leaving everything else exactly as it was."""
+    payload = request.get_json(silent=True) or {}
+    changes = payload.get("changes")
+    if not isinstance(changes, dict):
+        return jsonify(error="changes must be an object of key to value"), 400
+
+    known = {meta.key: meta for meta in FIELD_METADATA}
+    unknown = sorted(set(changes) - set(known))
+    if unknown:
+        return jsonify(error=f"unknown settings: {', '.join(unknown)}"), 400
+
+    defaults = get_default_config()
+    config = _load_json(resolve_config_path()) or {}
+
+    written: list[str] = []
+    restart: list[str] = []
+    for key, value in changes.items():
+        meta = known[key]
+        if meta.field_type == SECRET_FIELD_TYPE and isinstance(value, str) and value.startswith(MASK):
+            # The page sent the mask back untouched, so the stored value stands.
+            continue
+        try:
+            coerced = _coerce(meta, value)
+        except (TypeError, ValueError) as error:
+            return jsonify(error=f"invalid value for {key}: {error}"), 400
+        if _is_default_value(coerced, defaults.get(key)):
+            config.pop(key, None)
+        else:
+            config[key] = coerced
+        written.append(key)
+        if _needs_restart(key):
+            restart.append(key)
+
+    if not _save_json(resolve_config_path(), config):
+        return jsonify(error=f"could not write {resolve_config_path()}"), 500
+
+    if "passive_capture_enabled" in written:
+        from jarvis.listening.passive_capture import set_passive_capture_enabled
+
+        set_passive_capture_enabled(
+            bool(changes.get("passive_capture_enabled", False))
+        )
+
+    debug_log(f"settings written from the control centre: {', '.join(written)}", "webui")
+    return jsonify({"written": written, "restart_required": restart})
+
+
+def _coerce(meta, value: Any) -> Any:
+    """Bring a value from JSON into the shape config.json expects."""
+    if value is None:
+        return None
+    if meta.field_type == "bool":
+        return bool(value)
+    if meta.field_type == "int":
+        if value == "":
+            return None
+        return int(_bounded(meta, float(value)))
+    if meta.field_type == "float":
+        if value == "":
+            return None
+        return float(_bounded(meta, float(value)))
+    if meta.field_type == "list":
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        return [line.strip() for line in str(value).splitlines() if line.strip()]
+    if meta.field_type == "object_list":
+        return _coerce_object_list(meta, value)
+    text = str(value).strip()
+    return None if (meta.nullable and text == "") else text
+
+
+def _coerce_object_list(meta, value: Any) -> list[dict[str, Any]]:
+    """Validate and coerce a metadata-described list of objects."""
+    if not isinstance(value, list):
+        raise TypeError("must be a list")
+    fields = {field.key: field for field in (meta.item_fields or ())}
+    if not fields:
+        raise ValueError("has no item field metadata")
+
+    clean: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise TypeError(f"item {index + 1} must be an object")
+        unknown = sorted(set(item) - set(fields))
+        missing = sorted(set(fields) - set(item))
+        if unknown:
+            raise ValueError(f"item {index + 1} has unknown fields: {', '.join(unknown)}")
+        if missing:
+            raise ValueError(f"item {index + 1} is missing fields: {', '.join(missing)}")
+        clean.append({
+            key: _coerce(field, item[key])
+            for key, field in fields.items()
+        })
+    return clean
+
+
+def _bounded(meta, number: float) -> float:
+    if meta.min_val is not None:
+        number = max(float(meta.min_val), number)
+    if meta.max_val is not None:
+        number = min(float(meta.max_val), number)
+    return number

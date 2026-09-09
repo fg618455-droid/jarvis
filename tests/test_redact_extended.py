@@ -49,6 +49,12 @@ class TestVendorAccessKeys:
         assert token not in out
         assert "[REDACTED_GOOG_KEY]" in out
 
+    def test_telegram_bot_token_redacted(self):
+        token = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"
+        out = redact(f"https://api.telegram.org/bot{token}/sendMessage")
+        assert token not in out
+        assert "[REDACTED_TELEGRAM_BOT_TOKEN]" in out
+
 
 @pytest.mark.unit
 class TestAuthorizationHeaders:

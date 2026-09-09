@@ -79,6 +79,31 @@ class TestGetSupportedModelIds:
         assert DEFAULT_CHAT_MODEL in result
 
 
+class TestHighEndModelPreset:
+    """Tests for the high-end chat model preset."""
+
+    def test_high_end_preset_is_qwen38_27b(self):
+        """The high-end preset (name tagged "(High-end)") must be qwen3.8:27b."""
+        high_end = [
+            model_id
+            for model_id, info in SUPPORTED_CHAT_MODELS.items()
+            if "(High-end)" in info.get("name", "")
+        ]
+        assert high_end == ["qwen3.8:27b"]
+
+    def test_high_end_preset_fields_are_populated(self):
+        """The high-end preset must carry the usual metadata fields."""
+        info = SUPPORTED_CHAT_MODELS["qwen3.8:27b"]
+        assert info["name"] == "Qwen 3.8 27B (High-end)"
+        assert "Best performance" in info["description"]
+        assert "GB" in info["size"]
+        assert "GB+" in info["vram"]
+
+    def test_legacy_gpt_oss_preset_removed(self):
+        """The old gpt-oss:20b preset is no longer in the supported list."""
+        assert "gpt-oss:20b" not in SUPPORTED_CHAT_MODELS
+
+
 class TestDefaultConfigUsesModelConstant:
     """Tests to ensure default config uses the model constants."""
 
@@ -113,6 +138,33 @@ class TestLowPowerModeConfig:
 
         settings = load_settings()
         assert settings.low_power_mode is True
+
+
+class TestSubscriptionRouteConfig:
+    def test_codex_subscription_route_survives_config_loading(self, tmp_path, monkeypatch):
+        import json as _json
+        from jarvis.config import load_settings
+
+        route = {
+            "name": "codex-chat",
+            "provider": "codex_subscription",
+            "base_url": "codex-cli",
+            "api_key": "",
+            "api_key_env": "",
+            "model": "gpt-5.6-sol",
+            "tier": "chat",
+            "timeout_sec": 30.0,
+            "enabled": True,
+            "capabilities": ["chat", "stream"],
+        }
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(
+            _json.dumps({"_config_version": 5, "llm_routes": [route]}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
+
+        assert load_settings().llm_routes == [route]
 
 
 class TestWhisperHallucinationFilterDefaults:

@@ -22,6 +22,8 @@ class ToolContext:
         max_retries: int,
         user_print: Callable[[str], None],
         language: Optional[str] = None,
+        deadline: Optional[Any] = None,
+        memory_snippets: Optional[list[Any]] = None,
     ):
         self.db = db
         self.cfg = cfg
@@ -36,6 +38,27 @@ class ToolContext:
         # treat absence as "no signal" and fall back to their own default
         # rather than assuming English.
         self.language = language
+        # The reply turn's ``RequestDeadline`` (see ``jarvis.llm.route``),
+        # or None outside a live turn (evals, unit tests, standalone use).
+        # Tools that make their own blocking LLM/network call should read
+        # this via ``bounded_timeout`` rather than trusting a configured
+        # ceiling like ``llm_tools_timeout_sec`` (300s by default) alone —
+        # that ceiling bounds one call, not what's left of the turn.
+        self.deadline = deadline
+        self.memory_snippets = list(memory_snippets or [])
+
+    def bounded_timeout(self, configured_sec: float) -> float:
+        """Cap a tool-internal blocking call at what remains of the turn.
+
+        Returns ``configured_sec`` unchanged when no deadline is attached.
+        Otherwise returns the smaller of ``configured_sec`` and the
+        deadline's remaining budget, floored so a near-exhausted deadline
+        still yields a short-but-positive timeout rather than zero (which
+        some HTTP/LLM clients treat as "no timeout" instead of "expired").
+        """
+        if self.deadline is None:
+            return configured_sec
+        return max(0.05, min(configured_sec, self.deadline.remaining()))
 
 
 class Tool(ABC):
@@ -97,6 +120,8 @@ class Tool(ABC):
         max_retries: int,
         user_print: Callable[[str], None],
         language: Optional[str] = None,
+        deadline: Optional[Any] = None,
+        memory_snippets: Optional[list[Any]] = None,
     ) -> ToolExecutionResult:
         """Execute the tool (internal method used by registry).
 
@@ -112,5 +137,7 @@ class Tool(ABC):
             max_retries=max_retries,
             user_print=user_print,
             language=language,
+            deadline=deadline,
+            memory_snippets=memory_snippets,
         )
         return self.run(tool_args, context)
