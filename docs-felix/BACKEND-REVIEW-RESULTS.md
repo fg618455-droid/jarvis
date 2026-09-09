@@ -1,7 +1,7 @@
 # Backend consolidation acceptance - 9 September 2026
 
-Implementation and automated verification are complete through 536c3c6. The final
-NAS storage follow-up is under verification. Release is not accepted: Mistral
+Implementation and local automated verification include the NAS storage follow-up.
+Final-head CI status is tracked in the PR and Vault. Release is not accepted: Mistral
 quota, supervised explicit Deny and productive activation remain open.
 Original tilapia changes are preserved. All authored work is on NAS/Synology;
 there is no authored frontend-asset diff against the integrated baseline.
@@ -13,6 +13,10 @@ QT_QPA_PLATFORM=offscreen and an owned Synology TEMP/TMP directory. Run
 `python -B -m pytest tests -v --tb=short -p no:cacheprovider
 -o faulthandler_timeout=60 --durations=10`. Linux unit CI uses Xvfb.
 
+- Full NAS storage implementation 4d6f693: **3805 passed, 5 skipped, 2 deselected**,
+  1 warning, 501.49s. The subsequent c77d213 changes only the subprocess test
+  import path: its five storage tests passed without inherited PYTHONPATH. Linux
+  had exposed that test setup omission; both browser checks on 4d6f693 passed.
 - Full 536c3c6: **3800 passed, 5 skipped, 2 deselected**, 4 warnings, 521.12s.
 - Full preceding 595a7a8: 3793 passed; its slower voice tests performed real
   provider warmup. Test fixtures now isolate that I/O while retaining real threads.
@@ -22,7 +26,7 @@ QT_QPA_PLATFORM=offscreen and an owned Synology TEMP/TMP directory. Run
 - HTTP residency/API follow-up: 89 passed. Ordered MCP swap/API: 28 passed.
 - NAS storage follow-up: 97 focused tests passed, including real dictation-file
   output and a subprocess proving location cache paths are chosen at startup.
-  The final integrated/CI results for this follow-up are recorded separately.
+  Full local results are above; final-head CI is recorded in the PR and Vault.
 
 ## Local review findings resolved
 
@@ -63,7 +67,7 @@ No external review comments or approvals were posted.
 | Groq GPT-OSS chat, stream/TTFT, native tools and all 20 schemas | passed |
 | Mistral small, including recheck after the UTC day reset | unavailable: quota |
 | Tested OpenRouter candidates | unavailable: missing model, quota or empty response |
-| Composio authenticated discovery and harmless schema retrieval | passed |
+| Composio authenticated discovery and harmless schema retrieval | passed, also with candidate NAS auth: seven tools, 10.922s cold start |
 | Chrome 1.8.0 discovery/list_pages | passed |
 | Coya YouTube 1.2.0 real transcript and semantic check | passed |
 | Known screenshot OCR text through registry | passed |
@@ -94,7 +98,12 @@ The original database was copied without opening the source in SQLite: no WAL or
 rollback journal existed, repeat source hashes matched, the copy was byte-identical
 and SQLite quick_check returned ok. Revalidate before adoption; it is a snapshot.
 Seven Whisper-cache files, two Piper files and six supporting data/state files
-were copied and verified. Existing Claude/MCP authentication was copied privately.
+were copied and verified. Existing Claude/MCP authentication was copied privately. An initial Composio
+check with an outdated C-drive auth snapshot failed; the accepted NAS OAuth
+copy then passed real discovery and schema retrieval. The stale copy is unused.
+Whisper resolves offline from the copied cache; this does not claim model loading.
+TEMP/TMP use the local Synology equivalent for Windows CLI compatibility and a
+real temporary-directory check passed. HOME/CODEX_HOME are unchanged.
 
 `JARVIS_DATA_DIR` redirects application defaults (database, dictation, location,
 Piper cache, prompt dumps, provider state/probes, desktop logs/lock) without
@@ -105,7 +114,8 @@ No production daemon has been launched or replaced by these checks.
 ## PR stack and release verdict
 
 All target develop, remain Draft and have cumulative diffs until predecessors
-merge. These source heads each have three successful CI checks:
+merge. Base through E and the preceding F head 536c3c6 each have three successful
+CI checks. The latest F follow-up is tracked separately in PR #14:
 
 | Order | PR | Head |
 |---|---|---|
@@ -115,7 +125,7 @@ merge. These source heads each have three successful CI checks:
 | D | https://github.com/fg618455-droid/jarvis/pull/11 | ab2be40 |
 | C | https://github.com/fg618455-droid/jarvis/pull/12 | a5e8f70 |
 | E | https://github.com/fg618455-droid/jarvis/pull/13 | 07b4b1e |
-| F | https://github.com/fg618455-droid/jarvis/pull/14 | 536c3c6 before NAS storage follow-up |
+| F | https://github.com/fg618455-droid/jarvis/pull/14 | c77d213 (final-head CI in PR #14) |
 
 No merge or release while the handoff's required live gates remain unavailable
 or untested. Evidence files contain status/capability/timing metadata, not keys,
