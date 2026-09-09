@@ -24,13 +24,119 @@ which backend is active.
 
 from __future__ import annotations
 from dataclasses import dataclass, field
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Dict, List, Optional
 
 import json
 import requests
+import re
+import time
 
 from ..debug import debug_log
-from .backend import LLMBackend, ToolsNotSupportedError, strip_nonstandard_message_fields
+from .backend import (
+    AuthError,
+    BillingError,
+    LLMBackend,
+    ModelUnavailableError,
+    ProviderError,
+    QuotaExhaustedError,
+    RateLimitedError,
+    ToolsNotSupportedError,
+    strip_nonstandard_message_fields,
+)
+
+
+def _header(headers: Any, name: str) -> Optional[str]:
+    if not headers:
+        return None
+    for key, value in dict(headers).items():
+        if str(key).lower() == name.lower() and value is not None:
+            return str(value).strip()
+    return None
+
+
+def _duration_seconds(value: Optional[str]) -> Optional[float]:
+    if not value:
+        return None
+    text = value.strip().lower()
+    try:
+        return max(0.0, float(text))
+    except ValueError:
+        pass
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)(ms|s|m|h)", text)
+    if match:
+        amount = float(match.group(1))
+        return amount * {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}[match.group(2)]
+    try:
+        parsed = parsedate_to_datetime(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, parsed.timestamp() - time.time())
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _reset_timestamp(headers: Any) -> Optional[float]:
+    for name in (
+        "x-ratelimit-reset-requests",
+        "x-ratelimit-reset-tokens",
+        "x-ratelimit-reset",
+    ):
+        value = _header(headers, name)
+        if not value:
+            continue
+        try:
+            numeric = float(value)
+            if numeric > 1_000_000_000:
+                return numeric
+        except ValueError:
+            pass
+        delay = _duration_seconds(value)
+        if delay is not None:
+            return time.time() + delay
+    return None
+
+
+def _safe_error_payload(response: Any) -> str:
+    try:
+        data = response.json()
+    except Exception:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    error = data.get("error", data)
+    if not isinstance(error, dict):
+        return ""
+    return " ".join(
+        str(error.get(key, "") or "") for key in ("type", "code", "message")
+    ).lower()
+
+
+def _raise_http_error(error: requests.exceptions.HTTPError, *, tools: bool) -> None:
+    response = error.response
+    status = response.status_code if response is not None else None
+    if status == 400 and tools:
+        raise ToolsNotSupportedError("native tools API is not supported") from None
+    if status in (401, 403):
+        raise AuthError("provider rejected the configured credential") from None
+    if status == 402:
+        raise BillingError("provider billing or credits are unavailable") from None
+    if status in (404, 410):
+        raise ModelUnavailableError("configured model is unavailable") from None
+    if status == 429:
+        payload = _safe_error_payload(response)
+        quota = any(marker in payload for marker in (
+            "quota_exceeded", "quota exceeded", "quota exhausted", "insufficient_quota"
+        ))
+        if quota:
+            raise QuotaExhaustedError(_reset_timestamp(response.headers)) from None
+        retry_after = _duration_seconds(_header(response.headers, "Retry-After"))
+        if retry_after is None:
+            reset = _reset_timestamp(response.headers)
+            retry_after = max(0.0, reset - time.time()) if reset is not None else None
+        raise RateLimitedError(retry_after) from None
+    raise ProviderError(f"provider HTTP error ({status if status is not None else 'unknown'})") from None
 
 
 @dataclass
@@ -45,6 +151,92 @@ class ServerCapabilities:
     tools: bool = False
     embeddings: bool = False
     models: List[str] = field(default_factory=list)
+
+
+def _assemble_streamed_chat(
+    resp: Any,
+    on_token: Callable[[str], None],
+) -> Optional[Dict[str, Any]]:
+    """Fold an OpenAI-shape chat stream back into one response dict.
+
+    Deltas carry fragments rather than whole messages, and a tool call is
+    split across chunks that identify themselves by ``index``, so the call is
+    rebuilt slot by slot and its argument string decoded once at the end —
+    the same shape ``_normalise_response`` produces for an unstreamed reply.
+
+    ``on_token`` is a side effect on the user's behalf, so a listener that
+    raises must not cost them the answer.
+    """
+    content: List[str] = []
+    role = "assistant"
+    calls: Dict[int, Dict[str, Any]] = {}
+
+    for raw in resp.iter_lines():
+        if not raw:
+            continue
+        line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        line = line.strip()
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if not line or line == "[DONE]":
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+        delta = choices[0].get("delta")
+        if not isinstance(delta, dict):
+            continue
+        role = delta.get("role") or role
+        for fragment in delta.get("tool_calls") or []:
+            if not isinstance(fragment, dict):
+                continue
+            slot = calls.setdefault(
+                int(fragment.get("index", len(calls))),
+                {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+            )
+            if fragment.get("id"):
+                slot["id"] = fragment["id"]
+            if fragment.get("type"):
+                slot["type"] = fragment["type"]
+            func = fragment.get("function")
+            if isinstance(func, dict):
+                if func.get("name"):
+                    slot["function"]["name"] = func["name"]
+                if isinstance(func.get("arguments"), str):
+                    slot["function"]["arguments"] += func["arguments"]
+        chunk = delta.get("content")
+        if not isinstance(chunk, str) or not chunk:
+            continue
+        content.append(chunk)
+        try:
+            on_token(chunk)
+        except Exception as e:
+            debug_log(f"OpenAICompatibleBackend.chat: token listener failed — {e}", "llm")
+
+    if not content and not calls:
+        debug_log("OpenAICompatibleBackend.chat: stream produced nothing", "llm")
+        return None
+
+    message: Dict[str, Any] = {"role": role, "content": "".join(content)}
+    if calls:
+        message["tool_calls"] = [
+            {**call, "function": {**call["function"],
+                                  "arguments": _decode_tool_arguments(call["function"]["arguments"])}}
+            for _, call in sorted(calls.items())
+        ]
+    return {"choices": [{"message": message}], "message": message}
+
+
+def _decode_tool_arguments(arguments: str) -> Any:
+    """Decode a tool call's accumulated argument string, or keep it as text."""
+    try:
+        return json.loads(arguments)
+    except (json.JSONDecodeError, TypeError):
+        return arguments
 
 
 def _normalise_response(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -108,6 +300,18 @@ class OpenAICompatibleBackend(LLMBackend):
     def base_url(self) -> str:
         return self._base_url
 
+    def _completion_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Reserve visible-output capacity for Groq's reasoning models."""
+        from urllib.parse import urlparse
+        if (urlparse(self._base_url).hostname == "api.groq.com"
+                and payload.get("model") in {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}):
+            payload = dict(payload)
+            requested = payload.pop("max_tokens", None)
+            budget = payload.get("max_completion_tokens", requested)
+            payload["max_completion_tokens"] = max(1024, int(budget or 1024))
+            payload.setdefault("reasoning_effort", "low")
+        return payload
+
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
@@ -149,7 +353,7 @@ class OpenAICompatibleBackend(LLMBackend):
         try:
             with requests.post(
                 f"{self._base_url}/chat/completions",
-                json=payload,
+                json=self._completion_payload(payload),
                 headers=self._headers(),
                 timeout=timeout_sec,
             ) as resp:
@@ -164,17 +368,23 @@ class OpenAICompatibleBackend(LLMBackend):
                     if isinstance(content, str) and content.strip():
                         return content
                 debug_log(
-                    f"OpenAICompatibleBackend.direct: empty content from response keys={list(data.keys())}",
+                    "OpenAICompatibleBackend.direct: empty response content",
                     "llm",
                 )
         except requests.exceptions.Timeout:
             debug_log(f"OpenAICompatibleBackend.direct: timeout after {timeout_sec}s", "llm")
-            return None
+            raise ProviderError("provider request timed out") from None
+        except requests.exceptions.ConnectionError:
+            raise
+        except requests.exceptions.HTTPError as error:
+            _raise_http_error(error, tools=False)
+        except ProviderError:
+            raise
         except Exception as e:
             # The exception string can embed the full URL (and any query-string
             # credentials); log only the class so nothing sensitive leaks.
             debug_log(f"OpenAICompatibleBackend.direct: request failed ({type(e).__name__})", "llm")
-            return None
+            raise ProviderError(f"provider request failed ({type(e).__name__})") from None
 
         return None
 
@@ -200,7 +410,7 @@ class OpenAICompatibleBackend(LLMBackend):
         try:
             with requests.post(
                 f"{self._base_url}/chat/completions",
-                json=payload,
+                json=self._completion_payload(payload),
                 headers=self._headers(),
                 timeout=timeout_sec,
                 stream=True,
@@ -237,9 +447,15 @@ class OpenAICompatibleBackend(LLMBackend):
                 result = "".join(full_response)
                 return result if result.strip() else None
         except requests.exceptions.Timeout:
-            return None
-        except Exception:
-            return None
+            raise ProviderError("provider request timed out") from None
+        except requests.exceptions.ConnectionError:
+            raise
+        except requests.exceptions.HTTPError as error:
+            _raise_http_error(error, tools=False)
+        except ProviderError:
+            raise
+        except Exception as error:
+            raise ProviderError(f"provider request failed ({type(error).__name__})") from None
 
     @staticmethod
     def _encode_tool_call_arguments(
@@ -275,13 +491,17 @@ class OpenAICompatibleBackend(LLMBackend):
         extra_options: Optional[Dict[str, Any]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         thinking: bool = False,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Optional[Dict[str, Any]]:
+        """With ``on_token`` the request is streamed and each piece of
+        assistant text is handed over as it arrives. The return value is the
+        same assembled response either way. See :meth:`LLMBackend.chat`."""
         sanitised = strip_nonstandard_message_fields(messages)
         sanitised = self._encode_tool_call_arguments(sanitised)
         payload: Dict[str, Any] = {
             "model": chat_model,
             "messages": sanitised,
-            "stream": False,
+            "stream": on_token is not None,
         }
         if extra_options and isinstance(extra_options, dict):
             # ``temperature``, ``max_tokens``, ``top_p`` etc. live at the
@@ -307,17 +527,20 @@ class OpenAICompatibleBackend(LLMBackend):
         try:
             with requests.post(
                 f"{self._base_url}/chat/completions",
-                json=payload,
+                json=self._completion_payload(payload),
                 headers=self._headers(),
                 timeout=timeout_sec,
+                stream=on_token is not None,
             ) as resp:
                 resp.raise_for_status()
+                if on_token is not None:
+                    return _assemble_streamed_chat(resp, on_token)
                 data = resp.json()
             if isinstance(data, dict):
                 return _normalise_response(data)
         except requests.exceptions.Timeout:
-            print("  ⏱️ LLM request timed out", flush=True)
-            return None
+            debug_log(f"OpenAICompatibleBackend.chat: timeout after {timeout_sec}s", "llm")
+            raise ProviderError("provider request timed out") from None
         except requests.exceptions.ConnectionError:
             # ConnectionError messages embed the configured URL via the
             # underlying urllib3 exception, which can leak account-bearing
@@ -326,22 +549,16 @@ class OpenAICompatibleBackend(LLMBackend):
             # distinguish "server unreachable" from a transient HTTP error.
             print("  ❌ LLM connection error", flush=True)
             raise
-        except requests.exceptions.HTTPError as e:
-            if e.response is not None and e.response.status_code == 400 and tools:
-                raise ToolsNotSupportedError(
-                    f"Model {chat_model!r} returned HTTP 400 — native tools API not supported"
-                )
-            # ``str(e)`` includes "for url: <full URL>" — keep the status code
-            # for diagnosis and drop the URL.
-            status = e.response.status_code if e.response is not None else "?"
-            print(f"  ❌ LLM HTTP error (status {status})", flush=True)
-            return None
+        except requests.exceptions.HTTPError as error:
+            _raise_http_error(error, tools=bool(tools))
+        except ProviderError:
+            raise
         except Exception as e:
             # Generic exception messages can carry whatever the caller embedded
             # (URLs, tokens). Print only the exception class so the user knows
             # *something* failed without leaking what.
-            print(f"  ❌ LLM error ({type(e).__name__})", flush=True)
-            return None
+            debug_log(f"OpenAICompatibleBackend.chat: request failed ({type(e).__name__})", "llm")
+            raise ProviderError(f"provider request failed ({type(e).__name__})") from None
 
         return None
 
@@ -388,8 +605,17 @@ class OpenAICompatibleBackend(LLMBackend):
                     if isinstance(name, str) and name:
                         names.append(name)
             return names
-        except Exception:
-            return []
+        except requests.exceptions.Timeout:
+            raise ProviderError("provider request timed out") from None
+        except requests.exceptions.ConnectionError:
+            raise
+        except requests.exceptions.HTTPError as error:
+            _raise_http_error(error, tools=False)
+        except ProviderError:
+            raise
+        except Exception as error:
+            raise ProviderError(f"provider request failed ({type(error).__name__})") from None
+        return []
 
     def warm_up(
         self,
@@ -423,7 +649,11 @@ class OpenAICompatibleBackend(LLMBackend):
 
         # Phase 1: reachability probe (fast).
         list_to = min(max(timeout_sec * 0.25, 1.0), 5.0)
-        if not self.list_models(timeout_sec=list_to):
+        try:
+            models = self.list_models(timeout_sec=list_to)
+        except Exception:
+            return False
+        if not models:
             return False
 
         # Phase 2: minimal inference to force model loading.
@@ -437,7 +667,7 @@ class OpenAICompatibleBackend(LLMBackend):
         try:
             with requests.post(
                 f"{self._base_url}/chat/completions",
-                json=payload,
+                json=self._completion_payload(payload),
                 headers=self._headers(),
                 timeout=remaining,
             ) as resp:
@@ -459,7 +689,11 @@ class OpenAICompatibleBackend(LLMBackend):
 
         ``chat`` covers both a plain reply and a tool-call-only reply (an empty
         ``content`` with ``tool_calls`` still proves the chat endpoint works)."""
-        caps = ServerCapabilities(models=self.list_models(timeout_sec=timeout_sec))
+        try:
+            models = self.list_models(timeout_sec=timeout_sec)
+        except Exception:
+            models = []
+        caps = ServerCapabilities(models=models)
         if caps.models:
             caps.reachable = True
 

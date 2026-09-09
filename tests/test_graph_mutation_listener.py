@@ -189,7 +189,8 @@ class TestMutationListenerRegistry:
 @pytest.mark.unit
 class TestWarmProfileInvalidationHook:
     """End-to-end: the wiring done in ``daemon.py`` invalidates the warm
-    profile entry on User / Directives writes but ignores World writes.
+    profile entry on User / Directives writes but ignores query-specific
+    branches.
     Re-create that wiring here so the test does not depend on daemon
     start-up.
     """
@@ -244,4 +245,17 @@ class TestWarmProfileInvalidationHook:
             unregister_graph_mutation_listener(cb)
 
         # World-branch writes are noise for the warm profile.
+        assert dm.hot_cache_get(dm.WARM_PROFILE_CACHE_KEY) == "fresh-block"
+
+    def test_school_write_does_not_invalidate_warm_profile(self, graph_store):
+        dm = DialogueMemory()
+        dm.hot_cache_put(dm.WARM_PROFILE_CACHE_KEY, "fresh-block")
+        cb = self._wire(dm)
+        try:
+            graph_store.create_node(
+                "Biology", "school fact", parent_id="school",
+            )
+        finally:
+            unregister_graph_mutation_listener(cb)
+
         assert dm.hot_cache_get(dm.WARM_PROFILE_CACHE_KEY) == "fresh-block"

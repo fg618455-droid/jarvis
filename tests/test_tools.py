@@ -1,21 +1,21 @@
 import types
 import pytest
 
+from tests.conftest import MockConfig
 from jarvis.tools.registry import run_tool_with_retries, ToolExecutionResult
 
 
-class DummyCfg:
-    def __init__(self):
-        self.voice_debug = False
-        self.ollama_base_url = "http://localhost"
-        self.ollama_chat_model = "test"
-        self.llm_chat_timeout_sec = 5.0
-        self.location_enabled = False
-        self.location_ip_address = None
-        self.location_auto_detect = False
-        self.use_stdin = True
-        self.web_search_enabled = False
-        self.mcps = {}
+def DummyCfg() -> MockConfig:
+    """The shared test config, tuned for the tool registry's needs."""
+    return MockConfig(
+        voice_debug=False,
+        ollama_base_url="http://localhost",
+        ollama_chat_model="test",
+        llm_chat_timeout_sec=5.0,
+        location_enabled=False,
+        web_search_enabled=False,
+        security_confirm_channels=[],
+    )
 
 
 class DummyDB:
@@ -200,7 +200,12 @@ def test_fetch_web_page_success(monkeypatch):
             </html>
             '''
             self.text = self.content.decode()
-        
+            # The production tool walks redirects manually now, checking
+            # these on every hop before deciding whether to follow it.
+            self.is_redirect = False
+            self.is_permanent_redirect = False
+            self.headers = {}
+
         def raise_for_status(self):
             pass
 

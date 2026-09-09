@@ -35,7 +35,7 @@ import pytest
 from unittest.mock import patch
 
 from conftest import requires_judge_llm
-from helpers import ToolCallCapture, create_mock_tool_run
+from helpers import ToolCallCapture, create_mock_tool_run, JUDGE_MODEL
 
 
 # Diary context carried from a prior session about the movie Possessor.
@@ -84,10 +84,7 @@ class TestContextSwitchTools:
         diary_entries, tool_responses,
     ):
         from jarvis.reply.engine import run_reply_engine
-        from helpers import JUDGE_MODEL
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
         # Location enabled so getWeather's auto-derive path would succeed
         # if the model actually calls it.
         mock_config.location_enabled = True
@@ -118,7 +115,6 @@ class TestContextSwitchTools:
         interesting one — diary enrichment for 'weather' may also surface
         the Possessor entry, but the tool pick must still be getWeather.
         """
-        from helpers import JUDGE_MODEL
 
         # --- Turn 1 -----------------------------------------------------------
         turn1_query = "Tell me about the movie possessor"

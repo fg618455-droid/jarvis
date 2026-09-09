@@ -6,6 +6,7 @@ import queue
 import shutil
 import signal
 import tempfile
+import json
 import os
 import re
 import sys
@@ -15,8 +16,35 @@ from pathlib import Path
 from typing import Optional, Callable
 from urllib.parse import urlparse
 
+from dataclasses import dataclass
+
 from ..debug import debug_log
+from ..runtime import Phase, set_phase_if
 from ..utils.audio_lock import portaudio_lock
+
+
+@dataclass
+class Utterance:
+    """One queued piece of speech together with who wants to hear about it.
+
+    A streamed reply queues its next sentence while the previous one is still
+    playing, so the callbacks cannot live on the engine: the second sentence
+    would overwrite the first sentence's, and the caller waiting to be told
+    that *its* speech started would be told about someone else's. Binding
+    them to the item keeps every answer straight.
+
+    ``text`` empty marks the end of a reply: nothing is synthesised, the
+    callbacks simply fire once everything queued ahead of it has been spoken.
+    """
+
+    text: str
+    completion_callback: Optional[Callable[[], None]] = None
+    duration_callback: Optional[Callable[[float], None]] = None
+    audio_start_callback: Optional[Callable[[], None]] = None
+
+    @property
+    def is_end_of_reply(self) -> bool:
+        return not self.text
 
 
 # ============================================================================
@@ -38,6 +66,67 @@ def _get_piper_models_dir() -> Path:
 def _get_default_piper_model_path() -> str:
     """Get the path to the default Piper voice model."""
     return str(_get_piper_models_dir() / f"{PIPER_DEFAULT_VOICE}.onnx")
+
+
+def resolve_voice_language(model_path: Optional[str]) -> Optional[str]:
+    """Return the English name of a Piper voice's language, or None if unknown.
+
+    Every Piper voice ships a sidecar ``<model>.onnx.json`` carrying a
+    ``language`` block. Reading the name from there keeps the assistant free of
+    a hardcoded language list: a user who swaps in a Dutch or Turkish voice gets
+    the matching constraint with no code change.
+
+    Returns None whenever the metadata cannot be trusted, so callers can leave
+    the response language unconstrained rather than assert a wrong one.
+    """
+    if not model_path:
+        return None
+
+    config_path = os.path.expanduser(model_path) + ".json"
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+    except (OSError, ValueError) as e:
+        debug_log(f"Voice language unreadable at {config_path}: {e}", "tts")
+        return None
+
+    language = metadata.get("language")
+    if not isinstance(language, dict):
+        return None
+
+    name = language.get("name_english")
+    if not isinstance(name, str) or not name.strip():
+        return None
+
+    resolved = name.strip()
+    debug_log(f"Voice language resolved: {resolved}", "tts")
+    return resolved
+
+
+# Kokoro voice names encode their language pipeline as one leading letter
+# (documented in the voice's own name — see jarvis.output.vendor.kokoro_backtalk.warm),
+# rather than shipping a metadata sidecar the way Piper voices do. This is
+# the whole, fixed set Kokoro ships; there is nothing to detect.
+_KOKORO_LANGUAGE_BY_CODE = {
+    "a": "American English",
+    "b": "British English",
+    "e": "Spanish",
+    "f": "French",
+    "h": "Hindi",
+    "i": "Italian",
+    "j": "Japanese",
+    "p": "Portuguese",
+    "z": "Mandarin Chinese",
+}
+
+
+def resolve_kokoro_voice_language(voice: Optional[str]) -> Optional[str]:
+    """Return the English name of a Kokoro voice's language, or None if
+    the voice name does not start with one of Kokoro's known language codes.
+    """
+    if not voice:
+        return None
+    return _KOKORO_LANGUAGE_BY_CODE.get(voice[0].lower())
 
 
 def _download_piper_voice(voice_name: str, progress_callback: Optional[Callable[[str], None]] = None) -> Optional[str]:
@@ -362,13 +451,11 @@ class ChatterboxTTS:
         self.cfg_weight = cfg_weight
 
         # Threading and queue setup (same as TextToSpeech)
-        self._q: queue.Queue[str] = queue.Queue()
+        self._q: queue.Queue[Utterance] = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._is_speaking = threading.Event()
         self._last_spoken_text: str = ""
-        self._completion_callback: Optional[Callable[[], None]] = None
-        self._duration_callback: Optional[Callable[[float], None]] = None
         self._should_interrupt = threading.Event()
 
         # Chatterbox model (eagerly loaded during initialization)
@@ -453,7 +540,7 @@ class ChatterboxTTS:
             pass
         self._stop.set()
         try:
-            self._q.put_nowait("")
+            self._q.put_nowait(Utterance(""))
         except Exception:
             pass
         self._thread.join(timeout=2.0)
@@ -461,18 +548,35 @@ class ChatterboxTTS:
         self._stop.clear()
 
     def speak(self, text: str, completion_callback: Optional[Callable[[], None]] = None,
-              duration_callback: Optional[Callable[[float], None]] = None) -> None:
+              duration_callback: Optional[Callable[[float], None]] = None,
+              audio_start_callback: Optional[Callable[[], None]] = None) -> None:
         if not self.enabled or not text.strip():
             return
         # Lazy start the worker thread and lazy init on first speak
         if self._thread is None:
             self.start()
-        self._completion_callback = completion_callback
-        self._duration_callback = duration_callback
         # Preprocess text for speech (convert links to readable descriptions)
         processed_text = _preprocess_for_speech(text)
+        if not processed_text.strip():
+            return
         try:
-            self._q.put_nowait(processed_text)
+            self._q.put_nowait(Utterance(
+                text=processed_text,
+                completion_callback=completion_callback,
+                duration_callback=duration_callback,
+                audio_start_callback=audio_start_callback,
+            ))
+        except Exception:
+            pass
+
+    def end_of_reply(self, completion_callback: Optional[Callable[[], None]] = None) -> None:
+        """Close a streamed reply. See :meth:`PiperTTS.end_of_reply`."""
+        if not self.enabled:
+            return
+        if self._thread is None:
+            self.start()
+        try:
+            self._q.put_nowait(Utterance("", completion_callback=completion_callback))
         except Exception:
             pass
 
@@ -483,17 +587,28 @@ class ChatterboxTTS:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                text = self._q.get(timeout=0.5)
+                utterance = self._q.get(timeout=0.5)
             except queue.Empty:
                 continue
-            if not text:
+            if utterance.is_end_of_reply:
+                self._finish_reply(utterance)
                 continue
             try:
-                self._speak_once(text)
+                self._speak_once(utterance)
             except Exception:
                 continue
 
-    def _speak_once(self, text: str) -> None:
+    def _finish_reply(self, utterance: Utterance) -> None:
+        """Report that everything queued before this marker has been spoken."""
+        if utterance.completion_callback is not None:
+            try:
+                utterance.completion_callback()
+            except Exception as e:
+                debug_log(f"Chatterbox TTS end-of-reply callback error: {e}", "tts")
+        self._finish_speech_phase()
+
+    def _speak_once(self, utterance: Utterance) -> None:
+        text = utterance.text
         self._is_speaking.set()
         self._last_spoken_text = text
         self._should_interrupt.clear()
@@ -527,9 +642,9 @@ class ChatterboxTTS:
             debug_log(f"Chatterbox TTS synthesis complete: {exact_duration:.2f}s", "tts")
 
             # Notify listener of exact duration for precise echo detection
-            if self._duration_callback is not None:
+            if utterance.duration_callback is not None:
                 try:
-                    self._duration_callback(exact_duration)
+                    utterance.duration_callback(exact_duration)
                 except Exception as e:
                     debug_log(f"Chatterbox TTS duration callback error: {e}", "tts")
 
@@ -546,6 +661,7 @@ class ChatterboxTTS:
                 pygame.mixer.init(frequency=self._model.sr, size=-16, channels=1, buffer=1024)
                 pygame.mixer.music.load(tmp_path)
                 pygame.mixer.music.play()
+                self._notify_audio_start(utterance)
 
                 # Wait for playback to complete or interruption
                 while pygame.mixer.music.get_busy():
@@ -567,18 +683,42 @@ class ChatterboxTTS:
             warnings.warn(f"Chatterbox TTS error: {e}")
         finally:
             self._is_speaking.clear()
-            
+
             # Signal speaking stopped to face widget
             self._notify_speaking_state(False)
-            
+            self._finish_speech_phase()
+
             # Call completion callback if set and not interrupted
-            if self._completion_callback is not None and not interrupted:
+            if utterance.completion_callback is not None and not interrupted:
                 try:
-                    self._completion_callback()
+                    utterance.completion_callback()
                 except Exception:
                     pass
-                self._completion_callback = None
-    
+
+    def _finish_speech_phase(self) -> None:
+        """Hand the phase back once nothing more is waiting to be spoken.
+
+        See :meth:`PiperTTS._finish_speech_phase` - a streamed reply arrives
+        sentence by sentence, so one utterance ending is not the answer ending.
+        """
+        if not self._q.empty():
+            return
+        set_phase_if(Phase.SPEAKING, Phase.IDLE)
+        set_phase_if(Phase.THINKING, Phase.IDLE)
+
+    def _notify_audio_start(self, utterance: Utterance) -> None:
+        """Announce that sound has started leaving the speakers.
+
+        Separate from the completion callback because this is the instant the
+        felt wait ends, and it is what the turn's timings measure against.
+        """
+        if utterance.audio_start_callback is None:
+            return
+        try:
+            utterance.audio_start_callback()
+        except Exception as e:
+            debug_log(f"TTS audio start callback error: {e}", "tts")
+
     def _notify_speaking_state(self, is_speaking: bool) -> None:
         """Notify the face widget of speaking state changes.
 
@@ -608,6 +748,50 @@ class ChatterboxTTS:
         return self._last_spoken_text
 
 
+def _feed_visualizer_waveform(chunk) -> None:
+    """Hand the just-played block to the face/visualizer view.
+
+    Backtalk's own ``mouth.py`` calls ``signals.feed_waveform`` at this exact
+    point in playback so a face can move to real audio; this is the same
+    call, aimed at the control centre's in-memory waveform holder instead of
+    a signal file. Guarded because ``tts.py`` has no hard dependency on the
+    control centre: a run where webui is disabled or failed to start still
+    speaks.
+    """
+    try:
+        from ..webui.visualizer.state import get_visualizer_waveform
+        get_visualizer_waveform().feed(chunk)
+    except Exception:
+        pass
+
+
+def _resolve_output_device(configured: Optional[str]):
+    """Turn a configured device name or index into something PortAudio takes.
+
+    An empty setting means "whatever PortAudio calls default". That default
+    is a host API's idea of default, not the one Windows is actually playing
+    through, so it is worth naming the device when speech goes missing.
+
+    A name that matches nothing is not fatal: speech on the wrong card beats
+    no speech at all, and the reason is printed once so it can be fixed.
+    """
+    if configured in (None, "", "default", "system"):
+        return None
+    text = str(configured).strip()
+    if text.isdigit():
+        return int(text)
+    try:
+        import sounddevice as sd
+        for index, device in enumerate(sd.query_devices()):
+            if device.get("max_output_channels", 0) > 0 and text.lower() in device["name"].lower():
+                return index
+    except Exception as exc:
+        debug_log(f"could not resolve TTS output device {text!r}: {type(exc).__name__}", "tts")
+        return None
+    print(f"  ⚠️  No output device matches {text!r} - using the system default", flush=True)
+    return None
+
+
 class PiperTTS:
     """TTS implementation using Piper (local neural TTS with exact duration).
 
@@ -627,8 +811,14 @@ class PiperTTS:
         noise_scale: float = 0.667,
         noise_w: float = 0.8,
         sentence_silence: float = 0.2,
+        output_device: Optional[str] = None,
     ) -> None:
         self.enabled = enabled
+        # Which sound card speech goes to. None means PortAudio's default,
+        # which is not always one the user can hear: a host API can accept a
+        # stream, report success and play into a device nobody is connected
+        # to. Naming the device explicitly is the only reliable cure.
+        self._output_device = _resolve_output_device(output_device)
         self.voice = voice  # Not used in Piper, kept for interface compatibility
         self.rate = rate    # Not directly supported, use length_scale instead
         self.model_path = model_path
@@ -639,13 +829,11 @@ class PiperTTS:
         self.sentence_silence = sentence_silence
 
         # Threading and queue setup (same pattern as other TTS engines)
-        self._q: queue.Queue[str] = queue.Queue()
+        self._q: queue.Queue[Utterance] = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._is_speaking = threading.Event()
         self._last_spoken_text: str = ""
-        self._completion_callback: Optional[Callable[[], None]] = None
-        self._duration_callback: Optional[Callable[[float], None]] = None
         self._should_interrupt = threading.Event()
 
         # Piper voice (lazy loaded)
@@ -758,7 +946,7 @@ class PiperTTS:
             pass
         self._stop.set()
         try:
-            self._q.put_nowait("")
+            self._q.put_nowait(Utterance(""))
         except Exception:
             pass
         self._thread.join(timeout=2.0)
@@ -766,18 +954,41 @@ class PiperTTS:
         self._stop.clear()
 
     def speak(self, text: str, completion_callback: Optional[Callable[[], None]] = None,
-              duration_callback: Optional[Callable[[float], None]] = None) -> None:
+              duration_callback: Optional[Callable[[float], None]] = None,
+              audio_start_callback: Optional[Callable[[], None]] = None) -> None:
         if not self.enabled or not text.strip():
             return
         # Lazy start the worker thread
         if self._thread is None:
             self.start()
-        self._completion_callback = completion_callback
-        self._duration_callback = duration_callback
         # Preprocess text for speech
         processed_text = _preprocess_for_speech(text)
+        if not processed_text.strip():
+            return
         try:
-            self._q.put_nowait(processed_text)
+            self._q.put_nowait(Utterance(
+                text=processed_text,
+                completion_callback=completion_callback,
+                duration_callback=duration_callback,
+                audio_start_callback=audio_start_callback,
+            ))
+        except Exception:
+            pass
+
+    def end_of_reply(self, completion_callback: Optional[Callable[[], None]] = None) -> None:
+        """Close a streamed reply.
+
+        A reply arriving sentence by sentence does not know which sentence is
+        its last, so the caller marks the end instead of guessing. The marker
+        makes no sound; it waits its turn in the queue and then reports that
+        the reply has been spoken in full.
+        """
+        if not self.enabled:
+            return
+        if self._thread is None:
+            self.start()
+        try:
+            self._q.put_nowait(Utterance("", completion_callback=completion_callback))
         except Exception:
             pass
 
@@ -795,18 +1006,30 @@ class PiperTTS:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                text = self._q.get(timeout=0.5)
+                utterance = self._q.get(timeout=0.5)
             except queue.Empty:
                 continue
-            if not text:
+            if utterance.is_end_of_reply:
+                self._finish_reply(utterance)
                 continue
             try:
-                self._speak_once(text)
+                self._speak_once(utterance)
             except Exception as e:
                 debug_log(f"Piper TTS error in _speak_once: {e}", "tts")
                 continue
 
-    def _speak_once(self, text: str) -> None:
+    def _finish_reply(self, utterance: Utterance) -> None:
+        """Report that everything queued before this marker has been spoken."""
+        if utterance.completion_callback is not None:
+            debug_log("Piper TTS reached the end of a streamed reply", "tts")
+            try:
+                utterance.completion_callback()
+            except Exception as e:
+                debug_log(f"Piper TTS end-of-reply callback error: {e}", "tts")
+        self._finish_speech_phase()
+
+    def _speak_once(self, utterance: Utterance) -> None:
+        text = utterance.text
         self._is_speaking.set()
         self._last_spoken_text = text
         self._should_interrupt.clear()
@@ -870,9 +1093,9 @@ class PiperTTS:
             debug_log(f"Piper TTS synthesis complete: {exact_duration:.2f}s, {len(full_audio)} samples", "tts")
 
             # Notify listener of exact duration for precise echo detection
-            if self._duration_callback is not None:
+            if utterance.duration_callback is not None:
                 try:
-                    self._duration_callback(exact_duration)
+                    utterance.duration_callback(exact_duration)
                 except Exception as e:
                     debug_log(f"Piper TTS duration callback error: {e}", "tts")
 
@@ -896,6 +1119,7 @@ class PiperTTS:
                 else:
                     outdata[:, 0] = chunk
 
+                _feed_visualizer_waveform(chunk)
                 play_position[0] = end
 
             with self._audio_lock:
@@ -906,8 +1130,13 @@ class PiperTTS:
                         dtype='int16',
                         blocksize=blocksize,
                         callback=audio_callback,
+                        device=self._output_device,
                     )
                     self._audio_stream.start()
+
+            # The first sample leaving the sound card is the moment the wait
+            # the user feels ends, so it is announced before anything waits.
+            self._notify_audio_start(utterance)
 
             # Wait for playback to complete
             try:
@@ -939,14 +1168,40 @@ class PiperTTS:
         finally:
             self._is_speaking.clear()
             self._notify_speaking_state(False)
+            self._finish_speech_phase()
 
             # Call completion callback if set and not interrupted
-            if self._completion_callback is not None and not interrupted:
+            if utterance.completion_callback is not None and not interrupted:
                 try:
-                    self._completion_callback()
+                    utterance.completion_callback()
                 except Exception as e:
                     print(f"  ⚠️ Piper TTS completion callback error: {e}", flush=True)
-                self._completion_callback = None
+
+    def _finish_speech_phase(self) -> None:
+        """Hand the phase back once nothing more is waiting to be spoken.
+
+        A streamed reply arrives sentence by sentence, so the end of one
+        utterance is not the end of speaking. Reporting the assistant idle
+        between two sentences of the same answer would make it look finished
+        while it is still mid-sentence.
+        """
+        if not self._q.empty():
+            return
+        set_phase_if(Phase.SPEAKING, Phase.IDLE)
+        set_phase_if(Phase.THINKING, Phase.IDLE)
+
+    def _notify_audio_start(self, utterance: Utterance) -> None:
+        """Announce that sound has started leaving the speakers.
+
+        Separate from the completion callback because this is the instant the
+        felt wait ends, and it is what the turn's timings measure against.
+        """
+        if utterance.audio_start_callback is None:
+            return
+        try:
+            utterance.audio_start_callback()
+        except Exception as e:
+            debug_log(f"TTS audio start callback error: {e}", "tts")
 
     def _notify_speaking_state(self, is_speaking: bool) -> None:
         """Notify the face widget of speaking state changes."""
@@ -960,6 +1215,321 @@ class PiperTTS:
             debug_log("face widget not available (ImportError) (piper)", "tts")
         except Exception as e:
             debug_log(f"failed to set face state to SPEAKING (piper): {e}", "tts")
+
+    # Loopback guard helpers (same interface as TextToSpeech)
+    def is_speaking(self) -> bool:
+        return self._is_speaking.is_set()
+
+    def get_last_spoken_text(self) -> str:
+        return self._last_spoken_text
+
+
+class KokoroTTS:
+    """TTS implementation using Kokoro, run in its own sidecar subprocess.
+
+    ``jarvis.output.vendor.kokoro_backtalk`` (AGPL-3.0, vendored from
+    backtalk's ``mouth.py``) and the ``kokoro`` package it wraps are never
+    imported by this class or anywhere else in the main daemon process:
+    :class:`~jarvis.output.kokoro_sidecar_client.KokoroSidecarClient` talks
+    to a separate ``jarvis.output.vendor.kokoro_sidecar`` process over a
+    stdio pipe instead, launched lazily on the first utterance actually
+    spoken. See ``THIRD_PARTY_NOTICES.md`` for why this process boundary
+    exists.
+
+    Kokoro synthesises straight to a PCM waveform, like Piper, so duration is
+    exact rather than estimated. Playback, interruption, and the audio queue
+    follow the same shape as :class:`PiperTTS` so the two engines are
+    interchangeable behind :func:`create_tts_engine`.
+    """
+
+    def __init__(
+        self,
+        enabled: bool = True,
+        voice: Optional[str] = None,
+        rate: Optional[int] = None,
+        kokoro_voice: str = "bm_lewis",
+        kokoro_speed: float = 1.0,
+        output_device: Optional[str] = None,
+    ) -> None:
+        self.enabled = enabled
+        self._output_device = _resolve_output_device(output_device)
+        self.voice = voice  # Not used by Kokoro directly, kept for interface compatibility
+        self.rate = rate    # Not used by Kokoro, use kokoro_speed instead
+        self.kokoro_voice = kokoro_voice or "bm_lewis"
+        self.kokoro_speed = kokoro_speed if kokoro_speed and kokoro_speed > 0 else 1.0
+
+        # Threading and queue setup (same pattern as PiperTTS).
+        self._q: queue.Queue[Utterance] = queue.Queue()
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+        self._is_speaking = threading.Event()
+        self._last_spoken_text: str = ""
+        self._should_interrupt = threading.Event()
+
+        # The sidecar process is only ever launched from inside
+        # KokoroSidecarClient.synthesize(), the first time an utterance
+        # actually needs speaking: nothing here starts it eagerly.
+        from .kokoro_sidecar_client import KokoroSidecarClient
+        self._sidecar = KokoroSidecarClient()
+
+        # Audio stream for interruption.
+        self._audio_stream = None
+        self._audio_lock = threading.Lock()
+
+    def start(self) -> None:
+        if not self.enabled or self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._thread is None:
+            self._sidecar.stop()
+            return
+        try:
+            self.interrupt()
+        except Exception:
+            pass
+        self._stop.set()
+        try:
+            self._q.put_nowait(Utterance(""))
+        except Exception:
+            pass
+        self._thread.join(timeout=2.0)
+        self._thread = None
+        self._stop.clear()
+        self._sidecar.stop()
+
+    def speak(self, text: str, completion_callback: Optional[Callable[[], None]] = None,
+              duration_callback: Optional[Callable[[float], None]] = None,
+              audio_start_callback: Optional[Callable[[], None]] = None) -> None:
+        if not self.enabled or not text.strip():
+            return
+        if self._thread is None:
+            self.start()
+        processed_text = _preprocess_for_speech(text)
+        if not processed_text.strip():
+            return
+        try:
+            self._q.put_nowait(Utterance(
+                text=processed_text,
+                completion_callback=completion_callback,
+                duration_callback=duration_callback,
+                audio_start_callback=audio_start_callback,
+            ))
+        except Exception:
+            pass
+
+    def end_of_reply(self, completion_callback: Optional[Callable[[], None]] = None) -> None:
+        """Close a streamed reply. See :meth:`PiperTTS.end_of_reply`."""
+        if not self.enabled:
+            return
+        if self._thread is None:
+            self.start()
+        try:
+            self._q.put_nowait(Utterance("", completion_callback=completion_callback))
+        except Exception:
+            pass
+
+    def interrupt(self) -> None:
+        """Stop current speech immediately."""
+        self._should_interrupt.set()
+        with self._audio_lock:
+            if self._audio_stream is not None:
+                try:
+                    with portaudio_lock:
+                        self._audio_stream.abort()
+                except Exception:
+                    pass
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                utterance = self._q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if utterance.is_end_of_reply:
+                self._finish_reply(utterance)
+                continue
+            try:
+                self._speak_once(utterance)
+            except Exception as e:
+                debug_log(f"Kokoro TTS error in _speak_once: {e}", "tts")
+                continue
+
+    def _finish_reply(self, utterance: Utterance) -> None:
+        """Report that everything queued before this marker has been spoken."""
+        if utterance.completion_callback is not None:
+            debug_log("Kokoro TTS reached the end of a streamed reply", "tts")
+            try:
+                utterance.completion_callback()
+            except Exception as e:
+                debug_log(f"Kokoro TTS end-of-reply callback error: {e}", "tts")
+        self._finish_speech_phase()
+
+    def _speak_once(self, utterance: Utterance) -> None:
+        text = utterance.text
+        self._is_speaking.set()
+        self._last_spoken_text = text
+        self._should_interrupt.clear()
+        interrupted = False
+
+        self._notify_speaking_state(True)
+
+        try:
+            import numpy as np
+            import sounddevice as sd
+
+            from .kokoro_sidecar_client import KOKORO_RATE, KokoroSidecarError
+
+            start_time = time.time()
+            debug_log(f"Kokoro TTS starting synthesis: {len(text.split())} words", "tts")
+
+            if self._should_interrupt.is_set():
+                debug_log("Kokoro TTS interrupted before synthesis", "tts")
+                return
+
+            # Chunks stream in from the sidecar one Kokoro-yielded block at a
+            # time (not one blob at the end of the whole utterance), so a
+            # crash or a missing kokoro install surfaces as soon as the
+            # sidecar reports it rather than after a silent, full wait.
+            audio_chunks = []
+            try:
+                for chunk in self._sidecar.synthesize(text, self.kokoro_voice, self.kokoro_speed):
+                    if self._should_interrupt.is_set():
+                        debug_log("Kokoro TTS interrupted during synthesis", "tts")
+                        return
+                    audio_chunks.append(chunk)
+            except KokoroSidecarError as e:
+                debug_log(f"Kokoro TTS sidecar failed: {e}", "tts")
+                print(f"  ⚠️ Kokoro TTS: {e}", flush=True)
+                return
+
+            if self._should_interrupt.is_set():
+                debug_log("Kokoro TTS interrupted after synthesis", "tts")
+                return
+
+            if not audio_chunks:
+                debug_log("Kokoro TTS: no audio chunks generated", "tts")
+                return
+
+            full_audio = np.concatenate(audio_chunks)
+            if len(full_audio) == 0:
+                debug_log("Kokoro TTS: no audio generated", "tts")
+                return
+
+            exact_duration = len(full_audio) / KOKORO_RATE
+            debug_log(f"Kokoro TTS synthesis complete: {exact_duration:.2f}s, {len(full_audio)} samples", "tts")
+
+            if utterance.duration_callback is not None:
+                try:
+                    utterance.duration_callback(exact_duration)
+                except Exception as e:
+                    debug_log(f"Kokoro TTS duration callback error: {e}", "tts")
+
+            play_position = [0]
+            blocksize = 1024
+
+            def audio_callback(outdata, frames, time_info, status):
+                if self._should_interrupt.is_set():
+                    raise sd.CallbackAbort()
+
+                start = play_position[0]
+                end = start + frames
+                chunk = full_audio[start:end]
+
+                if len(chunk) < frames:
+                    outdata[:len(chunk), 0] = chunk
+                    outdata[len(chunk):, 0] = 0
+                    raise sd.CallbackStop()
+                else:
+                    outdata[:, 0] = chunk
+
+                _feed_visualizer_waveform(chunk)
+                play_position[0] = end
+
+            with self._audio_lock:
+                with portaudio_lock:
+                    self._audio_stream = sd.OutputStream(
+                        samplerate=KOKORO_RATE,
+                        channels=1,
+                        dtype='int16',
+                        blocksize=blocksize,
+                        callback=audio_callback,
+                        device=self._output_device,
+                    )
+                    self._audio_stream.start()
+
+            self._notify_audio_start(utterance)
+
+            try:
+                while self._audio_stream is not None and self._audio_stream.active:
+                    if self._should_interrupt.is_set():
+                        interrupted = True
+                        with self._audio_lock:
+                            if self._audio_stream is not None:
+                                with portaudio_lock:
+                                    self._audio_stream.abort()
+                        break
+                    time.sleep(0.05)
+            finally:
+                with self._audio_lock:
+                    if self._audio_stream is not None:
+                        try:
+                            with portaudio_lock:
+                                self._audio_stream.close()
+                        except Exception:
+                            pass
+                        self._audio_stream = None
+
+            actual_duration = time.time() - start_time
+            debug_log(f"Kokoro TTS complete: actual={actual_duration:.2f}s (audio={exact_duration:.2f}s)", "tts")
+
+        except Exception as e:
+            debug_log(f"Kokoro TTS error: {e}", "tts")
+            print(f"  ⚠️ Kokoro TTS error: {e}", flush=True)
+        finally:
+            self._is_speaking.clear()
+            self._notify_speaking_state(False)
+            self._finish_speech_phase()
+
+            if utterance.completion_callback is not None and not interrupted:
+                try:
+                    utterance.completion_callback()
+                except Exception as e:
+                    print(f"  ⚠️ Kokoro TTS completion callback error: {e}", flush=True)
+
+    def _finish_speech_phase(self) -> None:
+        """Hand the phase back once nothing more is waiting to be spoken.
+
+        See :meth:`PiperTTS._finish_speech_phase`.
+        """
+        if not self._q.empty():
+            return
+        set_phase_if(Phase.SPEAKING, Phase.IDLE)
+        set_phase_if(Phase.THINKING, Phase.IDLE)
+
+    def _notify_audio_start(self, utterance: Utterance) -> None:
+        """Announce that sound has started leaving the speakers."""
+        if utterance.audio_start_callback is None:
+            return
+        try:
+            utterance.audio_start_callback()
+        except Exception as e:
+            debug_log(f"TTS audio start callback error: {e}", "tts")
+
+    def _notify_speaking_state(self, is_speaking: bool) -> None:
+        """Notify the face widget of speaking state changes."""
+        try:
+            from desktop_app.face_widget import get_jarvis_state, JarvisState
+            state_manager = get_jarvis_state()
+            if is_speaking:
+                debug_log("setting face state to SPEAKING (kokoro)", "tts")
+                state_manager.set_state(JarvisState.SPEAKING)
+        except ImportError:
+            debug_log("face widget not available (ImportError) (kokoro)", "tts")
+        except Exception as e:
+            debug_log(f"failed to set face state to SPEAKING (kokoro): {e}", "tts")
 
     # Loopback guard helpers (same interface as TextToSpeech)
     def is_speaking(self) -> bool:
@@ -986,14 +1556,60 @@ def create_tts_engine(
     piper_noise_scale: float = 0.667,
     piper_noise_w: float = 0.8,
     piper_sentence_silence: float = 0.2,
+    output_device: Optional[str] = None,
+    # Kokoro parameters
+    kokoro_voice: str = "bm_lewis",
+    kokoro_speed: float = 1.0,
+    # Cloud chain parameters
+    cloud_providers: Optional[list[dict]] = None,
+    local_fallback_engine: str = "piper",
 ):
     """Factory function to create the appropriate TTS engine.
 
     Supported engines:
     - "piper" (default): Neural TTS with auto-download, exact duration tracking
     - "chatterbox": AI voice with emotion control (requires PyTorch)
+    - "kokoro": Local neural TTS vendored from backtalk, exact duration tracking
+    - "cloud": Ordered cloud provider chain with a mandatory local final stage
     """
-    if engine.lower() == "chatterbox":
+    debug_log(f"selecting TTS engine: {engine}", "tts")
+    engine_key = engine.lower()
+    if engine_key == "cloud":
+        from .cloud_tts import CloudProviderConfig, CloudTTS
+
+        fallback_key = str(local_fallback_engine or "piper").lower()
+        if fallback_key not in {"piper", "chatterbox", "kokoro"}:
+            fallback_key = "piper"
+        local_engine = create_tts_engine(
+            engine=fallback_key,
+            enabled=enabled,
+            voice=voice,
+            rate=rate,
+            device=device,
+            audio_prompt_path=audio_prompt_path,
+            exaggeration=exaggeration,
+            cfg_weight=cfg_weight,
+            piper_model_path=piper_model_path,
+            piper_speaker=piper_speaker,
+            piper_length_scale=piper_length_scale,
+            piper_noise_scale=piper_noise_scale,
+            piper_noise_w=piper_noise_w,
+            piper_sentence_silence=piper_sentence_silence,
+            output_device=output_device,
+            kokoro_voice=kokoro_voice,
+            kokoro_speed=kokoro_speed,
+        )
+        provider_configs = tuple(
+            item if isinstance(item, CloudProviderConfig) else CloudProviderConfig(**item)
+            for item in (cloud_providers or [])
+        )
+        return CloudTTS(
+            providers=provider_configs,
+            local_engine=local_engine,
+            enabled=enabled,
+            output_device=output_device,
+        )
+    elif engine_key == "chatterbox":
         return ChatterboxTTS(
             enabled=enabled,
             voice=voice,
@@ -1003,9 +1619,19 @@ def create_tts_engine(
             exaggeration=exaggeration,
             cfg_weight=cfg_weight,
         )
+    elif engine_key == "kokoro":
+        return KokoroTTS(
+            enabled=enabled,
+            voice=voice,
+            rate=rate,
+            kokoro_voice=kokoro_voice,
+            kokoro_speed=kokoro_speed,
+            output_device=output_device,
+        )
     else:
         # Default to Piper TTS
         return PiperTTS(
+            output_device=output_device,
             enabled=enabled,
             voice=voice,
             rate=rate,

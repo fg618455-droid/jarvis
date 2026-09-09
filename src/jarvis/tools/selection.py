@@ -11,11 +11,13 @@ Strategies (ToolSelectionStrategy enum):
 from __future__ import annotations
 
 import re
+import threading
 from enum import Enum
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from ..debug import debug_log
 from ..llm import LLMBackend
+from ..runtime import stage as telemetry_stage
 
 if TYPE_CHECKING:
     from .base import Tool
@@ -59,6 +61,23 @@ _RELATIVE_THRESHOLD = 0.97
 # guarantees the downstream prompt stays compact regardless.
 _LLM_MAX_SELECTED = 5
 
+# Fixed protocol tokens the LLM router is instructed to append after its
+# tool list, naming which Tier.CHAT backend the turn prefers (see
+# _select_llm). These are not natural-language keywords matched against the
+# user's words — they are a closed vocabulary the classifying LLM itself
+# must emit, the same kind of fixed sentinel "none" already is in this
+# router.
+_CHAT_BACKEND_PREFERENCE_RE = re.compile(
+    r"\b(default|local|complex|hermes)\b", re.IGNORECASE
+)
+
+# Tool descriptions change only when the catalogue changes, while user queries
+# change every turn. Cache only the description vectors so embedding routing
+# pays for one query vector per turn instead of re-embedding the full catalogue.
+_TOOL_EMBEDDING_CACHE: dict[tuple, tuple[float, ...]] = {}
+_TOOL_EMBEDDING_CACHE_LOCK = threading.Lock()
+_TOOL_EMBEDDING_CACHE_MAX = 512
+
 # Common English stop-words excluded from keyword matching.
 _STOP_WORDS = frozenset({
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
@@ -95,6 +114,81 @@ def _tool_summary(name: str, description: str) -> str:
     """One-line summary used as embedding input for a tool."""
     readable_name = _CAMEL_RE.sub(" ", name).lower()
     return f"{readable_name}: {description}"
+
+
+def _embedding_service_key(backend: LLMBackend) -> tuple[str, object]:
+    """Identify a configured embedding service across backend instances."""
+    backend_type = f"{type(backend).__module__}.{type(backend).__qualname__}"
+    endpoint = getattr(backend, "_base_url", None)
+    if not isinstance(endpoint, str) or not endpoint:
+        endpoint = id(backend)
+    return backend_type, endpoint
+
+
+def _cached_tool_embedding(
+    backend: LLMBackend,
+    model: str,
+    name: str,
+    summary: str,
+    timeout_sec: float,
+):
+    key = (*_embedding_service_key(backend), model, name, summary)
+    with _TOOL_EMBEDDING_CACHE_LOCK:
+        cached = _TOOL_EMBEDDING_CACHE.get(key)
+    if cached is not None:
+        return list(cached)
+
+    vector = backend.embed(summary, model, timeout_sec=timeout_sec)
+    if vector is None:
+        return None
+    frozen = tuple(float(value) for value in vector)
+    with _TOOL_EMBEDDING_CACHE_LOCK:
+        if len(_TOOL_EMBEDDING_CACHE) >= _TOOL_EMBEDDING_CACHE_MAX:
+            oldest = next(iter(_TOOL_EMBEDDING_CACHE))
+            del _TOOL_EMBEDDING_CACHE[oldest]
+        _TOOL_EMBEDDING_CACHE[key] = frozen
+    return list(frozen)
+
+
+def warm_tool_embedding_cache(
+    builtin_tools: Dict[str, "Tool"],
+    mcp_tools: Dict[str, "ToolSpec"],
+    embedding_backend: LLMBackend,
+    embed_model: str,
+    timeout_sec: float,
+) -> int:
+    """Embed the static tool catalogue before the listener becomes ready.
+
+    Returns the number of catalogue entries available in the cache. Individual
+    failures are non-fatal because the live selector retains its existing
+    fail-open behaviour.
+    """
+    descriptions: dict[str, str] = {}
+    for name, tool in builtin_tools.items():
+        if name not in _ALWAYS_INCLUDED:
+            descriptions[name] = _tool_summary(name, tool.description)
+    for name, spec in mcp_tools.items():
+        descriptions[name] = _tool_summary(name, spec.description)
+
+    warmed = 0
+    for name, summary in descriptions.items():
+        try:
+            vector = _cached_tool_embedding(
+                embedding_backend,
+                embed_model,
+                name,
+                summary,
+                timeout_sec,
+            )
+        except Exception as exc:
+            debug_log(
+                f"Tool embedding warmup failed for {name}: {type(exc).__name__}",
+                "planning",
+            )
+            continue
+        if vector is not None:
+            warmed += 1
+    return warmed
 
 
 def _ensure_always_included(
@@ -191,7 +285,20 @@ def _select_embedding(
         all_tools[name] = _tool_summary(name, spec.description)
 
     for name, summary in all_tools.items():
-        tool_vec = embedding_backend.embed(summary, embed_model, timeout_sec=embed_timeout_sec)
+        try:
+            tool_vec = _cached_tool_embedding(
+                embedding_backend,
+                embed_model,
+                name,
+                summary,
+                embed_timeout_sec,
+            )
+        except Exception as exc:
+            debug_log(
+                f"Embedding tool selection: failed to embed {name}: {type(exc).__name__}",
+                "planning",
+            )
+            continue
         if tool_vec is None:
             continue
         tool_arr = np.array(tool_vec, dtype=np.float32)
@@ -242,6 +349,7 @@ def _select_llm(
     llm_model: str,
     llm_timeout_sec: float,
     context_hint: Optional[str] = None,
+    chat_backend_signal: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """Ask a lightweight LLM call which tools are relevant.
 
@@ -254,6 +362,15 @@ def _select_llm(
     actual data and judges for itself. Gracefully degrades when the hint is
     missing or partial (e.g. location failed to resolve) — the router simply
     has less context and falls back to tool-selection on content.
+
+    ``chat_backend_signal``, when supplied, is populated with
+    ``{"preference": "default" | "complex" | "hermes"}`` from the SAME
+    response this call already produces, so the reply engine can bias which
+    Tier.CHAT backend answers the turn without a second LLM round-trip. The
+    key is left absent on any fallback path (empty/unparseable response,
+    timeout, exception, or no backend supplied) — an absent key is the
+    caller's fail-open signal to leave backend selection at its existing
+    default.
     """
     catalogue_lines: List[str] = []
     for name, tool in builtin_tools.items():
@@ -284,6 +401,19 @@ def _select_llm(
         "place, confirming an option, answering a clarifying question the "
         "assistant just asked) should route to the tool that answers the "
         "COMBINED intent across turns, not to 'none'. "
+        "After the tool list, add a single space then exactly one more word "
+        "naming which backend should answer: HERMES if the turn is about "
+        "building, debugging, or maintaining backend code, infrastructure, "
+        "servers, or data systems — the kind of engineering work suited to "
+        "a background crew with deep tool access; COMPLEX if it needs "
+        "multi-step reasoning, careful structured output, or front-end or "
+        "user-facing design work that is not HERMES-shaped; or DEFAULT for "
+        "everything else, including simple factual lookups through a tool. "
+        "A single-fact lookup stays DEFAULT even when it names a future time "
+        "or date (e.g. 'what's the weather tomorrow', 'when is my next "
+        "meeting') — one fact about one moment is not multi-step reasoning. "
+        "A short conversational question is DEFAULT even when it picks a "
+        "tool. "
         "Output nothing else — no explanations, no prose, no code fences."
     )
     hint_section = ""
@@ -327,13 +457,18 @@ def _select_llm(
         f"Available tools:\n{catalogue}\n\n"
         f"{hint_section}"
         f"User query: {query}\n\n"
-        "Top tools (comma-separated, max 5, or 'none'):"
+        "Top tools (comma-separated, max 5, or 'none'), then a space and "
+        "DEFAULT or COMPLEX:"
     )
 
     try:
+        # Match the main chat runner. Ollama keys model residency by context
+        # size, so alternating 4096 here with the loop's 8192 reloads one
+        # shared FAST/CHAT model before both calls.
         resp = llm_backend.direct(
             llm_model, sys_prompt, user_prompt,
             timeout_sec=llm_timeout_sec,
+            num_ctx=8192,
             max_tokens=50,
         )
     except Exception as e:
@@ -344,7 +479,29 @@ def _select_llm(
         debug_log("LLM tool selection returned empty, falling back to keyword strategy", "planning")
         return _select_keyword(query, builtin_tools, mcp_tools)
 
-    resp_lower = resp.strip().lower()
+    # Extract the trailing routing classification, if present, before doing
+    # any tool-list parsing — it rides in the SAME response as the tool
+    # list rather than a second LLM call, so it must be pulled out without
+    # disturbing the existing tool-name extraction below. Neither "local"
+    # nor "complex" collides with a real tool name (checked against the
+    # catalogue via word-boundary matching), so removing every occurrence
+    # is safe before the "none" comparison and the tool-token scan.
+    _tool_part = resp
+    if chat_backend_signal is not None:
+        _preference_matches = _CHAT_BACKEND_PREFERENCE_RE.findall(resp)
+        if _preference_matches:
+            # Fail-open by default: the key is only set when the router's
+            # response actually named a preference. Reusing this response
+            # is the entire point — no second classification call is made.
+            preference = _preference_matches[-1].lower()
+            # Accept the old LOCAL token for one transition period, but it no
+            # DEFAULT means configured cloud order, never an Ollama route.
+            chat_backend_signal["preference"] = (
+                "default" if preference == "local" else preference
+            )
+        _tool_part = _CHAT_BACKEND_PREFERENCE_RE.sub(" ", resp)
+
+    resp_lower = _tool_part.strip().strip("|").strip().lower()
     if resp_lower == "none":
         debug_log("LLM tool selection returned 'none' — including only mandatory tools", "planning")
         return [t for t in _ALWAYS_INCLUDED if t in builtin_tools or t in mcp_tools]
@@ -355,7 +512,7 @@ def _select_llm(
     # JSON-ish lists. Strip every punctuation char that can't appear in a tool
     # name before matching, so the extraction is robust to formatting drift.
     _STRIP_CHARS = "'\"`*-_[](){}<>,.:;!?\\ "
-    for token in re.split(r"[,\s]+", resp):
+    for token in re.split(r"[,\s]+", _tool_part):
         clean = token.strip(_STRIP_CHARS)
         if clean in known and clean not in selected:
             selected.append(clean)
@@ -392,6 +549,7 @@ def select_tools(
     embed_model: str = "",
     embed_timeout_sec: float = 10.0,
     context_hint: Optional[str] = None,
+    chat_backend_signal: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """
     Return a list of tool names relevant to *query*.
@@ -410,28 +568,37 @@ def select_tools(
         embed_model:        Embedding model name (needed for "embedding" strategy).
         embed_timeout_sec:  Timeout for embedding calls.
         context_hint:       Optional facts/dialogue surface for the LLM router.
+        chat_backend_signal: Optional dict populated with
+                            ``{"preference": "default" | "complex" | "hermes"}``
+                            when the "llm" strategy's response names one, so
+                            a caller can bias Tier.CHAT backend selection
+                            without a second LLM call. Ignored by every other
+                            strategy; left untouched on any "llm" strategy
+                            fallback path, which is the fail-open signal.
 
     Returns:
         List of tool name strings.
     """
-    if strategy == ToolSelectionStrategy.KEYWORD:
-        return _select_keyword(query, builtin_tools, mcp_tools)
-    elif strategy == ToolSelectionStrategy.EMBEDDING:
-        if embedding_backend is None:
-            debug_log("Embedding tool selection: no backend supplied, falling back to all tools", "planning")
-            return _all_tool_names(builtin_tools, mcp_tools)
-        return _select_embedding(
-            query, builtin_tools, mcp_tools,
-            embedding_backend, embed_model, embed_timeout_sec,
-        )
-    elif strategy == ToolSelectionStrategy.LLM:
-        if llm_backend is None:
-            debug_log("LLM tool selection: no backend supplied, falling back to keyword strategy", "planning")
+    with telemetry_stage("tool_routing"):
+        if strategy == ToolSelectionStrategy.KEYWORD:
             return _select_keyword(query, builtin_tools, mcp_tools)
-        return _select_llm(
-            query, builtin_tools, mcp_tools,
-            llm_backend, llm_model, llm_timeout_sec,
-            context_hint=context_hint,
-        )
-    else:
-        return _all_tool_names(builtin_tools, mcp_tools)
+        elif strategy == ToolSelectionStrategy.EMBEDDING:
+            if embedding_backend is None:
+                debug_log("Embedding tool selection: no backend supplied, falling back to all tools", "planning")
+                return _all_tool_names(builtin_tools, mcp_tools)
+            return _select_embedding(
+                query, builtin_tools, mcp_tools,
+                embedding_backend, embed_model, embed_timeout_sec,
+            )
+        elif strategy == ToolSelectionStrategy.LLM:
+            if llm_backend is None:
+                debug_log("LLM tool selection: no backend supplied, falling back to keyword strategy", "planning")
+                return _select_keyword(query, builtin_tools, mcp_tools)
+            return _select_llm(
+                query, builtin_tools, mcp_tools,
+                llm_backend, llm_model, llm_timeout_sec,
+                context_hint=context_hint,
+                chat_backend_signal=chat_backend_signal,
+            )
+        else:
+            return _all_tool_names(builtin_tools, mcp_tools)

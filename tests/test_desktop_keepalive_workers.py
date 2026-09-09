@@ -38,6 +38,14 @@ from desktop_app.qt_worker import KeepAliveWorker
 
 app = QApplication([])
 
+# Exercise real QThreads/signals/destructors, without 150 live network or
+# user-configuration checks. Availability belongs to the setup/API tests.
+import desktop_app.setup_wizard as setup_module
+import desktop_app.app as app_module
+setup_module.should_show_setup_wizard = lambda: False
+setup_module.check_ollama_server = lambda: (True, "synthetic")
+app_module._check_openai_compat_reachable = lambda cfg: True
+
 N = 150
 state = {{"i": 0, "worker": None}}
 

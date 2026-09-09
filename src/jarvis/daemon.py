@@ -17,24 +17,13 @@ os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
 os.environ.setdefault('MKL_NUM_THREADS', '1')
 os.environ.setdefault('OMP_NUM_THREADS', '1')
 
-# Fix Windows console encoding for Unicode/emoji characters
-# Skip in bundled mode (frozen) - encoding is handled by desktop_app.py
-if sys.platform == 'win32' and not getattr(sys, 'frozen', False):
-    try:
-        import io
-        # Only wrap the real console streams. Test harnesses (pytest) and
-        # embedding code replace sys.stdout/sys.stderr with their own capture
-        # objects; wrapping those detaches and closes their buffers, which
-        # corrupts output capture for the rest of the process.
-        if (sys.stdout is sys.__stdout__ and hasattr(sys.stdout, 'buffer')
-                and hasattr(sys.stdout.buffer, 'write')):
-            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-        if (sys.stderr is sys.__stderr__ and hasattr(sys.stderr, 'buffer')
-                and hasattr(sys.stderr.buffer, 'write')):
-            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-    except Exception:
-        pass
+from .console import force_utf8_console
 
+# Bundled mode configures streams from the desktop entry point.
+if sys.platform == 'win32' and not getattr(sys, 'frozen', False):
+    force_utf8_console()
+
+from pathlib import Path
 from typing import Optional
 from faster_whisper import WhisperModel
 
@@ -42,7 +31,12 @@ from .config import load_settings
 from .memory.db import Database
 from .memory.conversation import DialogueMemory, update_diary_from_dialogue_memory
 from .output.tts import create_tts_engine
-from .tools.registry import initialize_mcp_tools
+from .tools.registry import (
+    configure_computer_interaction_tools,
+    configure_system_management_tool,
+    configure_vault_search_tool,
+    initialize_mcp_tools,
+)
 from .debug import debug_log
 from .listening.listener import VoiceListener
 from .utils.location import get_location_context, is_location_available
@@ -50,6 +44,11 @@ from .utils.location import get_location_context, is_location_available
 # Global instances for coordination between modules
 _global_dialogue_memory: Optional[DialogueMemory] = None
 _global_stop_requested: bool = False
+# Set by request_restart() alongside _global_stop_requested, so the same
+# generation-ending shutdown path runs either way; main()'s loop reads this
+# once a generation has finished tearing down, to decide whether to start
+# another one or let the process actually end.
+_global_restart_requested: bool = False
 _warm_profile_graph_listener = None  # registered callback, kept for shutdown unregister
 _global_tts_engine = None  # TTS engine reference for face animation polling
 _global_dictation_engine = None  # Dictation engine reference for history UI
@@ -105,6 +104,19 @@ def request_stop() -> None:
     """Request the daemon to stop gracefully."""
     global _global_stop_requested
     _global_stop_requested = True
+
+
+def request_restart() -> None:
+    """Request the daemon to tear down and start a fresh generation in place.
+
+    Shares the exact shutdown path ``request_stop()`` triggers (the same
+    diary save, the same component teardown); only ``main()``'s loop
+    behaves differently afterwards, starting a new generation instead of
+    returning.
+    """
+    global _global_restart_requested
+    _global_restart_requested = True
+    request_stop()
 
 
 def set_diary_update_callbacks(
@@ -310,6 +322,18 @@ def _notify_chat(event_type: str, data, *, callbacks: dict, use_ipc: bool) -> No
         _emit_chat_event(event_type, data)
 
 
+def chat_query_lock() -> threading.Lock:
+    """The lock every reply-engine entry point shares.
+
+    Voice, the desktop chat window and the control centre's typed turns all
+    run the engine against the same dialogue memory, so exactly one of them
+    may hold this at a time. Callers that can afford to wait use
+    ``query_lock``; callers that must answer immediately acquire it
+    non-blocking and refuse when it is taken.
+    """
+    return _chat_query_lock
+
+
 @contextlib.contextmanager
 def query_lock():
     """Context manager that acquires the shared voice+text query lock (blocking).
@@ -376,6 +400,11 @@ def submit_text_query(
 
     dm = _global_dialogue_memory
     cfg = _global_cfg
+    try:
+        from .llm.runtime import get_llm_runtime
+        cfg = get_llm_runtime().snapshot().settings
+    except RuntimeError:
+        pass
     db = _global_db
     if dm is None or cfg is None or db is None:
         # Daemon not initialised (e.g. tests that don't boot main()). Fail
@@ -548,6 +577,98 @@ def handle_chat_restore_stdin_line(line: str) -> bool:
     return True
 
 
+def handle_security_confirm_stdin_line(line: str) -> bool:
+    """Parse a stdin line as a desktop security-confirmation response.
+
+    Returns True when the line carried a ``SECURITY_CONFIRM_RESPONSE:``
+    payload and was handled (whether or not the payload was well-formed
+    or the request id was still pending), False for anything else so the
+    caller can apply its own semantics.
+    """
+    line = line.strip()
+    if not line.startswith("SECURITY_CONFIRM_RESPONSE:"):
+        return False
+    import json
+    from .security.desktop_confirm import resolve_desktop_confirmation
+    try:
+        payload = json.loads(line.split(":", 1)[1])
+        resolve_desktop_confirmation(
+            str(payload["request_id"]),
+            bool(payload.get("approved", False)),
+        )
+    except Exception as exc:
+        debug_log(f"invalid desktop confirmation response: {exc}", "security")
+    return True
+
+
+def _dispatch_stdin_line(stripped: str) -> bool:
+    """Handle one already-stripped stdin line. Returns True when the
+    daemon should stop reading further lines (SHUTDOWN), False to keep
+    the monitor running.
+
+    A handler that raises is logged and swallowed here rather than left
+    to propagate: this is the seam that decides whether one malformed or
+    unexpected line can end the monitor for every line after it. It
+    can't - EOF is the only other way ``stdin_monitor`` stops, and that
+    is handled by the caller, not here.
+    """
+    try:
+        if handle_security_confirm_stdin_line(stripped):
+            return False
+        if stripped == "SHUTDOWN":
+            debug_log("SHUTDOWN command received, requesting stop", "jarvis")
+            request_stop()
+            return True
+        if handle_chat_cancel_stdin_line(stripped):
+            return False
+        if handle_chat_new_session_stdin_line(stripped):
+            return False
+        if handle_chat_rewind_stdin_line(stripped):
+            return False
+        if handle_chat_restore_stdin_line(stripped):
+            return False
+        if stripped.startswith(CHAT_QUERY_IPC_PREFIX):
+            handle_chat_query_stdin_line(stripped)
+        return False
+    except Exception as exc:
+        debug_log(f"stdin monitor: failed to handle line ({exc})", "jarvis")
+        return False
+
+
+def stdin_monitor(stream=None) -> None:
+    """Read stdin lines until EOF or a SHUTDOWN line, dispatching each one
+    through ``_dispatch_stdin_line``.
+
+    Two jobs live behind that dispatch:
+
+    1. Windows shutdown signal: ``CTRL_BREAK_EVENT`` doesn't work
+       reliably with ``CREATE_NO_WINDOW``, so stdin EOF / a bare
+       ``SHUTDOWN`` line is treated as a stop request instead.
+    2. Subprocess chat query-in: the desktop app writes
+       ``__CHAT_QUERY__:{"text":"..."}`` lines so the chat window can
+       submit text when the daemon runs as a separate process, plus
+       session-control and security-confirmation lines. A line that
+       matches none of these is ignored, so the monitor is a no-op for
+       users who never open the chat.
+
+    ``stream`` defaults to ``sys.stdin``; tests pass a ``StringIO``.
+    """
+    if stream is None:
+        stream = sys.stdin
+    while True:
+        try:
+            line = stream.readline()
+        except Exception as exc:
+            debug_log(f"stdin monitor: readline failed ({exc}), stopping", "jarvis")
+            return
+        if not line:  # EOF - stdin closed
+            debug_log("stdin closed, requesting stop", "jarvis")
+            request_stop()
+            return
+        if _dispatch_stdin_line(line.strip()):
+            return
+
+
 def wait_for_chat_worker(timeout_sec: float = 5.0) -> bool:
     """Wait for an in-flight chat worker to finish, bounded.
 
@@ -580,6 +701,15 @@ def is_stop_requested() -> bool:
 def get_tts_engine():
     """Get the global TTS engine for speaking state polling (used by face widget)."""
     return _global_tts_engine
+
+
+def get_dialogue_memory():
+    """The running dialogue memory, or None when no daemon is up.
+
+    A typed turn from the control centre shares the spoken conversation
+    when the daemon is running, and stands alone when it is not.
+    """
+    return _global_dialogue_memory
 
 
 def get_dictation_engine():
@@ -695,7 +825,7 @@ def _check_and_update_diary(
             # job, so placement runs on the small model instead of paging in the
             # big chat model for every fact.
             from .llm import resolve_model, Tier
-            graph_picker_model = resolve_model(cfg, Tier.FAST)
+            graph_picker_model = resolve_model(cfg, Tier.PRIVATE)
 
             summary_id = update_diary_from_dialogue_memory(
                 db=db,
@@ -741,10 +871,31 @@ def _check_and_update_diary(
 def main(smoke_test: bool = False) -> None:
     """Main daemon entry point.
 
+    Runs generations in a loop: each generation initialises every
+    component fresh and tears them all back down on stop. A generation
+    that stopped because of ``request_restart()`` starts another one in
+    the same process; every other stop returns. The caller (a bare
+    ``python -m jarvis.daemon``, or the desktop app's subprocess/thread)
+    sees one call that takes longer to return, not a process replaced.
+
     Args:
         smoke_test: If True, initialise all components, print a success
             marker, and return without entering the main event loop.
             Used by CI smoke tests to verify the build is not broken.
+    """
+    global _global_restart_requested
+    while True:
+        _run_daemon_generation(smoke_test=smoke_test)
+        if not _global_restart_requested:
+            return
+        _global_restart_requested = False
+        print("🔄 Restarting Jarvis...", flush=True)
+
+
+def _run_daemon_generation(smoke_test: bool = False) -> None:
+    """Initialise every component, run until stopped, then tear down.
+
+    See ``main()`` for the loop that calls this again on restart.
     """
     global _global_dialogue_memory, _global_stop_requested, _global_tts_engine, _global_dictation_engine
     global _warm_profile_graph_listener
@@ -755,6 +906,11 @@ def main(smoke_test: bool = False) -> None:
     _install_signal_handlers()
 
     cfg = load_settings()
+    from .llm.runtime import get_llm_runtime
+    cfg = get_llm_runtime().install(cfg).settings
+    configure_vault_search_tool(cfg)
+    configure_computer_interaction_tools(cfg)
+    configure_system_management_tool(cfg)
     db = Database(cfg.db_path, cfg.sqlite_vss_path)
     # Expose cfg + db so the text-chat submission path shares the same store
     # and config as the voice listener (one conversation, one config).
@@ -766,6 +922,80 @@ def main(smoke_test: bool = False) -> None:
     print("✓ Daemon started", flush=True)
     print(f"🧠 Using chat model: {cfg.llm_chat_model}", flush=True)
     print(f"🎤 Using whisper model: {cfg.whisper_model}", flush=True)
+
+    # Live state and per-turn timings, described before anything can report.
+    from .runtime import Phase, get_recorder, get_runtime_state, set_phase
+
+    runtime_state = get_runtime_state()
+    runtime_state.reset()
+    from .llm import describe_model_topology
+
+    runtime_state.describe_models(**describe_model_topology(cfg))
+    runtime_state.describe_audio(
+        device=cfg.voice_device,
+        sample_rate=cfg.sample_rate,
+        wake_word=cfg.wake_word,
+        language=getattr(cfg, "whisper_language", "") or "auto",
+    )
+    get_recorder().use_journal(Path(cfg.db_path).parent / "turns.jsonl")
+
+    # Passive retention is enforced even while capture is switched off, so an
+    # old record is not stranded. Both jobs stay off the startup and audio
+    # threads. The shared periodic worker exists only while passive capture
+    # or the optional morning School briefing needs it.
+    from .listening.passive_capture import (
+        PassiveRetentionWorker,
+        initialise_passive_capture,
+        passive_capture_enabled,
+        register_passive_switch_listener,
+        unregister_passive_switch_listener,
+    )
+    from .memory.ambient import AmbientDigestWorker
+
+    initialise_passive_capture(
+        bool(getattr(cfg, "passive_capture_enabled", False))
+    )
+    passive_retention_worker = PassiveRetentionWorker(db, cfg)
+    passive_retention_worker.start()
+    ambient_worker_lock = threading.Lock()
+    ambient_worker = None
+    morning_briefing_scheduler = None
+
+    def _set_ambient_worker(
+        enabled: bool,
+        stop_timeout: float = 3.0,
+        *,
+        shutdown: bool = False,
+    ) -> None:
+        nonlocal ambient_worker
+        worker_to_start = None
+        worker_to_stop = None
+        with ambient_worker_lock:
+            should_run = bool(enabled) or bool(
+                getattr(cfg, "morning_briefing_enabled", False)
+            )
+            if should_run and not shutdown:
+                if ambient_worker is None:
+                    ambient_worker = AmbientDigestWorker(
+                        db,
+                        cfg,
+                        morning_briefing=morning_briefing_scheduler,
+                    )
+                worker_to_start = ambient_worker
+            elif ambient_worker is not None:
+                worker_to_stop = ambient_worker
+        if worker_to_start is not None:
+            worker_to_start.start()
+        if worker_to_stop is not None:
+            worker_to_stop.stop(timeout=stop_timeout)
+
+    register_passive_switch_listener(_set_ambient_worker)
+
+    # Control centre: started early so the interface is already reachable
+    # while Whisper and the models are still loading.
+    from .webui import start_from_settings as _start_webui
+
+    webui_server = _start_webui(cfg)
 
     # MCP preflight: discover and cache external MCP tools
     mcps = getattr(cfg, "mcps", {}) or {}
@@ -861,18 +1091,72 @@ def main(smoke_test: bool = False) -> None:
             "memory",
         )
 
+    vault_worker = None
+    vault_store = None
+    vault_graph_listener = None
+
     # Knowledge graph: wipe + re-seed if the on-disk shape predates the
-    # User/Directives/World taxonomy. Non-destructive to the diary —
-    # users can re-import via the memory viewer.
+    # fixed purpose taxonomy. Non-destructive to the diary —
+    # users can re-import from the control centre's Memory view.
     try:
         from .memory.graph import GraphMemoryStore
         _graph_store_boot = GraphMemoryStore(cfg.db_path)
         if _graph_store_boot.migrate_legacy_shape():
-            print("🧹 Wiped legacy knowledge graph; re-seeded User / Directives / World branches", flush=True)
-            print("   📥 Open the memory viewer and use 'Import from Diary' to repopulate.", flush=True)
+            print("🧹 Wiped legacy knowledge graph; re-seeded User / Directives / School / World branches", flush=True)
+            print("   📥 Open the control centre's Memory view and use 'Import diary' to repopulate.", flush=True)
         _graph_store_boot.close()
     except Exception as e:
         debug_log(f"graph legacy-shape migration failed (non-fatal): {e}", "memory")
+
+    # The vault is a projection, so start-up, planning, and listener failures
+    # stay isolated from graph writes and daemon availability.
+    if (
+        getattr(cfg, "obsidian_vault_path", None)
+        and getattr(cfg, "obsidian_memory_folder", None)
+        and getattr(cfg, "obsidian_write_mode", "off") != "off"
+    ):
+        try:
+            from .memory.graph import GraphMemoryStore, register_graph_mutation_listener
+            from .memory.vault.mirror import VaultMirrorWorker
+
+            vault_store = GraphMemoryStore(cfg.db_path)
+            vault_worker = VaultMirrorWorker(vault_store, cfg)
+            vault_graph_listener = vault_worker.notify_mutation
+            register_graph_mutation_listener(vault_graph_listener)
+            vault_worker.start()
+            print("  🗂️ Obsidian vault mirror ready", flush=True)
+        except Exception as exc:
+            debug_log(f"vault mirror start failed (non-fatal): {exc}", "vault")
+            if vault_store is not None:
+                try:
+                    vault_store.close()
+                except Exception:
+                    pass
+            vault_worker = None
+            vault_store = None
+            vault_graph_listener = None
+
+    def _stop_vault_mirror() -> None:
+        nonlocal vault_worker, vault_store, vault_graph_listener
+        if vault_graph_listener is not None:
+            try:
+                from .memory.graph import unregister_graph_mutation_listener
+                unregister_graph_mutation_listener(vault_graph_listener)
+            except Exception as exc:
+                debug_log(f"vault listener cleanup failed: {exc}", "vault")
+            vault_graph_listener = None
+        if vault_worker is not None:
+            try:
+                vault_worker.stop()
+            except Exception as exc:
+                debug_log(f"vault worker cleanup failed: {exc}", "vault")
+            vault_worker = None
+        if vault_store is not None:
+            try:
+                vault_store.close()
+            except Exception as exc:
+                debug_log(f"vault store cleanup failed: {exc}", "vault")
+            vault_store = None
 
     # Check location detection status
     if cfg.location_enabled:
@@ -881,6 +1165,10 @@ def main(smoke_test: bool = False) -> None:
             auto_detect=cfg.location_auto_detect,
             resolve_cgnat_public_ip=cfg.location_cgnat_resolve_public_ip,
             location_cache_minutes=cfg.location_cache_minutes,
+            manual_city=cfg.location_manual_city,
+            manual_region=cfg.location_manual_region,
+            manual_country=cfg.location_manual_country,
+            manual_timezone=cfg.location_manual_timezone,
         )
         if location_context == "Location: Unknown":
             print("📍 Location detection not available", flush=True)
@@ -899,6 +1187,7 @@ def main(smoke_test: bool = False) -> None:
     # Initialize TTS
     print(f"🔊 Initializing TTS engine ({cfg.tts_engine})...", flush=True)
     tts = create_tts_engine(
+        output_device=cfg.tts_output_device,
         engine=cfg.tts_engine,
         enabled=cfg.tts_enabled,
         voice=cfg.tts_voice,
@@ -915,6 +1204,12 @@ def main(smoke_test: bool = False) -> None:
         piper_noise_scale=cfg.tts_piper_noise_scale,
         piper_noise_w=cfg.tts_piper_noise_w,
         piper_sentence_silence=cfg.tts_piper_sentence_silence,
+        # Kokoro parameters
+        kokoro_voice=cfg.tts_kokoro_voice,
+        kokoro_speed=cfg.tts_kokoro_speed,
+        # Cloud chain parameters
+        cloud_providers=cfg.tts_cloud_providers,
+        local_fallback_engine=cfg.tts_local_fallback_engine,
     )
     _global_tts_engine = tts  # Expose for face widget speaking animation
     if tts.enabled:
@@ -928,7 +1223,59 @@ def main(smoke_test: bool = False) -> None:
     voice_thread: Optional[threading.Thread] = None
     voice_thread = VoiceListener(db, cfg, tts, _global_dialogue_memory)
     voice_thread.start()
+
+    from .memory.morning_briefing import MorningBriefingScheduler
+
+    def _morning_briefing_available() -> bool:
+        if not bool(getattr(tts, "enabled", False)) or tts.is_speaking():
+            return False
+        if runtime_state.phase is not Phase.IDLE or _chat_query_lock.locked():
+            return False
+        if bool(getattr(voice_thread, "is_speech_active", False)):
+            return False
+        state_manager = getattr(voice_thread, "state_manager", None)
+        if state_manager is None:
+            return False
+        return not (
+            state_manager.is_conversation_active
+            or state_manager.is_hot_window_active()
+            or state_manager.is_command_capture_active
+        )
+
+    morning_briefing_scheduler = MorningBriefingScheduler(
+        db,
+        cfg,
+        tts,
+        is_available=_morning_briefing_available,
+    )
+    with ambient_worker_lock:
+        if ambient_worker is not None:
+            ambient_worker.set_morning_briefing(morning_briefing_scheduler)
+    _set_ambient_worker(passive_capture_enabled())
+    from .security.voice_confirm import set_voice_confirmation_requester
+    set_voice_confirmation_requester(
+        voice_thread.request_security_confirmation if tts.enabled else None
+    )
     print("✓ Voice listener thread started (loading Whisper model in background)", flush=True)
+    set_phase(Phase.IDLE)
+
+    # Telegram as a conversation channel. The router polls for confirmations
+    # on its own whenever one is raised; a handler is what turns incoming
+    # messages into turns, so registering it is what switches chat on.
+    telegram_router = None
+    if bool(getattr(cfg, "telegram_chat_enabled", False)):
+        from .telegram.chat import TelegramChat
+        from .telegram.router import get_router
+
+        telegram_router = get_router(cfg)
+        if telegram_router.is_available:
+            chat_channel = TelegramChat(telegram_router, cfg.telegram_chat_id)
+            telegram_router.set_message_handler(chat_channel.handle_message)
+            telegram_router.start()
+            print("✓ Telegram conversation channel listening", flush=True)
+        else:
+            telegram_router = None
+            print("  Telegram chat enabled but no bot token or chat ID is set", flush=True)
 
     # Initialize dictation engine (hold-to-dictate)
     dictation = None
@@ -1009,6 +1356,15 @@ def main(smoke_test: bool = False) -> None:
                 voice_thread.join(timeout=2.0)
             except Exception:
                 pass
+        set_voice_confirmation_requester(None)
+
+        unregister_passive_switch_listener(_set_ambient_worker)
+        _set_ambient_worker(
+            False,
+            stop_timeout=SHUTDOWN_DIARY_TIMEOUT_SEC,
+            shutdown=True,
+        )
+        passive_retention_worker.stop()
 
         if tts is not None:
             try:
@@ -1022,6 +1378,7 @@ def main(smoke_test: bool = False) -> None:
         except Exception:
             pass
 
+        _stop_vault_mirror()
         db.close()
 
         if _warm_profile_graph_listener is not None:
@@ -1031,6 +1388,9 @@ def main(smoke_test: bool = False) -> None:
             except Exception:
                 pass
             _warm_profile_graph_listener = None
+
+        if webui_server is not None:
+            webui_server.stop()
 
         # Reset module-level globals so in-process re-entry is clean.
         _global_dialogue_memory = None
@@ -1043,55 +1403,22 @@ def main(smoke_test: bool = False) -> None:
     last_diary_check = time.time()
     diary_check_interval = 60.0
 
-    # Start stdin monitor thread.
-    # Two jobs:
-    #   1. Windows shutdown signal: CTRL_BREAK_EVENT doesn't work reliably with
-    #      CREATE_NO_WINDOW, so we treat stdin EOF / a bare "SHUTDOWN" line as a
-    #      stop request (unchanged behaviour).
-    #   2. Subprocess chat query-in: the desktop app writes
-    #      ``__CHAT_QUERY__:{"text":"..."}`` lines so the chat window can submit
-    #      text when the daemon runs as a separate process. Non-chat lines are
-    #      ignored so the monitor is a no-op for users who never open the chat.
-    def stdin_monitor():
-        try:
-            # When parent closes our stdin, readline returns empty
-            while True:
-                line = sys.stdin.readline()
-                if not line:  # EOF - stdin closed
-                    debug_log("stdin closed, requesting stop", "jarvis")
-                    request_stop()
-                    break
-                stripped = line.strip()
-                if stripped == "SHUTDOWN":
-                    debug_log("SHUTDOWN command received, requesting stop", "jarvis")
-                    request_stop()
-                    break
-                # Chat query-in (subprocess mode). Returns False for any other
-                # line, which we silently ignore.
-                if handle_chat_cancel_stdin_line(stripped):
-                    continue
-                if handle_chat_new_session_stdin_line(stripped):
-                    continue
-                if handle_chat_rewind_stdin_line(stripped):
-                    continue
-                if handle_chat_restore_stdin_line(stripped):
-                    continue
-                if stripped.startswith(CHAT_QUERY_IPC_PREFIX):
-                    handle_chat_query_stdin_line(stripped)
-        except Exception:
-            pass  # stdin might not be available
+    # Start the stdin monitor thread (module-level ``stdin_monitor``, see
+    # its docstring for what it feeds: Windows shutdown signalling and the
+    # desktop app's subprocess chat IPC).
 
     # Run the monitor on Windows (shutdown signal) and whenever the desktop
-    # app explicitly signals it owns our stdin (subprocess chat query-in on
-    # any platform). The desktop app sets JARVIS_STDIN_IPC=1 when spawning us
-    # so that a bare ``python -m jarvis.main < /dev/null`` (or a systemd unit
-    # with StandardInput=null) does NOT start the monitor and immediately exit
-    # on EOF. Bundled mode uses a QThread, not a subprocess, so it's skipped.
+    # app explicitly signals it owns our stdin (subprocess chat query-in and
+    # security confirmations on any platform). The desktop app sets
+    # JARVIS_STDIN_IPC=1 when spawning us so that a bare
+    # ``python -m jarvis.main < /dev/null`` (or a systemd unit with
+    # StandardInput=null) does NOT start the monitor and immediately exit on
+    # EOF. Bundled mode uses a QThread, not a subprocess, so it's skipped.
     _start_stdin_monitor = (
-        (sys.platform == "win32" and not getattr(sys, 'frozen', False))
-        or (
-            not getattr(sys, 'frozen', False)
-            and os.environ.get("JARVIS_STDIN_IPC") == "1"
+        not getattr(sys, 'frozen', False)
+        and (
+            sys.platform == "win32"
+            or os.environ.get("JARVIS_STDIN_IPC") == "1"
         )
     )
     if _start_stdin_monitor:
@@ -1120,6 +1447,23 @@ def main(smoke_test: bool = False) -> None:
     finally:
         print("🔄 Daemon shutting down - saving memory...", flush=True)
         debug_log("daemon finally block starting - performing cleanup", "jarvis")
+        from .security.voice_confirm import set_voice_confirmation_requester
+        set_voice_confirmation_requester(None)
+        unregister_passive_switch_listener(_set_ambient_worker)
+        _set_ambient_worker(
+            False,
+            stop_timeout=SHUTDOWN_DIARY_TIMEOUT_SEC,
+            shutdown=True,
+        )
+        passive_retention_worker.stop()
+
+        if telegram_router is not None:
+            debug_log("stopping telegram router...", "jarvis")
+            # Drop the handler first so a message arriving mid-shutdown cannot
+            # start a turn against a database that is about to close.
+            telegram_router.set_message_handler(None)
+            telegram_router.stop()
+            debug_log("telegram router stopped", "jarvis")
 
         # Clean shutdown - stop dictation first
         if dictation is not None:
@@ -1174,6 +1518,12 @@ def main(smoke_test: bool = False) -> None:
         except Exception as _e:
             debug_log(f"MCP runtime shutdown error: {_e}", "jarvis")
 
+        try:
+            get_llm_runtime().shutdown()
+        except Exception as _e:
+            debug_log(f"LLM runtime shutdown error: {type(_e).__name__}", "jarvis")
+
+        _stop_vault_mirror()
         db.close()
 
         # Drop the warm-profile graph listener so the module registry does
@@ -1187,6 +1537,9 @@ def main(smoke_test: bool = False) -> None:
             except Exception:
                 pass
             _warm_profile_graph_listener = None
+
+        if webui_server is not None:
+            webui_server.stop()
 
         debug_log("daemon stopped", "jarvis")
         print("👋 Daemon stopped", flush=True)

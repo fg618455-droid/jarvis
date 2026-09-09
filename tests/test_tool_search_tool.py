@@ -8,7 +8,7 @@ from jarvis.tools.builtin.tool_search import ToolSearchTool
 from jarvis.tools.base import ToolContext
 
 
-def _ctx(cfg):
+def _ctx(cfg, deadline=None):
     return ToolContext(
         db=None,
         cfg=cfg,
@@ -18,6 +18,7 @@ def _ctx(cfg):
         max_retries=0,
         user_print=lambda _m: None,
         language=None,
+        deadline=deadline,
     )
 
 
@@ -67,3 +68,42 @@ class TestToolSearchTool:
             result = tool.run({"query": "x"}, _ctx(mock_config))
         assert result.success is False
         assert "router down" in (result.error_message or "")
+
+    def test_bounds_llm_and_embed_timeouts_to_the_remaining_reply_deadline(
+        self, mock_config,
+    ):
+        """A hung router or embedding call inside toolSearchTool must not
+        outlive the reply turn just because llm_tools_timeout_sec /
+        llm_embedding_timeout_sec are configured far larger (300s / 10s+)
+        than what's actually left of the turn."""
+        from jarvis.llm.route import RequestDeadline
+
+        mock_config.llm_tools_timeout_sec = 300.0
+        mock_config.llm_embedding_timeout_sec = 300.0
+        deadline = RequestDeadline.after(2.0)
+
+        tool = ToolSearchTool()
+        with patch(
+            "jarvis.tools.builtin.tool_search.select_tools",
+            return_value=["webSearch"],
+        ) as mock_sel:
+            tool.run({"query": "x"}, _ctx(mock_config, deadline=deadline))
+
+        _, kwargs = mock_sel.call_args
+        assert 0 < kwargs["llm_timeout_sec"] <= 2.0
+        assert 0 < kwargs["embed_timeout_sec"] <= 2.0
+
+    def test_no_deadline_leaves_configured_timeouts_untouched(self, mock_config):
+        mock_config.llm_tools_timeout_sec = 42.0
+        mock_config.llm_embedding_timeout_sec = 17.0
+
+        tool = ToolSearchTool()
+        with patch(
+            "jarvis.tools.builtin.tool_search.select_tools",
+            return_value=["webSearch"],
+        ) as mock_sel:
+            tool.run({"query": "x"}, _ctx(mock_config))
+
+        _, kwargs = mock_sel.call_args
+        assert kwargs["llm_timeout_sec"] == 42.0
+        assert kwargs["embed_timeout_sec"] == 17.0
