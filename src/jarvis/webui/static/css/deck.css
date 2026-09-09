@@ -1,0 +1,626 @@
+/* The deck: the face, the widgets around it, and the panel that opens beside.
+
+   One page rather than twelve. The face is the centre of the interface and
+   stays put; a reading is a widget in a rail either side of it; a detail
+   that needs room slides in over the right rail rather than replacing the
+   page, so nothing you open ever costs you sight of the assistant.
+
+   The whole thing is sized against the window, not flowed down it. Only two
+   regions scroll: a rail, and the body of an open panel. A deck that grew
+   past the bottom of the screen would put the face somewhere you have to
+   scroll back to, which is the one thing this layout exists to prevent. */
+
+.deck {
+  height: calc(100vh - var(--header));
+  display: grid;
+  grid-template-columns: var(--rail) minmax(0, 1fr) var(--rail);
+  gap: var(--s4);
+  padding: var(--s4);
+  position: relative;
+  /* Fades in without moving. The shared `appear` lifts what it reveals by a
+     few pixels, which is right for something inside a scroll region and
+     wrong for this: the deck is exactly the window minus the header, so
+     nudging it down puts its own bottom past the bottom of the screen and
+     the page grows a scrollbar for as long as the animation runs. */
+  animation: deck-appear var(--t-view);
+}
+
+@keyframes deck-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ── Rails ───────────────────────────────────────────────────────────── */
+
+/* A rail distributes into the height it is given rather than stacking at the
+   top of it. Sized against the window and packed from the top, the rails left
+   the bottom two thirds of the deck empty and the whole page read as
+   top-weighted with a hole underneath. Every card taking an equal share is a
+   scale rather than a gap someone left, and it gives the readings inside them
+   room to be set at a size worth reading. */
+.deck-rail {
+  display: grid;
+  gap: var(--s3);
+  align-content: stretch;
+  grid-auto-rows: 1fr;
+  overflow-y: auto;
+  min-height: 0;
+  /* The scrollbar sits outside the cards rather than over them. */
+  padding-right: var(--s1);
+}
+
+/* The right rail is the last exchange over the readings underneath it, and
+   the exchange takes its own height whether or not there has been a turn.
+   It is three lines that do not wrap, so it is the same three lines tall
+   either way: given a share of the rail it would be a tall box holding one
+   line of text, which is the hole this rail was packed to close with a
+   border drawn round it. The readings take the whole slack instead, and
+   because the exchange never changes size the rail never rearranges itself
+   the first time anyone speaks. */
+.deck-rail-right {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+/* The readings at the foot of the rail: too small to deserve a card each,
+   too different to merge into one. They take the room the exchange does not,
+   in an equal share each, exactly as the cards opposite do — and in one
+   column, because five shares of a rail is a card's worth of height apiece
+   and two columns of that is a grid of boxes rather than a rail of
+   readings. */
+.widget-tiles {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-auto-rows: 1fr;
+  gap: var(--s2);
+  align-content: stretch;
+  min-height: 0;
+}
+
+/* ── Widgets ─────────────────────────────────────────────────────────── */
+
+/* A card is a step up off the page rather than a box drawn on it. Elevation
+   in a dark interface comes from a lighter surface; the hairline is there to
+   stop two adjacent cards merging, which is a smaller job than the one a
+   full-contrast border was doing. */
+.widget {
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  padding: var(--s3) var(--s4);
+  display: grid;
+  gap: var(--s2);
+  align-content: center;
+  min-width: 0;
+  min-height: 0;
+  transition: border-color var(--t-fast);
+}
+
+.widget:hover {
+  border-color: var(--accent-line);
+}
+
+.widget-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+/* A chip is sized by its word. As a grid item in a widget it would otherwise
+   stretch the full width of the rail, where a bordered box spanning the card
+   reads as an empty input rather than as one short status. */
+.widget .chip {
+  justify-self: start;
+}
+
+/* Where a widget carries more than one status: two facts that are true at
+   different times, side by side rather than merged into one colour. They wrap
+   rather than shrink, because a chip narrower than its word is a chip that
+   says something else. */
+.widget-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.widget-title {
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-head .widget-icon {
+  color: var(--fg-mute);
+  flex: none;
+}
+
+/* The way into the detail. It carries the widget's name in its accessible
+   label rather than only an arrow, because "open" repeated eleven times
+   down a rail tells a screen-reader user nothing about where they are
+   going. */
+.widget-open {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--fg-mute);
+  cursor: pointer;
+  font: inherit;
+  transition: background var(--t-fast), color var(--t-fast),
+    border-color var(--t-fast);
+}
+
+.widget-open:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.widget-body {
+  display: grid;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.widget-reading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.widget-reading .num {
+  font-size: var(--fs-xl);
+  line-height: 1.1;
+  color: var(--fg);
+}
+
+.widget-reading .unit {
+  font-size: var(--fs-xs);
+  color: var(--fg-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-note {
+  font-size: var(--fs-xs);
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A tile is a widget with the volume turned down: one number, one name, and
+   the whole card is the way in. */
+.widget-tile {
+  padding: var(--s2) var(--s3);
+  gap: var(--s0);
+}
+
+/* Tracking that is generous on a full-width heading spends most of a tile's
+   row on the gaps between letters, so a tile drops it and keeps the letters
+   instead. Its head spends less between its parts for the same reason: below
+   1240px the tiles lay out across the deck and a row of five leaves each one
+   about a fifth of a window for a name. */
+.widget-tile .widget-head {
+  gap: var(--s1);
+}
+
+.widget-tile .widget-title {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+/* The arrow is the whole point of a tile being clickable, but at this size
+   it costs a third of the row. The tile itself opens, so it can go. */
+.widget-tile .widget-open {
+  width: 16px;
+  height: 16px;
+}
+
+.widget-tile .widget-reading .num {
+  font-size: var(--fs-lg);
+}
+
+/* ── The face ────────────────────────────────────────────────────────── */
+
+/* Two bands: the face in the room above, the dock standing on the floor. The
+   stage used to centre everything together and leave two hundred pixels of
+   dead air under the dock, which read as the page having stopped early. */
+.face-stage {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  padding: var(--s5);
+  border-radius: var(--r);
+  /* The page falls away behind the face, so the centre reads as depth
+     rather than as another card. No border: this is the room the deck is in
+     rather than a fourth card sitting between two rails. */
+  background:
+    radial-gradient(circle at 50% 42%, var(--face-aura) 0%, transparent 62%),
+    var(--bg-deep);
+  overflow: hidden;
+}
+
+.face-portrait {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: var(--s4);
+  min-height: 0;
+}
+
+/* The shell owns how large the face is, and the canvas simply fills it. The
+   geometry has to live on something other than the canvas: `face.js` sets the
+   canvas's width and height attributes to match the device pixels, and an
+   attribute change on an element whose CSS height is derived from its own
+   aspect ratio feeds straight back into layout. */
+.face-shell {
+  position: relative;
+  /* The preference, capped by the room there actually is, so a narrow centre
+     column shrinks the face rather than clipping it. */
+  width: min(var(--face-size), 100%);
+  aspect-ratio: 1;
+  flex: none;
+}
+
+/* The face is drawn here rather than framed from somewhere else, so the ring,
+   the aura and the disc are one drawing made in one place instead of a
+   stylesheet decorating a foreign rectangle. Everything the eye reads as the
+   face is painted in `face.js`; all this rule owns is how large it is. */
+/* `face.js` draws at whatever width this settles on rather than at the number
+   it was asked for, so the drawing is never made larger than the room it has. */
+.face-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.face-name {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--fg);
+  text-align: center;
+  padding-left: 0.34em;
+}
+
+.face-state {
+  min-height: 1.4em;
+}
+
+/* ── Speaking to it ──────────────────────────────────────────────────── */
+
+/* The dock sits under the face the way a composer sits under a
+   conversation: the thing you type into is beneath the thing you are
+   talking to. A rule separates it from the face rather than a fourth
+   bordered box: the two belong to the same stage, and the line says where
+   one ends without proposing that the other is a card. */
+.face-dock {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: min(560px, 100%);
+  justify-self: center;
+  margin-top: var(--s4);
+  padding-top: var(--s4);
+  border-top: 1px solid var(--line-soft);
+}
+
+.face-dock input[type="text"] {
+  background: var(--surface-inset);
+  border-radius: var(--r-pill);
+  padding: var(--s2) var(--s4);
+}
+
+.face-dock .dock-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--fg-dim);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast),
+    border-color var(--t-fast);
+}
+
+.face-dock .dock-button:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.face-dock .dock-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.face-dock .dock-button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* ── Dressing the face ───────────────────────────────────────────────── */
+
+.face-settings-open {
+  position: absolute;
+  top: var(--s3);
+  right: var(--s3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--fg-mute);
+  cursor: pointer;
+  transition: color var(--t-fast), border-color var(--t-fast);
+}
+
+.face-settings-open:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* The face's own controls, kept next to the face rather than in Settings.
+   How the assistant looks while it is talking to you is a different kind of
+   decision from which port the daemon binds, and it is made while looking
+   at the thing it changes. */
+.face-settings {
+  position: absolute;
+  top: calc(var(--s3) + 34px);
+  right: var(--s3);
+  z-index: 5;
+  width: 232px;
+  display: grid;
+  gap: var(--s3);
+  padding: var(--s3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+}
+
+.face-settings[hidden] {
+  display: none;
+}
+
+.face-settings label {
+  display: grid;
+  gap: var(--s1);
+  font-size: var(--fs-xs);
+  color: var(--fg-mute);
+}
+
+.face-settings input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+/* ── The panel ───────────────────────────────────────────────────────── */
+
+/* A detail opens beside the face rather than instead of it. It takes the
+   right of the deck, over the rail rather than pushing it, so opening one
+   never reflows the widgets you were reading. */
+.panel {
+  position: absolute;
+  top: var(--s4);
+  right: var(--s4);
+  bottom: var(--s4);
+  width: var(--panel);
+  max-width: calc(100% - var(--s4) * 2);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+  animation: panel-in var(--t-view);
+}
+
+@keyframes panel-in {
+  from { opacity: 0; transform: translateX(12px); }
+  to { opacity: 1; transform: none; }
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.panel-head h1 {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-close {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--fg-dim);
+  cursor: pointer;
+  transition: color var(--t-fast), border-color var(--t-fast);
+}
+
+.panel-close:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* The panel body is the one region on the deck that scrolls a view, and the
+   width it hands the view is a third of the window. It is a query container
+   so the view mounted inside it is measured against this box: the same
+   module reads as a page at its own address and as a column here, and picks
+   which of the two it is from the room it is given rather than from how wide
+   the screen happens to be. */
+.panel-body {
+  container: view / inline-size;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s4);
+}
+
+/* Inside a panel a view is a column rather than a page: it has no width to
+   centre itself in and nothing to hold back. */
+.panel-body > .view {
+  max-width: none;
+  margin: 0;
+  gap: var(--s3);
+}
+
+/* The panel already carries the name in its head, so the view's own title
+   would be the same word twice, one line apart. Its lead and its actions
+   stay: those are the view's, not the panel's. */
+.panel-body .view-head h1 {
+  display: none;
+}
+
+/* The conversation scrolls its own exchange and keeps its composer in
+   place. Left to the panel's scrollbar it would have two scrollers, so
+   every gesture would have two possible answers and the composer would
+   slide out of reach: the exact fault the view was built to avoid. The
+   panel therefore stops scrolling and hands the whole height over. */
+.panel-body-conversation {
+  overflow: hidden;
+}
+
+.panel-body-conversation > .view-conversation {
+  height: 100%;
+}
+
+/* ── Settings as its own place ───────────────────────────────────────── */
+
+.settings-back {
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--fg-dim);
+  cursor: pointer;
+  transition: color var(--t-fast), border-color var(--t-fast);
+}
+
+.settings-back:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* ── Narrower windows ────────────────────────────────────────────────── */
+
+/* One rail's worth of room less: the operations tiles fold under the face
+   and the deck becomes two columns rather than three. */
+@media (max-width: 1240px) {
+  .deck {
+    /* Folding the right rail under adds a row the fixed, viewport-height
+       layout above was never sized for; without this, a short window
+       clips or overlaps whatever falls past the bottom edge instead of
+       reflowing to it, exactly the failure the arrangement below 900px
+       already avoids. */
+    height: auto;
+    min-height: calc(100vh - var(--header));
+    grid-template-columns: var(--rail) minmax(0, 1fr);
+  }
+
+  /* Folded under the deck and laid out across it, rather than scrolled
+     sideways. A horizontal scroller puts readings behind a gesture nobody
+     makes on a desktop, and there is enough width here to show all of them
+     at once. */
+  .deck-rail-right {
+    grid-column: 1 / -1;
+    grid-template-rows: auto auto;
+    align-content: start;
+    overflow: visible;
+  }
+
+  /* One column is the right answer in a 320px rail, where it is a rail of
+     readings, and the wrong one across a whole window, where it makes five
+     readings into five full-width bands. Folded out here they are a row and
+     take their own height: there is no rail left for them to share. */
+  .widget-tiles {
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    grid-auto-rows: auto;
+    align-content: start;
+  }
+}
+
+/* Below this the deck stops being a deck: the face keeps its place at the
+   top and everything else reads as one column under it, which is the only
+   arrangement that does not shrink a reading past legibility. */
+@media (max-width: 900px) {
+  .deck {
+    height: auto;
+    min-height: calc(100vh - var(--header));
+    grid-template-columns: 1fr;
+  }
+
+  .deck-rail,
+  .deck-rail-right {
+    grid-column: auto;
+    grid-auto-flow: row;
+    overflow: visible;
+  }
+
+  .face-stage {
+    order: -1;
+    padding: var(--s5) 0;
+  }
+
+  .panel {
+    position: fixed;
+    top: var(--header);
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    max-width: none;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+  }
+}

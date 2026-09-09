@@ -60,13 +60,13 @@ class TestOllamaRuntimeFlags:
     def test_default_ollama_needs_everything(self):
         needed, chat_on_ollama = self._flags(llm_provider="ollama", embedding_provider="")
         assert needed is True
-        assert chat_on_ollama is True
+        assert chat_on_ollama is False
 
     def test_pure_openai_compatible_skips_ollama(self):
         """Chat and embeddings both remote: no local server, no model checks."""
         needed, chat_on_ollama = self._flags(
             llm_provider="openai_compatible", embedding_provider="")
-        assert needed is False
+        assert needed is True
         assert chat_on_ollama is False
 
     def test_openai_chat_with_ollama_embeddings_still_needs_server(self):
@@ -82,7 +82,7 @@ class TestOllamaRuntimeFlags:
         needed, chat_on_ollama = self._flags(
             llm_provider="ollama", embedding_provider="openai_compatible")
         assert needed is True
-        assert chat_on_ollama is True
+        assert chat_on_ollama is False
 
     def test_missing_attrs_default_to_ollama(self):
         """A cfg-like object without provider attrs defaults to the Ollama
@@ -91,7 +91,7 @@ class TestOllamaRuntimeFlags:
         from desktop_app.app import _ollama_runtime_flags
         needed, chat_on_ollama = _ollama_runtime_flags(SimpleNamespace())
         assert needed is True
-        assert chat_on_ollama is True
+        assert chat_on_ollama is False
 
 
 class TestOpenAICompatStartupCheck:
@@ -1337,61 +1337,60 @@ class TestCudaRecoveryAction:
         assert "-LogPath" in captured["params"]
 
 
-class TestMemoryViewerModulePath:
-    """Tests to verify memory viewer module references are valid.
+class TestControlCentreWindow:
+    """The window shows the control centre the daemon serves, or serves one.
 
-    These tests catch issues like wrong module paths in subprocess calls
-    without requiring actual GUI/server components.
+    These check the wiring without a GUI: a window that cannot find a URL
+    would open on an error page, which is the failure this catches.
     """
 
-    def test_memory_viewer_module_is_importable(self):
-        """The module used for subprocess mode should be importable."""
-        import importlib
+    def test_the_window_serves_the_configured_port(self, tmp_path, monkeypatch):
+        import json
 
-        pytest.importorskip("flask")
+        from jarvis.webui import WebUIMode, WebUIServer
 
-        # This is the module path used in MemoryViewerWindow.start_server()
-        # If this fails, the subprocess command will fail at runtime
-        module = importlib.import_module("desktop_app.memory_viewer")
-        assert hasattr(module, "app"), "memory_viewer should have Flask 'app' attribute"
-        assert hasattr(module, "main"), "memory_viewer should have 'main' function"
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({"webui_port": 5199}), encoding="utf-8")
+        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
 
-    def test_memory_viewer_subprocess_module_runs(self):
-        """The module should be runnable with python -m (with correct PYTHONPATH)."""
-        pytest.importorskip("flask")
+        from desktop_app.app import ControlCentreWindow
 
-        # Set PYTHONPATH the same way start_server() does
-        src_path = Path(__file__).parent.parent / "src"
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(src_path)
+        window = ControlCentreWindow.__new__(ControlCentreWindow)
+        window._server = None
+        window._url = None
+        try:
+            assert window.start_server() is True
+            assert window._url.endswith(":5199")
+            assert isinstance(window._server, WebUIServer)
+            assert window._server.cfg.mode is WebUIMode.STANDALONE
+        finally:
+            window.stop_server()
 
-        # Test that the module can at least be imported in subprocess
-        result = subprocess.run(
-            [sys.executable, "-c", "import desktop_app.memory_viewer"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env=env,
-        )
-        assert result.returncode == 0, f"Module import failed: {result.stderr}"
+    def test_an_already_served_control_centre_is_reused(self, tmp_path, monkeypatch):
+        import json
 
-    def test_memory_viewer_module_path_matches_code(self):
-        """Verify the module path in start_server matches the actual location."""
-        import re
-        from pathlib import Path
+        from jarvis.webui import WebUIConfig, WebUIServer
 
-        # Read the actual code to find the module path used
-        app_py = Path(__file__).parent.parent / "src" / "desktop_app" / "app.py"
-        content = app_py.read_text(encoding="utf-8")
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({"webui_port": 5198}), encoding="utf-8")
+        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(config_path))
 
-        # Find the subprocess module path
-        match = re.search(r'"-m",\s*"([^"]+)"', content)
-        assert match, "Could not find subprocess module path in app.py"
+        running = WebUIServer(WebUIConfig(host="127.0.0.1", port=5198, token=""))
+        running.start()
 
-        module_path = match.group(1)
-        assert module_path == "desktop_app.memory_viewer", (
-            f"Module path should be 'desktop_app.memory_viewer', found '{module_path}'"
-        )
+        from desktop_app.app import ControlCentreWindow
+
+        window = ControlCentreWindow.__new__(ControlCentreWindow)
+        window._server = None
+        window._url = None
+        try:
+            assert window.start_server() is True
+            # Nothing new was started: the daemon's instance holds live state.
+            assert window._server is None
+            assert window._url == "http://127.0.0.1:5198"
+        finally:
+            window.stop_server()
+            running.stop()
 
 
 class TestDaemonSmokeTest:
@@ -1502,6 +1501,52 @@ class TestDaemonSmokeTest:
             assert "✓ Daemon started" in output, (
                 f"Expected normal startup output, got:\n{output}"
             )
+
+
+class TestDaemonRestart:
+    """main() loops in place when a restart is requested mid-generation."""
+
+    def test_main_runs_a_single_generation_when_no_restart_is_requested(self):
+        from unittest.mock import patch
+
+        import jarvis.daemon as daemon_mod
+
+        with patch.object(daemon_mod, "_run_daemon_generation") as mock_generation:
+            daemon_mod.main(smoke_test=True)
+
+        mock_generation.assert_called_once_with(smoke_test=True)
+        assert daemon_mod._global_restart_requested is False
+
+    def test_main_starts_another_generation_after_a_requested_restart(self):
+        from unittest.mock import patch
+
+        import jarvis.daemon as daemon_mod
+
+        calls = []
+
+        def fake_generation(smoke_test=False):
+            calls.append(smoke_test)
+            if len(calls) == 1:
+                daemon_mod._global_restart_requested = True
+
+        with patch.object(daemon_mod, "_run_daemon_generation", side_effect=fake_generation):
+            daemon_mod.main()
+
+        assert len(calls) == 2
+        assert daemon_mod._global_restart_requested is False
+
+    def test_request_restart_sets_both_the_restart_and_stop_flags(self):
+        import jarvis.daemon as daemon_mod
+
+        daemon_mod._global_stop_requested = False
+        daemon_mod._global_restart_requested = False
+        try:
+            daemon_mod.request_restart()
+            assert daemon_mod._global_restart_requested is True
+            assert daemon_mod.is_stop_requested() is True
+        finally:
+            daemon_mod._global_stop_requested = False
+            daemon_mod._global_restart_requested = False
 
 
 class TestDesktopSmokeTest:
@@ -1686,3 +1731,233 @@ class TestTrayMenuLayout:
         assert not any(a.isSeparator() for a in between), (
             "Start/Stop Listening and the Status line must share one menu section"
         )
+
+class TestListeningWindowVisibility:
+    """Starting or stopping the assistant must never change the visibility
+    of the log viewer or the face window.
+
+    The windows open automatically once at app launch; after that the tray
+    menu's "View Logs" / "Show Face" actions are the only controls:
+    start_daemon must not force them open and stop_daemon must not hide
+    them (even when the diary dialog appears).
+    """
+
+    def _tray_for_start(self, monkeypatch):
+        import desktop_app.app as app_mod
+
+        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray.is_bundled = False
+        tray.daemon_process = None
+        tray.daemon_thread = None
+        tray.is_listening = False
+        tray.log_viewer = MagicMock()
+        tray.face_window = MagicMock()
+        tray.memory_viewer = MagicMock()
+        tray.chat_window = None
+        tray._chat_submit_fn = None
+        tray._chat_cancel_fn = None
+        tray._chat_control_fn = None
+        tray.log_reader_threads = []
+        tray.log_signals = MagicMock()
+        tray.tray_icon = MagicMock()
+        tray.toggle_action = MagicMock()
+        tray.status_action = MagicMock()
+        tray.app = MagicMock()
+        tray.update_icon = MagicMock()
+        tray._set_chat_daemon_status = MagicMock()
+        tray._daemon_stop_expected = False
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 4242
+        fake_proc.stdout = MagicMock()
+        fake_proc.stdin = MagicMock()
+        monkeypatch.setattr(
+            app_mod.subprocess, "Popen", MagicMock(return_value=fake_proc)
+        )
+        # No real reader thread in a unit test.
+        monkeypatch.setattr(app_mod.threading, "Thread", MagicMock())
+        return tray
+
+    def test_start_daemon_does_not_show_log_viewer(self, qapp, monkeypatch):
+        tray = self._tray_for_start(monkeypatch)
+        tray.start_daemon()
+        assert tray.is_listening is True
+        tray.log_viewer.show.assert_not_called()
+        tray.log_viewer.raise_.assert_not_called()
+        tray.log_viewer.activateWindow.assert_not_called()
+
+    def test_start_daemon_does_not_show_face_window(self, qapp, monkeypatch):
+        tray = self._tray_for_start(monkeypatch)
+        tray.start_daemon()
+        assert tray.is_listening is True
+        tray.face_window.show.assert_not_called()
+        tray.face_window.raise_.assert_not_called()
+
+    def _tray_for_stop_bundled(self, monkeypatch):
+        import desktop_app.app as app_mod
+
+        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray.is_bundled = True
+        tray.is_listening = True
+        tray.daemon_process = None
+        tray.daemon_thread = MagicMock()
+        tray.daemon_thread.isFinished.return_value = True
+        tray.log_viewer = MagicMock()
+        tray.face_window = MagicMock()
+        tray.log_signals = MagicMock()
+        tray.tray_icon = MagicMock()
+        tray.toggle_action = MagicMock()
+        tray.status_action = MagicMock()
+        tray.app = MagicMock()
+        tray.update_icon = MagicMock()
+        tray._set_chat_daemon_status = MagicMock()
+        tray._daemon_stop_expected = False
+        tray.chat_window = None
+        tray._chat_submit_fn = None
+
+        fake_dialog = MagicMock()
+        monkeypatch.setattr(app_mod, "DiaryUpdateDialog", MagicMock(return_value=fake_dialog))
+        monkeypatch.setattr("jarvis.daemon.set_diary_update_callbacks", MagicMock())
+        monkeypatch.setattr("jarvis.daemon.request_stop", MagicMock())
+        monkeypatch.setattr(app_mod.time, "sleep", MagicMock())
+        return tray, fake_dialog
+
+    def test_stop_daemon_bundled_does_not_hide_windows(self, qapp, monkeypatch):
+        tray, fake_dialog = self._tray_for_stop_bundled(monkeypatch)
+        tray.stop_daemon(show_diary_dialog=True)
+        assert tray.is_listening is False
+        # The diary dialog still appears...
+        fake_dialog.show.assert_called_once()
+        # ...but the log/face windows keep their current visibility.
+        tray.face_window.hide.assert_not_called()
+        tray.log_viewer.hide.assert_not_called()
+
+    def _tray_for_stop_subprocess(self, monkeypatch):
+        import desktop_app.app as app_mod
+
+        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray.is_bundled = False
+        tray.is_listening = True
+        tray.daemon_thread = None
+        tray.log_viewer = MagicMock()
+        tray.face_window = MagicMock()
+        tray.log_signals = MagicMock()
+        tray.tray_icon = MagicMock()
+        tray.toggle_action = MagicMock()
+        tray.status_action = MagicMock()
+        tray.app = MagicMock()
+        tray.update_icon = MagicMock()
+        tray._set_chat_daemon_status = MagicMock()
+        tray._daemon_stop_expected = False
+        tray._chat_submit_fn = lambda text: None
+
+        fake_proc = MagicMock()
+        fake_proc.poll.return_value = 0  # process already exited
+        fake_proc.stdin = MagicMock()
+        tray.daemon_process = fake_proc
+
+        fake_dialog = MagicMock()
+        monkeypatch.setattr(app_mod, "DiaryUpdateDialog", MagicMock(return_value=fake_dialog))
+        monkeypatch.setattr(app_mod.time, "sleep", MagicMock())
+        return tray, fake_dialog
+
+    def _patch_face_state(self, monkeypatch):
+        """Monkeypatch get_jarvis_state with a mock state manager.
+
+        The face reset goes through the module-level singleton factory
+        (not the tray's face_window widget), so tests assert on the state
+        manager that factory returns.
+        """
+        import desktop_app.face_widget as face_widget_mod
+        from desktop_app.face_widget import JarvisState
+
+        fake_state = MagicMock()
+        monkeypatch.setattr(
+            face_widget_mod,
+            "get_jarvis_state",
+            MagicMock(return_value=fake_state),
+        )
+        return fake_state, JarvisState
+
+    def test_stop_daemon_bundled_puts_face_asleep(self, qapp, monkeypatch):
+        """Stopping via the tray toggle puts the face back to sleep (bundled)."""
+        tray, fake_dialog = self._tray_for_stop_bundled(monkeypatch)
+        fake_state, JarvisState = self._patch_face_state(monkeypatch)
+        tray.stop_daemon(show_diary_dialog=True)
+        assert tray.is_listening is False
+        fake_state.set_state.assert_called_once_with(JarvisState.ASLEEP)
+
+    def test_stop_daemon_subprocess_puts_face_asleep(self, qapp, monkeypatch):
+        """Stopping via the tray toggle puts the face back to sleep (subprocess)."""
+        tray, fake_dialog = self._tray_for_stop_subprocess(monkeypatch)
+        fake_state, JarvisState = self._patch_face_state(monkeypatch)
+        tray.stop_daemon(show_diary_dialog=True)
+        assert tray.is_listening is False
+        fake_state.set_state.assert_called_once_with(JarvisState.ASLEEP)
+
+    def test_check_daemon_status_subprocess_crash_puts_face_asleep(self, qapp, monkeypatch):
+        """An unexpected subprocess exit also puts the face back to sleep."""
+        import desktop_app.app as app_mod
+
+        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray.is_bundled = False
+        tray.is_listening = True
+        tray.daemon_thread = None
+        fake_proc = MagicMock()
+        fake_proc.poll.return_value = 1  # process exited with an error
+        tray.daemon_process = fake_proc
+        tray.log_viewer = MagicMock()
+        tray.face_window = MagicMock()
+        tray.log_signals = MagicMock()
+        tray.tray_icon = MagicMock()
+        tray.toggle_action = MagicMock()
+        tray.status_action = MagicMock()
+        tray.update_icon = MagicMock()
+        tray._set_chat_daemon_status = MagicMock()
+        tray._chat_submit_fn = lambda text: None
+
+        fake_state, JarvisState = self._patch_face_state(monkeypatch)
+        tray.check_daemon_status()
+        assert tray.is_listening is False
+        fake_state.set_state.assert_called_once_with(JarvisState.ASLEEP)
+
+    def test_stop_daemon_subprocess_does_not_hide_windows(self, qapp, monkeypatch):
+        tray, fake_dialog = self._tray_for_stop_subprocess(monkeypatch)
+        tray.stop_daemon(show_diary_dialog=True)
+        assert tray.is_listening is False
+        # The diary dialog still appears...
+        fake_dialog.show.assert_called_once()
+        # ...but the log/face windows keep their current visibility.
+        tray.face_window.hide.assert_not_called()
+        tray.log_viewer.hide.assert_not_called()
+
+    def test_show_launch_windows_opens_log_and_face_windows(self, qapp):
+        """The launch hook opens the log and face windows once at startup."""
+        import desktop_app.app as app_mod
+
+        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray.log_viewer = MagicMock()
+        tray.face_window = MagicMock()
+
+        tray.show_launch_windows()
+
+        tray.log_viewer.show.assert_called_once()
+        tray.log_viewer.raise_.assert_called_once()
+        tray.log_viewer.activateWindow.assert_called_once()
+        tray.face_window.show.assert_called_once()
+        tray.face_window.raise_.assert_called_once()
+
+    def test_launch_flow_wires_launch_windows_after_daemon_start(self):
+        """main() still auto-opens the windows on launch, but through the
+        launch hook rather than inside start_daemon (which stays
+        visibility-neutral)."""
+        import inspect
+        from desktop_app.app import main
+
+        source = inspect.getsource(main)
+        show_idx = source.index("show_launch_windows")
+        start_idx = source.index("start_daemon")
+        assert show_idx > start_idx, (
+            "the launch windows must open after the daemon auto-start"
+        )
+
