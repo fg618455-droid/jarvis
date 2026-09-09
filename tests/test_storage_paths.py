@@ -60,6 +60,7 @@ def test_location_cache_paths_are_selected_before_application_import(tmp_path, m
     import sys
     root=tmp_path/'owned'
     env={**os.environ, 'JARVIS_DATA_DIR':str(root), 'PYTHONDONTWRITEBYTECODE':'1'}
+    env['PYTHONPATH'] = os.pathsep.join(filter(None, [str(Path(__file__).resolve().parents[1] / 'src'), env.get('PYTHONPATH', '')]))
     code="from jarvis.utils.location import _LOCATION_CACHE_FILE,_CGNAT_CACHE_FILE; import json; print(json.dumps([str(_LOCATION_CACHE_FILE),str(_CGNAT_CACHE_FILE)]))"
     result=subprocess.run([sys.executable,'-B','-c',code],env=env,capture_output=True,text=True,timeout=20,check=True)
     assert json.loads(result.stdout.splitlines()[-1]) == [str(root/'location_cache.json'),str(root/'cgnat_cache.json')]
