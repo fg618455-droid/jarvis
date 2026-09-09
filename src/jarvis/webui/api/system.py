@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import platform
+import requests
 import shutil
 import subprocess
 import sys
@@ -98,33 +99,42 @@ def read_gpu() -> Optional[dict]:
 
 
 def read_loaded_models() -> list[dict]:
-    """Which models Ollama is holding, and how much of the card they take."""
-    output = _run(["ollama", "ps"])
-    if not output:
+    """Read local residency without a CLI that may start a child daemon."""
+    from jarvis.llm.factory import _loopback_ollama_url
+
+    url = _loopback_ollama_url(load_settings()) + "/api/ps"
+    try:
+        with requests.Session() as session:
+            # A local status query must not use an environment proxy.
+            session.trust_env = False
+            with session.get(url, timeout=SUBPROCESS_TIMEOUT, allow_redirects=False) as response:
+                if response.status_code != 200:
+                    return []
+                payload = response.json()
+        rows = payload.get("models", []) if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            return []
+        models = []
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+                continue
+            try:
+                size = max(0, int(row.get("size", 0)))
+                vram = max(0, int(row.get("size_vram", 0)))
+                context = max(0, int(row.get("context_length", 0)))
+            except (ValueError, TypeError, OverflowError):
+                continue
+            gpu = min(100, round(100 * vram / size)) if size else 0
+            processor = "100% CPU" if gpu == 0 else "100% GPU" if gpu == 100 else f"{100-gpu}% CPU/{gpu}% GPU"
+            models.append({
+                "name": row["name"], "size": f"{size / 1_000_000_000:.1f} GB",
+                "processor": processor, "context": str(context),
+                "until": str(row.get("expires_at", "")),
+            })
+        return models
+    except (requests.RequestException, ValueError, TypeError):
+        debug_log("local Ollama residency unavailable", "webui")
         return []
-
-    lines = [line for line in output.strip().splitlines() if line.strip()]
-    if len(lines) < 2:
-        return []
-
-    models = []
-    for line in lines[1:]:
-        # NAME  ID  SIZE  PROCESSOR  CONTEXT  UNTIL — columns are padded,
-        # and both size and until carry spaces, so split on runs of two or
-        # more spaces rather than on single ones.
-        import re
-
-        columns = re.split(r"\s{2,}", line.strip())
-        if len(columns) < 3:
-            continue
-        models.append({
-            "name": columns[0],
-            "size": columns[2] if len(columns) > 2 else "",
-            "processor": columns[3] if len(columns) > 3 else "",
-            "context": columns[4] if len(columns) > 4 else "",
-            "until": columns[5] if len(columns) > 5 else "",
-        })
-    return models
 
 
 def read_ollama_environment() -> dict[str, str]:
