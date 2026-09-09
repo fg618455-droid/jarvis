@@ -18,6 +18,7 @@ is unreachable, so the harness is safe to leave in the repo.
 |-----|---------|-------------|
 | `JARVIS_PERF_OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint |
 | `JARVIS_PERF_MODEL` | `gemma4:e2b` | Model pulled in Ollama for the run |
+| `JARVIS_PERF_FAST_MODEL` | value of `JARVIS_PERF_MODEL` | FAST-tier model for router, enrichment, and digest calls |
 | `JARVIS_PERF_RUNS` | `3` | Runs per query (bump for tighter p95) |
 | `JARVIS_PERF_REPORT_DIR` | `tests/performance/reports/` | JSON report output |
 
@@ -30,7 +31,12 @@ benchmarking a change, use `JARVIS_PERF_RUNS=10` or higher.
   Hardware baseline: the floor for every context's per-call cost.
 - **`test_pipeline_timings_by_context`** — three representative queries × N runs
   of `run_reply_engine`, with per-context timings bucketed via stack-frame
-  inspection in [`timing_recorder.py`](timing_recorder.py).
+  inspection in [`timing_recorder.py`](timing_recorder.py). The fixture sets
+  both the provider-independent `llm_chat_model` and its Ollama alias to
+  `JARVIS_PERF_MODEL`. `JARVIS_PERF_FAST_MODEL` can mirror a deployment with a
+  smaller dedicated FAST model while keeping the reported chat model accurate.
+  Each invocation gets an independent dialogue cache, and the queries cycle
+  between runs, so router and chat percentiles describe the same independent-turn shape.
 
 Shape invariants (not absolute numbers):
 - Evaluator p50 ≤ main chat turn p50 × 1.5.

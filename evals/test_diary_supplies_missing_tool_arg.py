@@ -86,8 +86,6 @@ class TestDiarySuppliesMissingToolArg:
     ):
         from jarvis.reply.engine import run_reply_engine
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
         # Geoip disabled — the only way the model gets a location is from
         # diary recall.
         mock_config.location_enabled = False

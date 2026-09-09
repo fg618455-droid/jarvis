@@ -8,7 +8,7 @@ The Settings Window provides a graphical interface for editing `config.json` wit
 
 ## Design Principles
 
-1. **Metadata-driven**: All fields are defined in a `FIELD_METADATA` registry. Adding a new config parameter to the settings UI requires only adding a `FieldMeta` entry — no widget code changes.
+1. **Metadata-driven**: All fields are defined in the `FIELD_METADATA` registry in `src/jarvis/config_metadata.py`, shared with the control centre's settings view. Adding a new config parameter to both settings interfaces requires only adding a `FieldMeta` entry — no widget code changes.
 2. **Minimal config files**: Only non-default values are written to `config.json`. Removing a field from the config reverts it to the default.
 3. **Preserves unknown keys**: Keys not managed by the UI (e.g. `mcps`, `_config_version`, future additions) are preserved when saving.
 4. **Theme-consistent**: Uses the shared Jarvis theme from `themes.py`.
@@ -16,17 +16,20 @@ The Settings Window provides a graphical interface for editing `config.json` wit
 ## Architecture
 
 ```
-FieldMeta (dataclass)
+FieldMeta (dataclass, src/jarvis/config_metadata.py)
   ├── key: str           # config.json key name
   ├── label: str         # Human-readable label
   ├── description: str   # Tooltip text
   ├── category: str      # Tab grouping key
-  ├── field_type: str    # "bool" | "int" | "float" | "str" | "choice" | "device" | "list"
+  ├── field_type: str    # "bool" | "int" | "float" | "str" | "choice" | "device" | "list" | "object_list"
   ├── choices            # For "choice"/"device": [(value, display), ...]
   ├── min_val / max_val  # Numeric bounds
   ├── step               # Increment step
   ├── suffix             # Unit label (e.g. "s", "ms", "WPM")
-  └── nullable           # Whether None is valid (shows placeholder)
+  ├── nullable           # Whether None is valid (shows placeholder)
+  ├── item_fields        # Nested FieldMeta tuple for "object_list"
+  ├── default_value      # Safe initial value when a structured item is added
+  └── section            # Optional heading inside a category
 ```
 
 ## Widget Mapping
@@ -39,9 +42,21 @@ FieldMeta (dataclass)
 | `float` | QDoubleSpinBox | With bounds, step, suffix |
 | `str` | QLineEdit | Placeholder if nullable |
 | `password` | QLineEdit (EchoMode.Password) | Masked input for API keys; same value extraction as `str` |
-| `choice` | QComboBox | Pre-defined options |
+| `choice` | QComboBox | Pre-defined options, plus the configured value |
 | `device` | QComboBox | Dynamically populated from sounddevice |
 | `list` | QListWidget + Add/Edit/Remove buttons | Stores as JSON array in config |
+| `object_list` | QTableWidget + Add/Remove/Move buttons | One typed column per nested metadata field; stores a JSON object array |
+
+`choices_for(meta, value)` in `jarvis.config_metadata` decides what a
+`choice` field offers, and both this window and the control centre build
+their selects from it. A configured value that is not on the curated list is
+offered under its own name, at the top. Lists such as the supported chat
+models are a shortlist rather than the set of values a local runtime can
+serve, and a select that cannot show what is configured reports a different
+value than the one in the file. This window reads every widget back on save,
+so that misreport would also overwrite the real one. Fields with no choices
+at all are left alone: their value is not a choice, and echoing it would put
+a credential into a form that is otherwise careful never to show one.
 
 ## Layout
 
@@ -49,44 +64,51 @@ The settings window uses a sidebar navigation pattern: a fixed-width `QListWidge
 
 ## Categories (Sidebar Order)
 
-1. LLM & AI Models
-2. LLM Provider
-3. Text-to-Speech
-4. Piper TTS
-5. Chatterbox TTS
-6. Voice Input (includes microphone device selection)
-7. Wake Word
-8. Speech Recognition (Whisper)
-9. Voice Activity Detection
-10. Timing & Windows
-11. Memory & Dialogue
-12. Location
-13. Features (includes web search, Wikipedia fallback, low-power mode, startup tune, and dictation toggles)
+1. Local AI & Behaviour
+2. Speech Input
+3. Speech Recognition
+4. Speech Output
+5. Timing & Windows
+6. Memory & Dialogue
+7. School
+8. Passive Capture
+9. Security
+10. Location
+11. Features (includes web search, Wikipedia fallback, low-power mode, startup tune, and dictation toggles)
+12. Control Centre
+13. Mission Control
 14. MCP Servers
 15. Advanced
 
-### LLM Provider
+### Local AI & Behaviour
 
-Selects the local runtime that serves the LLM and holds the provider-aware
-connection fields: `llm_provider` (Ollama / OpenAI-compatible), `llm_base_url`,
-`llm_api_key` (password), `llm_chat_model`, and the four `embedding_*` fields
-(`embedding_provider`, `embedding_base_url`, `embedding_api_key`,
-`embedding_model`). The model fields are free-text `str` — an OpenAI-compatible
-server's model name is not in the Ollama `SUPPORTED_CHAT_MODELS` catalogue.
+This category exposes only the local Ollama pipeline, grouped into **Local
+models**, **Timeouts**, and **Thinking and behaviour**. `ollama_chat_model` is
+the local CHAT fallback and PRIVATE model, `local_fast_model` is the separate
+FAST fallback, and `ollama_embed_model` handles local embeddings.
 
-Every connection/credential/model field is nullable: leaving it empty falls
-back to the Ollama settings on the "LLM & AI Models" page. A default Ollama
-install therefore never needs to open this page, and the minimal-config save
-behaviour keeps these keys out of `config.json` until the user sets them.
+Effective FAST/CHAT providers, endpoint credentials, route models,
+`chat_backend_override`, and `crew_chat_agent` are not duplicated here. The
+category links to the control centre's authoritative LLM Routes editor. Legacy
+single-endpoint keys remain supported by config loading and are preserved when
+already present, but a general-settings save cannot silently reconstruct or
+overwrite them.
 
-Unlike the setup wizard's provider page, the settings window does **not**
-clear the OpenAI-compatible fields when the user switches `llm_provider` back
-to Ollama: it is metadata-driven with no cross-field logic, and a blanket
-clear would wipe the supported "Ollama chat + remote embeddings" split
-(`llm_provider: ollama` with `embedding_provider: openai_compatible`). Stale
-values are harmless because the backend resolves per-provider: the Ollama path
-uses `ollama_base_url` / `ollama_chat_model` and `OllamaBackend` ignores any
-API key. To drop a leftover value, clear that field and save.
+### Speech pipeline
+
+Speech Input contains **Microphone**, **Wake word**, and **Voice activity and
+endpointing** sections. Speech Recognition owns the labelled **Whisper**
+section. Speech Output combines **Common output**, **Cloud chain**, **Piper**,
+**Chatterbox**, and **Kokoro**, rather than scattering one output pipeline over
+five sidebar entries.
+
+The Cloud chain section exposes `tts_cloud_providers` as a structured ordered table. Each row edits the provider
+name, vendor id, credential environment-variable name, voice id, model,
+enabled state, and timeout. Add, remove, enable/disable, and move controls are
+available without editing JSON. The vendor is selected from the supported
+Fish Audio and ElevenLabs clients while an older unrecognised configured value
+remains visible. Credential values are never resolved from the environment and
+never enter either settings form or `config.json`.
 
 ### Features
 
@@ -110,12 +132,12 @@ default, like every other metadata-managed field.
 
 ## Hardware Device Selection
 
-The Voice Input tab includes a device dropdown populated at window open time via `sounddevice.query_devices()`. It lists all input-capable devices with their index and name. The stored value is the device index as a string, or empty string for system default.
+The Speech Input category includes a microphone dropdown populated at window open time via `sounddevice.query_devices()`. Speech Output contains the matching output-device dropdown. Each lists the relevant devices with their index and name. The stored value is the device index as a string, or empty string for system default.
 
 ## Save Behaviour
 
 - Only keys that differ from `get_default_config()` are written.
-- Existing keys not managed by the UI are preserved (e.g. `mcps`, `active_profiles`, `wake_aliases`, `allowlist_bundles`, `stop_commands`).
+- Existing keys not managed by the UI are preserved (e.g. `mcps`, `active_profiles`, `wake_aliases`, `allowlist_bundles`).
 - After save, a dialog confirms success and reminds the user to restart.
 - If the daemon is running when save completes, the tray app offers to restart it.
 
@@ -166,12 +188,17 @@ On save, the `mcps` dict is written to config.json if non-empty, or removed enti
 
 These fields are managed elsewhere or are too complex for a simple form:
 
+- `llm_routes`, `chat_backend_override`, `crew_chat_agent`, and legacy
+  provider/embedding connection keys — authoritative LLM Routes view
 - `db_path` / `sqlite_vss_path` — internal storage paths
 - `active_profiles` — list managed by setup wizard
 - `allowlist_bundles` — list of bundle IDs
 - `wake_aliases` — list of strings (complex editing)
-- `stop_commands` / `stop_command_fuzzy_ratio` — list of strings
 - `use_stdin` — developer/CLI flag
 - `voice_debug` — environment variable only
 - `whisper_min_audio_duration` / `whisper_min_word_length` — rarely changed advanced params
 - `vad_frame_ms` / `vad_pre_roll_ms` — low-level VAD timing
+
+The metadata registry must not expose "local_llm_fallback_enabled" when that
+key has no persisted/default setting. Local model controls remain
+available for PRIVATE work and embeddings.

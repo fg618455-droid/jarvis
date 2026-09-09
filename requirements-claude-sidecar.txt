@@ -1,0 +1,3 @@
+# Isolated Claude subscription sidecar only. Never install this file into
+# Jarvis's main environment, whose persistent MCP runtime pins mcp==1.13.1.
+claude-agent-sdk==0.2.144

@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from jarvis.storage import data_directory
 import socket
 import ipaddress
 from pathlib import Path
@@ -51,7 +53,7 @@ _CGNAT_RESOLUTION_TTL = timedelta(hours=1)
 
 # Disk cache paths (share directory with geoip DB for locality)
 def _cache_base_dir() -> Path:
-    return Path.home() / ".local" / "share" / "jarvis"
+    return data_directory()
 
 _LOCATION_CACHE_FILE = _cache_base_dir() / "location_cache.json"
 _CGNAT_CACHE_FILE = _cache_base_dir() / "cgnat_cache.json"
@@ -301,7 +303,7 @@ def _get_external_ip_automatically() -> Optional[str]:
 
 def _get_database_path() -> Path:
     """Get the path where the GeoLite2 database should be stored."""
-    base_dir = Path.home() / ".local" / "share" / "jarvis" / "geoip"
+    base_dir = data_directory() / "geoip"
     base_dir.mkdir(parents=True, exist_ok=True)
     return base_dir / "GeoLite2-City.mmdb"
 
@@ -399,6 +401,10 @@ def get_location_info(
     auto_detect: bool = True,
     resolve_cgnat_public_ip: bool = True,
     location_cache_minutes: int = 60,
+    manual_city: Optional[str] = None,
+    manual_region: Optional[str] = None,
+    manual_country: Optional[str] = None,
+    manual_timezone: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Get location information for an IP address.
 
@@ -408,7 +414,30 @@ def get_location_info(
         auto_detect: Attempt to discover an external IP via UPnP / socket heuristics if neither ip_address nor config_ip given.
         resolve_cgnat_public_ip: If True and a CGNAT (100.64.0.0/10) address is detected, attempt a single DNS query via OpenDNS to discover the true public IP (privacy-light).
         location_cache_minutes: TTL in minutes for cached location lookups persisted to disk.
+        manual_city: Manually configured city. When set alongside or instead of
+            manual_country, this bypasses IP geolocation entirely — no IP is
+            resolved, no GeoIP database is queried. Fixes ISPs that register an
+            address block under the nearest larger city or a distant hub rather
+            than where the connection is actually used.
+        manual_region: Optional state/region to show alongside the manual city.
+        manual_country: Manually configured country. Sufficient on its own to
+            trigger the override even without a city.
+        manual_timezone: IANA timezone to report alongside the manual location.
     """
+    if manual_city or manual_country:
+        manual_info = {
+            "city": manual_city,
+            "region": manual_region,
+            "country": manual_country,
+            "timezone": manual_timezone,
+        }
+        cleaned_manual = {k: v for k, v in manual_info.items() if v}
+        debug_log(
+            f"Location manually overridden: {cleaned_manual.get('city') or cleaned_manual.get('country')}",
+            "location",
+        )
+        return cleaned_manual
+
     if not GEOIP2_AVAILABLE:
         return {"error": "geoip2 library not available"}
 
@@ -574,6 +603,10 @@ def get_location_context(
     auto_detect: bool = True,
     resolve_cgnat_public_ip: bool = True,
     location_cache_minutes: int = 60,
+    manual_city: Optional[str] = None,
+    manual_region: Optional[str] = None,
+    manual_country: Optional[str] = None,
+    manual_timezone: Optional[str] = None,
 ) -> str:
     """Generate a concise location context string using explicit parameters."""
     return _format_location_context(get_location_info(
@@ -581,6 +614,10 @@ def get_location_context(
         auto_detect=auto_detect,
         resolve_cgnat_public_ip=resolve_cgnat_public_ip,
         location_cache_minutes=location_cache_minutes,
+        manual_city=manual_city,
+        manual_region=manual_region,
+        manual_country=manual_country,
+        manual_timezone=manual_timezone,
     ))
 
 
@@ -590,6 +627,10 @@ def get_location_context_with_timezone(
     auto_detect: bool = True,
     resolve_cgnat_public_ip: bool = True,
     location_cache_minutes: int = 60,
+    manual_city: Optional[str] = None,
+    manual_region: Optional[str] = None,
+    manual_country: Optional[str] = None,
+    manual_timezone: Optional[str] = None,
 ) -> tuple[str, Optional[str]]:
     """Return the location context string and the IANA timezone (if known) in one lookup."""
     info = get_location_info(
@@ -597,6 +638,10 @@ def get_location_context_with_timezone(
         auto_detect=auto_detect,
         resolve_cgnat_public_ip=resolve_cgnat_public_ip,
         location_cache_minutes=location_cache_minutes,
+        manual_city=manual_city,
+        manual_region=manual_region,
+        manual_country=manual_country,
+        manual_timezone=manual_timezone,
     )
     tz_name = info.get("timezone") if isinstance(info, dict) else None
     return _format_location_context(info), tz_name
@@ -638,6 +683,10 @@ def get_detailed_location_info(
     auto_detect: bool = True,
     resolve_cgnat_public_ip: bool = True,
     location_cache_minutes: int = 60,
+    manual_city: Optional[str] = None,
+    manual_region: Optional[str] = None,
+    manual_country: Optional[str] = None,
+    manual_timezone: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Get detailed location information including coordinates and formatted address."""
     location_info = get_location_info(
@@ -646,6 +695,10 @@ def get_detailed_location_info(
         auto_detect=auto_detect,
         resolve_cgnat_public_ip=resolve_cgnat_public_ip,
         location_cache_minutes=location_cache_minutes,
+        manual_city=manual_city,
+        manual_region=manual_region,
+        manual_country=manual_country,
+        manual_timezone=manual_timezone,
     )
 
     if "error" in location_info:

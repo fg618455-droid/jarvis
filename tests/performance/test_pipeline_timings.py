@@ -34,6 +34,7 @@ from tests.performance.timing_recorder import TimingRecorder
 
 OLLAMA_URL = os.environ.get("JARVIS_PERF_OLLAMA_URL", "http://localhost:11434")
 PERF_MODEL = os.environ.get("JARVIS_PERF_MODEL", "gemma4:e2b")
+PERF_FAST_MODEL = os.environ.get("JARVIS_PERF_FAST_MODEL", PERF_MODEL)
 PERF_RUNS = int(os.environ.get("JARVIS_PERF_RUNS", "3"))
 PERF_REPORT_DIR = Path(os.environ.get(
     "JARVIS_PERF_REPORT_DIR",
@@ -78,7 +79,8 @@ def _make_cfg():
     cfg = MockConfig()
     cfg.ollama_base_url = OLLAMA_URL
     cfg.ollama_chat_model = PERF_MODEL
-    cfg.fast_model = PERF_MODEL
+    cfg.llm_chat_model = PERF_MODEL
+    cfg.fast_model = PERF_FAST_MODEL
     # Let size-aware defaults kick in (evaluator + digests ON for small).
     cfg.evaluator_enabled = None
     cfg.memory_digest_enabled = None
@@ -97,6 +99,7 @@ def _write_report(rec: TimingRecorder, name: str) -> Path:
         "name": name,
         "timestamp": stamp,
         "model": PERF_MODEL,
+        "fast_model": PERF_FAST_MODEL,
         "runs": PERF_RUNS,
         "summary": rec.to_dict(),
         "raw": [
@@ -185,14 +188,20 @@ def test_pipeline_timings_by_context():
     cfg = _make_cfg()
 
     with TimingRecorder() as rec:
-        for query in PIPELINE_QUERIES:
-            db = Database(":memory:", sqlite_vss_path=None)
-            dlg = DialogueMemory(inactivity_timeout=300, max_interactions=20)
-            try:
-                for _ in range(PERF_RUNS):
+        # Keep each measured invocation independent. Reusing one
+        # DialogueMemory for repeated identical queries would serve the
+        # router from its conversation cache after the first pass, then
+        # compare three router samples with nine mostly cache-warm chat
+        # samples. Cycling the queries also mirrors consecutive diverse
+        # turns instead of giving Ollama three identical prompts in a row.
+        for _ in range(PERF_RUNS):
+            for query in PIPELINE_QUERIES:
+                db = Database(":memory:", sqlite_vss_path=None)
+                dlg = DialogueMemory(inactivity_timeout=300, max_interactions=20)
+                try:
                     run_reply_engine(db, cfg, None, query, dlg)
-            finally:
-                db.close()
+                finally:
+                    db.close()
 
     rec.print_report(title=f"Pipeline timings — {len(PIPELINE_QUERIES)} queries × {PERF_RUNS} runs on {PERF_MODEL}")
     path = _write_report(rec, "pipeline")

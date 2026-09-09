@@ -1,0 +1,1567 @@
+/* View-specific layout. Everything here builds on the components in app.css. */
+
+/* ── Memory ──────────────────────────────────────────────────────────── */
+
+.tree {
+  display: grid;
+  gap: 1px;
+  max-height: 560px;
+  overflow-y: auto;
+}
+
+.tree-node {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+
+.tree-node:hover {
+  background: var(--surface-2);
+}
+
+.tree-node[aria-selected="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.tree-node.branch > .tree-label {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.tree-label {
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-weight {
+  width: 44px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-3);
+  overflow: hidden;
+  flex: none;
+}
+
+.tree-weight > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+/* A node written while the page is open glows once, then settles. */
+@keyframes learned {
+  from { background: var(--accent-soft); border-color: var(--accent-line); }
+  to { background: transparent; border-color: transparent; }
+}
+
+.tree-node.learned {
+  animation: learned var(--t-glow) ease-out;
+}
+
+.node-editor {
+  display: grid;
+  gap: var(--s3);
+}
+
+.node-editor textarea {
+  min-height: 200px;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.node-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  font-size: var(--fs-xs);
+  color: var(--fg-mute);
+}
+
+.node-actions {
+  display: flex;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.diary-entry {
+  border-left: 2px solid var(--line);
+  padding: var(--s2) 0 var(--s4) var(--s4);
+  display: grid;
+  gap: var(--s2);
+}
+
+.diary-entry .when {
+  font-size: var(--fs-xs);
+  color: var(--fg-mute);
+  font-family: var(--mono);
+}
+
+.diary-topics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.maintenance-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--s3);
+}
+
+.maintenance-action {
+  display: grid;
+  align-content: start;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.maintenance-action.running {
+  border-color: var(--accent-line);
+}
+
+.maintenance-action h3 {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.maintenance-action > p {
+  color: var(--fg-dim);
+  font-size: var(--fs-xs);
+}
+
+.maintenance-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+.maintenance-count,
+.maintenance-summary {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.maintenance-count {
+  color: var(--fg-mute);
+  font-size: var(--fs-xs);
+}
+
+.maintenance-meter {
+  height: var(--s1);
+  overflow: hidden;
+  border-radius: var(--r-sm);
+  background: var(--surface-3);
+}
+
+.maintenance-meter > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width var(--t-fast);
+}
+
+.maintenance-summary {
+  min-height: var(--s5);
+}
+
+/* ── Conversation ────────────────────────────────────────────────────── */
+
+/* The live band. Three readings that are true at different scopes: this
+   browser's microphone, the daemon's phase, and whether the follow-up
+   window is being held open. They sit side by side and never merge. */
+.voice {
+  grid-template-columns: minmax(220px, 1fr) minmax(240px, 1.2fr) minmax(220px, 1fr);
+  gap: var(--s5);
+  align-items: start;
+}
+
+/* Three readings need three columns' worth of room. Below it they stack
+   rather than shrink: a phase name that wraps mid-word is not a reading. */
+@container view (max-width: 760px) {
+  .voice {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s4);
+  }
+}
+
+.voice-label {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+
+.voice-capture {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--s3);
+}
+
+/* The one control on this page that starts something. It is round and it is
+   the largest thing in the band because opening the microphone is what this
+   view is for. */
+.voice-mic {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--fg-dim);
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+}
+
+.voice-mic:hover {
+  border-color: var(--accent-line);
+  color: var(--fg);
+}
+
+.voice-mic.open {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* The level, from the frames already going to the daemon. It is painted
+   from JavaScript, so it asks about reduced motion itself rather than
+   relying on the stylesheet, and the state it decorates is written beside
+   it in words. */
+.voice-level {
+  display: flex;
+  align-items: flex-end;
+  width: var(--s1);
+  height: 52px;
+  border-radius: 2px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.voice-level > span {
+  width: 100%;
+  height: 0;
+  background: var(--accent);
+  transition: height var(--t-fast);
+}
+
+.voice-capture-read {
+  display: grid;
+  gap: var(--s1);
+  min-width: 0;
+}
+
+.voice-mic-state {
+  font-size: var(--fs-sm);
+  color: var(--fg-mute);
+}
+
+.voice-mic-state.open {
+  color: var(--accent);
+}
+
+.voice-reading {
+  display: grid;
+  gap: var(--s2);
+}
+
+.voice-phase {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s3);
+}
+
+.voice-phase-dot {
+  align-self: center;
+}
+
+.voice-phase-name {
+  font-size: var(--fs-lg);
+}
+
+.voice-stage {
+  font-size: var(--fs-xs);
+  color: var(--fg-mute);
+  overflow-wrap: anywhere;
+}
+
+/* The wait, while it is still being waited. It only counts while a turn is
+   in flight; at rest it holds the last one that finished. */
+.voice-elapsed {
+  margin-left: auto;
+  font-size: var(--fs-lg);
+  color: var(--fg-mute);
+}
+
+.voice-elapsed.running {
+  color: var(--accent);
+}
+
+.voice-mode {
+  display: grid;
+  gap: var(--s2);
+  justify-items: start;
+}
+
+.voice-mode-lead {
+  font-size: var(--fs-micro);
+  color: var(--fg-mute);
+}
+
+.voice-discarded {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--line-soft);
+}
+
+.voice-discarded .aside {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--fg-mute);
+}
+
+/* ── The exchange ────────────────────────────────────────────────────── */
+
+/* The exchange is the only thing on this view that scrolls. A page that
+   scrolls and a transcript inside it that also scrolls means every gesture
+   has two possible answers, and the composer keeps sliding out of reach. */
+.view-conversation {
+  height: calc(100vh - var(--header) - var(--main-pad) * 2);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.dialogue {
+  display: grid;
+  align-content: start;
+  gap: var(--s3);
+  padding: 0 var(--s4) var(--s4);
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.turn {
+  display: grid;
+  gap: var(--s2);
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+}
+
+.turn:last-child {
+  border-bottom: none;
+}
+
+.turn-meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  flex-wrap: wrap;
+  font-size: var(--fs-xs);
+  color: var(--fg-mute);
+}
+
+.turn-cost {
+  margin-left: auto;
+}
+
+/* Both halves hang off the same speaker column, so an exchange reads as two
+   turns of one conversation rather than as a field and its value. */
+.turn-line {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr);
+  gap: var(--s3);
+  align-items: baseline;
+}
+
+.turn-line .who {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+
+.turn-said {
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.turn-reply {
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}
+
+.turn-reply.failed {
+  color: var(--bad);
+}
+
+/* What the turn cost is kept, and kept closed. It is the reason this view
+   existed before, and it is not the reason to open it now. */
+.turn-trace {
+  margin-left: calc(60px + var(--s3));
+}
+
+.turn-trace > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+  cursor: pointer;
+}
+
+.turn-trace > summary:hover {
+  color: var(--fg-dim);
+}
+
+.turn-trace[open] > summary {
+  margin-bottom: var(--s2);
+}
+
+.turn-trace .turn-tools {
+  margin-bottom: var(--s2);
+}
+
+.turn-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+/* A turn that landed while the page was open says so once, then stops. */
+.turn.arrived {
+  animation: arrived var(--t-glow) ease-out;
+}
+
+.composer {
+  display: grid;
+  gap: var(--s2);
+  padding: var(--s3);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+
+.composer-row {
+  display: flex;
+  gap: var(--s2);
+  align-items: center;
+}
+
+.composer-row .spacer {
+  margin-left: auto;
+}
+
+.composer textarea {
+  min-height: 56px;
+}
+
+/* ── Passive record ──────────────────────────────────────────────────── */
+
+.passive-notice {
+  color: var(--fg-mute);
+  font-size: var(--fs-xs);
+}
+
+.record {
+  display: grid;
+  align-content: start;
+  padding: 0 var(--s3) var(--s2);
+  max-height: min(60vh, 44rem);
+}
+
+/* The day stays put while its lines scroll under it: a transcript with no
+   date in view is a wall of times that could belong to any day. */
+.passive-day {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3) 0 var(--s2);
+  background: var(--surface-inset);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+
+.passive-day-delete {
+  margin-left: auto;
+  padding: var(--s0) var(--s2);
+  font-size: var(--fs-micro);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.passive-line {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--s3);
+  padding: var(--s2) 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.passive-line:last-child {
+  border-bottom: none;
+}
+
+.passive-gutter {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+}
+
+.passive-line .when {
+  color: var(--fg-mute);
+  font-size: var(--fs-xs);
+}
+
+/* A line the assistant was meant to hear reads as speech; the rest of the
+   record is the room, and recedes. */
+.passive-mark {
+  width: 2px;
+  align-self: stretch;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+.passive-text {
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}
+
+.passive-line.addressed .passive-text {
+  color: var(--fg);
+}
+
+.passive-line-delete {
+  padding: var(--s0) var(--s2);
+  font-size: var(--fs-micro);
+  color: var(--fg-mute);
+}
+
+/* The timestamp column keeps a line's readings aligned down the list, so it
+   narrows rather than leaves: a stamp is still a stamp at 56px. */
+@container view (max-width: 560px) {
+  .passive-line {
+    grid-template-columns: 56px minmax(0, 1fr) auto;
+    gap: var(--s2);
+  }
+}
+
+/* ── Security ────────────────────────────────────────────────────────── */
+
+.confirm-card {
+  border: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+  border-radius: var(--r);
+  padding: var(--s4);
+  display: grid;
+  gap: var(--s3);
+}
+
+.confirm-card pre {
+  font-size: var(--fs-xs);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: var(--s3);
+  overflow-x: auto;
+  color: var(--fg-dim);
+}
+
+.confirm-actions {
+  display: flex;
+  gap: var(--s2);
+}
+
+/* ── System ──────────────────────────────────────────────────────────── */
+
+.reading {
+  display: grid;
+  gap: var(--s2);
+}
+
+.reading .headline {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+}
+
+.reading .headline .value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-xl);
+}
+
+.path-list {
+  display: grid;
+  gap: var(--s2);
+  font-size: var(--fs-xs);
+}
+
+.path-list .path {
+  font-family: var(--mono);
+  color: var(--fg-dim);
+  word-break: break-all;
+}
+
+/* ── Settings ────────────────────────────────────────────────────────── */
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: var(--s4);
+  align-items: start;
+}
+
+/* The category list beside the category. Below the width that holds both,
+   the list cannot show a label and the detail cannot show a field, so the
+   list becomes a row of its own above what it selects. */
+@container view (max-width: 620px) {
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.settings-nav {
+  display: grid;
+  gap: 2px;
+  position: sticky;
+  top: calc(var(--header) + var(--s5));
+}
+
+.settings-nav button {
+  text-align: left;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-sm);
+  border: none;
+  background: none;
+  color: var(--fg-dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.settings-nav button:hover {
+  background: var(--surface);
+  color: var(--fg);
+}
+
+.settings-nav button[aria-current="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.field {
+  display: grid;
+  gap: var(--s1);
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.field:last-child {
+  border-bottom: none;
+}
+
+.field-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.field-head label {
+  font-weight: 500;
+}
+
+.field-help {
+  font-size: var(--fs-xs);
+  color: var(--fg-mute);
+}
+
+.field-control {
+  max-width: 420px;
+}
+
+/* An editor a category carries rather than links to.
+
+   The editor is written to stand on a page of its own, where its parts are
+   cards on the background. Here the panel around it is already a card, so
+   the parts drop their own frame and become sections of the panel instead of
+   boxes drawn inside a box. Nothing about their content changes: this is the
+   same editor, wearing the surface it landed on. */
+.settings-embed {
+  display: grid;
+  gap: var(--s4);
+}
+
+.settings-embed .card {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+}
+
+.settings-embed .card + .card {
+  border-top: 1px solid var(--line);
+  padding-top: var(--s4);
+}
+
+.settings-section {
+  margin: var(--s5) 0 0;
+  padding-bottom: var(--s2);
+  border-bottom: 1px solid var(--line);
+  color: var(--fg);
+  font-size: var(--fs-md);
+}
+
+.settings-note + .settings-section,
+.card > header + .settings-section {
+  margin-top: var(--s3);
+}
+
+.field-control.wide {
+  max-width: none;
+}
+
+.settings-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  margin: var(--s2) 0;
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+}
+
+.settings-note p {
+  margin: 0;
+  color: var(--fg-dim);
+}
+
+/* The prose takes the room the note has left. A control shrunk until its own
+   label wraps mid-phrase reads as two stacked words rather than as the one
+   thing it does, and the sentence beside it has room to give. */
+.settings-note .btn {
+  flex: none;
+}
+
+.object-list,
+.object-list-items {
+  display: grid;
+  gap: var(--s3);
+}
+
+.object-item {
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-raised);
+}
+
+.object-item > header,
+.object-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s1);
+}
+
+.object-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s2) var(--s3);
+  margin-top: var(--s3);
+}
+
+.object-field {
+  display: grid;
+  gap: var(--s1);
+  color: var(--fg-dim);
+  font-size: var(--fs-xs);
+}
+
+.object-field input,
+.object-field select {
+  width: 100%;
+}
+
+.object-actions .icon-btn {
+  min-width: 2rem;
+  padding: var(--s1) var(--s2);
+}
+
+@container view (max-width: 560px) {
+  .settings-note {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .object-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.field-control.inline {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.field.changed {
+  border-left: 2px solid var(--accent);
+  padding-left: var(--s3);
+  margin-left: calc(var(--s3) * -1);
+}
+
+.settings-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+
+.settings-bar .spacer {
+  margin-left: auto;
+}
+.route-config-card,
+.route-config-list {
+  display: grid;
+  gap: var(--s3);
+}
+
+.route-config {
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-raised);
+}
+
+.route-config > header,
+.route-config-title,
+.route-capabilities {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.route-config > header {
+  justify-content: space-between;
+}
+
+.route-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s3);
+  margin-top: var(--s3);
+}
+
+.route-field {
+  display: grid;
+  align-content: start;
+  gap: var(--s1);
+  min-width: 0;
+  color: var(--fg-dim);
+  font-size: var(--fs-xs);
+}
+
+.route-field input,
+.route-field select {
+  width: 100%;
+}
+
+.route-field-base_url,
+.route-field-capabilities {
+  grid-column: 1 / -1;
+}
+
+.route-capabilities {
+  flex-wrap: wrap;
+  min-height: 2.25rem;
+}
+
+/* A route's fields are already one per line here, so the two that span both
+   columns have nothing left to span. */
+@container view (max-width: 560px) {
+  .route-config-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-field-base_url,
+  .route-field-capabilities {
+    grid-column: auto;
+  }
+}
+
+.llm-chain {
+  min-width: 0;
+}
+
+.route-list {
+  display: grid;
+}
+
+.route-entry {
+  display: grid;
+  gap: var(--s3);
+  min-width: 0;
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.route-entry:first-child {
+  padding-top: 0;
+}
+
+.route-entry:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.route-primary {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--s2);
+}
+
+.route-identity {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.route-name,
+.route-model,
+.route-provider,
+.route-metric dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.route-name {
+  font-weight: 600;
+}
+
+.route-model {
+  color: var(--fg);
+  font-size: var(--fs-xs);
+}
+
+.route-provider {
+  color: var(--fg-mute);
+  font-size: var(--fs-micro);
+}
+
+.route-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: var(--s2) var(--s3);
+}
+
+.route-metric {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.route-metric dt {
+  color: var(--fg-mute);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.route-metric dd {
+  color: var(--fg-dim);
+  font-size: var(--fs-xs);
+}
+
+.route-error-metric {
+  grid-column: 1 / -1;
+}
+
+.model-block {
+  display: grid;
+  gap: var(--s2);
+  margin-top: var(--s4);
+}
+
+.model-block > h3,
+.model-block-head h3 {
+  margin: 0;
+}
+
+.model-block-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s3);
+  flex-wrap: wrap;
+}
+
+.route-metric .route-error {
+  color: var(--warn);
+}
+
+/* ── Diagnostic log ──────────────────────────────────────────────────── */
+
+.logs > header .btn {
+  margin-left: var(--s2);
+  padding: var(--s0) var(--s3);
+  font-size: var(--fs-xs);
+}
+
+.log-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex-wrap: wrap;
+}
+
+.log-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+button.chip.log-filter {
+  font: inherit;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.log-search {
+  width: auto;
+  min-width: 200px;
+  flex: 1;
+  font-size: var(--fs-sm);
+}
+
+.log-well {
+  display: grid;
+  align-content: start;
+  padding: var(--s2) var(--s3);
+  max-height: min(64vh, 48rem);
+}
+
+/* Three columns rather than one run of text: a time and a category that
+   start in the same place on every line can be skipped over, and skipping
+   over them is how a log is read. */
+.log-line {
+  display: grid;
+  grid-template-columns: 80px 96px minmax(0, 1fr);
+  gap: var(--s3);
+  padding: var(--s1) 0;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  line-height: 1.7;
+}
+
+.log-line:hover {
+  background: var(--surface);
+}
+
+.log-line .when {
+  color: var(--fg-mute);
+}
+
+.log-category {
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-message {
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* The message is the reading; the stamp and the category are how it is
+   found. Narrow, they give the message the full width and take a line of
+   their own above it. */
+@container view (max-width: 560px) {
+  .log-line {
+    grid-template-columns: 68px minmax(0, 1fr);
+    gap: var(--s2);
+  }
+
+  .log-category {
+    grid-column: 2;
+  }
+
+  .log-message {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ── Mission Control ─────────────────────────────────────────────────── */
+
+.crew {
+  display: grid;
+  gap: var(--s4);
+}
+
+.crew-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--s4);
+}
+
+/* ── The activity ribbon ─────────────────────────────────────────────── */
+
+.ribbon {
+  display: flex;
+  gap: var(--s1);
+  align-items: flex-end;
+}
+
+.ribbon-day {
+  flex: 1;
+  display: grid;
+  gap: var(--s1);
+  justify-items: stretch;
+  min-width: 0;
+}
+
+/* The track is empty space, not a container: filling it would give every
+   day a full-height box and the eye would read fourteen boxes rather than
+   the shape of a fortnight. */
+.ribbon-track {
+  display: flex;
+  flex-direction: column-reverse;
+  height: 56px;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.ribbon-seg {
+  display: block;
+  min-height: 2px;
+}
+
+.ribbon-seg.ok { background: var(--ok); }
+.ribbon-seg.warn { background: var(--warn); }
+.ribbon-seg.bad { background: var(--bad); }
+
+.ribbon-seg.none {
+  height: 2px;
+  background: var(--surface-3);
+}
+
+.ribbon-label {
+  text-align: center;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-micro);
+  color: var(--fg-mute);
+}
+
+.ribbon-day.today .ribbon-label {
+  color: var(--accent);
+}
+
+/* ── The roster ──────────────────────────────────────────────────────── */
+
+.crew-roster {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--s3);
+}
+
+.crew-clear {
+  margin-left: auto;
+  padding: var(--s1) var(--s2);
+  font-size: var(--fs-xs);
+}
+
+.agent {
+  display: grid;
+  gap: var(--s2);
+  align-content: start;
+  padding: var(--s3);
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+
+.agent:hover {
+  background: var(--surface-3);
+  border-color: var(--accent-line);
+}
+
+.agent[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+/* An agent that logged nothing is shown, and shown to be quiet. It recedes
+   rather than disappearing: silence is a reading, absence is not. */
+.agent.quiet {
+  opacity: 0.62;
+}
+
+.agent-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+}
+
+.agent-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  align-self: center;
+  background: var(--fg-mute);
+}
+
+.agent-dot.ok { background: var(--ok); }
+.agent-dot.warn { background: var(--warn); }
+.agent-dot.bad { background: var(--bad); }
+
+.agent-dot.quiet {
+  background: none;
+  box-shadow: inset 0 0 0 1px var(--fg-mute);
+}
+
+.agent-name {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-when {
+  margin-left: auto;
+  font-size: var(--fs-micro);
+  color: var(--fg-mute);
+  white-space: nowrap;
+}
+
+.agent-spark {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s0);
+  height: 22px;
+  border-bottom: 1px solid var(--line);
+}
+
+.agent-spark-bar {
+  flex: 1;
+  min-width: 0;
+  background: var(--accent);
+  border-radius: 1px 1px 0 0;
+  align-self: flex-end;
+}
+
+/* A day with nothing on it still holds its place, so fourteen days read as
+   a fortnight rather than as however many bars happen to exist. */
+.agent-spark-bar.none {
+  height: 2px;
+  background: var(--line);
+}
+
+.agent-foot {
+  display: grid;
+  gap: var(--s1);
+}
+
+.agent-count {
+  font-size: var(--fs-micro);
+  color: var(--fg-dim);
+}
+
+.agent-bar {
+  display: block;
+  height: var(--s1);
+  border-radius: 2px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.agent-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--ok);
+}
+
+.agent-bar > span.bad {
+  background: var(--bad);
+}
+
+/* ── The activity feed ───────────────────────────────────────────────── */
+
+.crew-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+button.chip.crew-filter {
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.feed {
+  display: grid;
+  align-content: start;
+  padding: var(--s2) var(--s3);
+  max-height: 460px;
+}
+
+.feed-day {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: var(--s2) 0 var(--s1);
+  background: var(--surface-inset);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+
+/* Entries hang off one vertical line, so a run of work reads as a sequence
+   rather than as unrelated rows. The line belongs to the row, not to the
+   marker on it, or it can only ever be as tall as the dot. */
+.feed-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--s3);
+  padding: var(--s2) 0;
+  border-radius: var(--r-sm);
+}
+
+.feed-row:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 20px;
+  bottom: -2px;
+  width: 1px;
+  background: var(--line);
+}
+
+.feed-dot {
+  position: relative;
+  z-index: 1;
+  width: 7px;
+  height: 7px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--fg-mute);
+}
+
+.feed-dot.ok { background: var(--ok); }
+.feed-dot.warn { background: var(--warn); }
+.feed-dot.bad { background: var(--bad); }
+
+.feed-body {
+  display: grid;
+  gap: var(--s1);
+  min-width: 0;
+}
+
+.feed-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.feed-when {
+  font-size: var(--fs-xs);
+  color: var(--fg-mute);
+}
+
+.feed-agent {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  letter-spacing: 0.04em;
+}
+
+.feed-model {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+  color: var(--fg-mute);
+  overflow-wrap: anywhere;
+}
+
+.feed-task {
+  color: var(--fg-dim);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+/* A line that arrived while the page was open is the one honest moment of
+   live news this view has. It says so once, then stops. */
+@keyframes arrived {
+  from { background: var(--accent-soft); }
+  to { background: transparent; }
+}
+
+.feed-row.arrived {
+  animation: arrived var(--t-glow) ease-out;
+}
+
+/* The ribbon keeps its bars and loses its words: a day's shape still reads
+   at this width, a day's name does not. */
+@container view (max-width: 560px) {
+  .ribbon-label {
+    display: none;
+  }
+
+  .feed-model {
+    margin-left: 0;
+  }
+}
+
+/* ── MCP servers ─────────────────────────────────────────────────────── */
+
+.mcp-bar {
+  display: flex;
+  gap: var(--s2);
+  align-items: center;
+}
+
+.mcp-bar .btn.primary {
+  margin-left: auto;
+}
+
+.mcp-list {
+  display: grid;
+  gap: var(--s3);
+}
+
+.mcp-fields {
+  display: grid;
+  gap: var(--s3);
+}
+
+.mcp-field {
+  display: grid;
+  gap: var(--s1);
+}
+
+.mcp-label {
+  font-size: var(--fs-xs);
+  color: var(--fg-mute);
+}
+
+.mcp-note {
+  font-size: var(--fs-micro);
+  color: var(--fg-mute);
+}
+
+/* An environment entry is a name and a value, edited as two fields rather
+   than as one `KEY=value` line. A masked credential has to survive being
+   displayed and saved untouched, and inside a block of text the mask would
+   be indistinguishable from someone having typed eight bullets. */
+.mcp-env-block {
+  display: grid;
+  gap: var(--s2);
+  justify-items: start;
+}
+
+.mcp-env {
+  display: grid;
+  gap: var(--s2);
+  width: 100%;
+}
+
+.mcp-env-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  gap: var(--s2);
+  align-items: center;
+}
+
+.mcp-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ── Today ───────────────────────────────────────────────────────────── */
+
+.briefing-summary {
+  color: var(--fg);
+}
+
+.briefing-items {
+  display: grid;
+  gap: var(--s2);
+  padding: var(--s3);
+}
+
+.briefing-item {
+  display: grid;
+  gap: var(--s0);
+  padding-bottom: var(--s2);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.briefing-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.briefing-item-title {
+  font-weight: 600;
+}
+
+.briefing-item-note {
+  font-size: var(--fs-sm);
+  color: var(--fg-dim);
+}

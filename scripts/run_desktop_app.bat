@@ -51,7 +51,8 @@ REM Install/update dependencies from requirements.txt
 echo Installing dependencies...
 "%MAMBA_ENV%\python.exe" -m pip install -q -r requirements.txt
 if errorlevel 1 (
-    echo WARNING: Some dependencies may have failed to install
+    echo ERROR: Dependency installation failed.
+    exit /b 1
 )
 echo.
 

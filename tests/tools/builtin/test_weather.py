@@ -245,6 +245,8 @@ class TestWeatherTool:
         mock_get.side_effect = [geo_response, weather_response]
 
         self.context.redacted_text = "I need it for London"
+        turn_deadline = object()
+        self.context.deadline = turn_deadline
 
         # No location in args, auto-detect fails, extractor recovers "London".
         result = self.tool.run({}, self.context)
@@ -255,6 +257,10 @@ class TestWeatherTool:
         # The extractor must have seen the user's utterance, not the args.
         called_text = mock_extract.call_args[0][0]
         assert "London" in called_text
+        # The turn's deadline must reach the extractor so a hung call there
+        # can't outlive the turn — regression for the deadline stopping at
+        # the reply loop instead of threading into tool-internal LLM calls.
+        assert mock_extract.call_args[0][2] is turn_deadline
 
     @patch('src.jarvis.tools.builtin.weather._extract_place_from_user_text')
     @patch('src.jarvis.tools.builtin.weather.get_location_info')
@@ -474,3 +480,41 @@ class TestExtractPlaceFromUserText:
         with self._patched_backend("x" * 200):
             got = _extract_place_from_user_text("weather", self._cfg())
         assert got is None
+
+    def test_bounds_timeout_to_the_remaining_reply_deadline(self):
+        """A hung place-extraction call must not outlive the reply turn
+        just because its configured ceiling (llm_tools_timeout_sec, 300s
+        by default) is far larger than what's actually left."""
+        from jarvis.llm.route import RequestDeadline
+
+        cfg = self._cfg()
+        cfg.llm_tools_timeout_sec = 300.0
+        backend = Mock()
+        backend.direct.return_value = "London"
+        deadline = RequestDeadline.after(2.0)
+
+        with patch(
+            "src.jarvis.tools.builtin.weather.get_llm_backend",
+            return_value=backend,
+        ):
+            _extract_place_from_user_text("I need it for London", cfg, deadline)
+
+        timeout_used = backend.direct.call_args.kwargs["timeout_sec"]
+        assert 0 < timeout_used <= 2.0, (
+            f"expected the call bounded to ~2s of remaining deadline, got "
+            f"{timeout_used} (configured ceiling was 300s)"
+        )
+
+    def test_no_deadline_leaves_the_configured_timeout_untouched(self):
+        cfg = self._cfg()
+        cfg.llm_tools_timeout_sec = 42.0
+        backend = Mock()
+        backend.direct.return_value = "London"
+
+        with patch(
+            "src.jarvis.tools.builtin.weather.get_llm_backend",
+            return_value=backend,
+        ):
+            _extract_place_from_user_text("I need it for London", cfg)
+
+        assert backend.direct.call_args.kwargs["timeout_sec"] == 42.0

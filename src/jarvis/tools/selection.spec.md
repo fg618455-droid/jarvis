@@ -51,12 +51,20 @@ Note: embedding is **not** the default strategy because nomic-embed-text produce
 ### LLM Strategy (default)
 
 1. Build a catalogue of `- name: description` lines (descriptions truncated to 120 chars) for every registered tool except always-included ones.
-2. Send to `call_llm_direct` with a system prompt asking for the **top 5 most relevant** tool names as a comma-separated list. The prompt instructs the router to prefer 1–3 tools for narrow queries and to return `"none"` for greetings/small talk.
+2. Send through the FAST-tier backend's `direct()` call with a system prompt asking for the **top 5 most relevant** tool names as a comma-separated list, followed by a single classification word. The prompt instructs the router to prefer 1–3 tools for narrow queries and to return `"none"` for greetings/small talk. The request uses `num_ctx=8192`, matching the main Ollama chat runner; when FAST and CHAT resolve to the same model, routing therefore reuses the resident runner instead of forcing Ollama to rebuild it at a different context size between the two calls.
 3. Parse the response, matching tokens against known tool names (unknowns are dropped silently).
 4. Apply a hard `_LLM_MAX_SELECTED` (5) cap regardless of what the router returned, to guard against chatty routers that echo the whole catalogue.
 5. Append always-included tools.
 6. If the router replies `"none"`, return only the always-included tools.
 7. On timeout, empty response, or parse failure (no token in the response matched a known tool name), fall back to the **keyword strategy** rather than to the full catalogue. Reasoning: the catalogue can grow to 30–40 tools once an MCP server like `chrome-devtools` is enabled, and exposing all of them to a small chat model (gemma4:e2b class) overwhelms tool selection, producing empty replies. Keyword scoring narrows on query/name overlap deterministically, and the engine's `toolSearchTool` escape hatch still lets the chat model widen mid-loop if the keyword pick missed.
+
+#### Chat backend preference
+
+The same response also names which Tier.CHAT backend the turn prefers, so a caller can bias backend selection without a second LLM call (see `../llm/llm.spec.md`, "Chat backend selection"). The router appends `HERMES` for backend/infrastructure work, `COMPLEX` for other multi-step reasoning, or `DEFAULT` to keep configured cloud order. Extraction accepts legacy `LOCAL` but normalises it to `DEFAULT`; it never denotes Ollama. The token is stripped before the tool-list `none` comparison, and word boundaries keep `localFiles` from being mistaken for the legacy token.
+
+Only surfaced when the caller passes `chat_backend_signal`, a dict the router populates with `{"preference": "default" | "complex" | "hermes"}`. The key is absent whenever no classification token is found; that fail-open signal leaves configured order unchanged. Other strategies never populate it.
+
+Distinguishing `COMPLEX` from `HERMES` is a judgement the classifying model makes from the turn's own content, not a keyword match against the user's words: a small router model reads both as "needs real thinking" and the split is often close, particularly against the smallest supported chat models. That imprecision degrades gracefully — a `HERMES` turn misclassified as `COMPLEX` still reaches a synchronous cloud backend, just the other one, and the reply engine's own fail-open chain fallback (`../llm/llm.spec.md`, "Chat backend selection") means neither misclassification can leave a turn unanswered.
 
 #### Context-aware routing
 
@@ -80,13 +88,19 @@ def select_tools(
     llm_timeout_sec: float = 8.0,
     embed_model: str = "",
     embed_timeout_sec: float = 10.0,
+    chat_backend_signal: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
-    """Return list of tool names relevant to the query."""
+    """Return list of tool names relevant to the query. ``chat_backend_signal``,
+    when supplied, is populated by the "llm" strategy with
+    ``{"preference": "default" | "complex" | "hermes"}`` — see "Chat backend
+    preference"."""
 ```
 
 ### Integration
 
 Called from the reply engine (Step 6) before `generate_tools_json_schema()` and `generate_tools_description()`. The returned list replaces the current `allowed_tools = list(BUILTIN_TOOLS.keys())`.
+
+A narrowed result from the LLM strategy containing at least one tool other than `stop` and `toolSearchTool` is also the reply engine's structural signal that external work is relevant. If no tool implementation runs and the chat model attempts to finish in prose, the engine withholds that prose once and directs the next turn to a fitting tool or `toolSearchTool`. This signal is not inferred from words in the request or reply. The `all`, keyword, and embedding strategies are excluded: `all` expresses availability, and embedding always returns a minimum top-k even without a confident semantic match. A result equal to the complete catalogue is also excluded as a fallback shape. A selection containing only `stop` or no tools, and a planner result requiring memory enrichment but no callable tool, leave legitimate zero-tool replies unchanged.
 
 ### Configuration
 

@@ -21,6 +21,7 @@ from helpers import (
     create_mock_llm_response, create_tool_call,
     create_mock_tool_run,
     judge_response_answers_query,
+    JUDGE_MODEL,
 )
 
 
@@ -200,7 +201,7 @@ class TestContextUtilization:
         mock_tool_run = create_mock_tool_run(capture, {"webSearch": MOCK_WEATHER_SEARCH})
 
         call_count = 0
-        def mock_chat(base_url, chat_model, messages, timeout_sec, extra_options=None, tools=None, **kwargs):
+        def mock_chat(cfg, messages, **kwargs):
             nonlocal call_count
             call_count += 1
 
@@ -254,7 +255,7 @@ class TestToolUsage:
         })
 
         call_count = 0
-        def mock_chat(base_url, chat_model, messages, timeout_sec, extra_options=None, tools=None, **kwargs):
+        def mock_chat(cfg, messages, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -291,7 +292,7 @@ class TestToolUsage:
         })
 
         call_count = 0
-        def mock_chat(base_url, chat_model, messages, timeout_sec, extra_options=None, tools=None, **kwargs):
+        def mock_chat(cfg, messages, **kwargs):
             nonlocal call_count
             call_count += 1
 
@@ -355,7 +356,7 @@ class TestMultiStepReasoning:
         })
 
         call_count = 0
-        def mock_chat(base_url, chat_model, messages, timeout_sec, extra_options=None, tools=None, **kwargs):
+        def mock_chat(cfg, messages, **kwargs):
             nonlocal call_count
             call_count += 1
 
@@ -426,15 +427,11 @@ class TestMemoryEnrichment:
     def test_enrichment_extracts_correct_keywords(self, query: str, expected_keywords: list, mock_config):
         """Enrichment should extract keywords that find relevant memory context."""
         from jarvis.reply.enrichment import extract_search_params_for_memory
-        from helpers import JUDGE_MODEL
-
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         result = extract_search_params_for_memory(
             query=query,
-            ollama_base_url=mock_config.ollama_base_url,
-            ollama_chat_model=mock_config.ollama_chat_model,
+            cfg=mock_config,
+            chat_model=JUDGE_MODEL,
             timeout_sec=15.0
         )
 
@@ -464,10 +461,6 @@ class TestMemoryEnrichment:
         information — we don't want to pull it from long-term memory redundantly.
         """
         from jarvis.reply.enrichment import extract_search_params_for_memory
-        from helpers import JUDGE_MODEL
-
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         context_hint = (
             "Current local time: Sunday, 2026-04-19 14:30 local. "
@@ -479,8 +472,8 @@ class TestMemoryEnrichment:
 
         result = extract_search_params_for_memory(
             query="recommend a restaurant I'd enjoy",
-            ollama_base_url=mock_config.ollama_base_url,
-            ollama_chat_model=mock_config.ollama_chat_model,
+            cfg=mock_config,
+            chat_model=JUDGE_MODEL,
             timeout_sec=15.0,
             context_hint=context_hint,
         )
@@ -519,7 +512,7 @@ class TestMemoryEnrichment:
 
         captured_messages = []
 
-        def mock_chat(base_url, chat_model, messages, timeout_sec, extra_options=None, tools=None, **kwargs):
+        def mock_chat(cfg, messages, **kwargs):
             captured_messages.extend(messages)
             return create_mock_llm_response(
                 "Based on your love for Italian food and goal to eat more veggies, "
@@ -567,7 +560,7 @@ class TestMemoryEnrichment:
         })
 
         call_count = 0
-        def mock_chat(base_url, chat_model, messages, timeout_sec, extra_options=None, tools=None, **kwargs):
+        def mock_chat(cfg, messages, **kwargs):
             nonlocal call_count
             call_count += 1
 
@@ -622,13 +615,10 @@ class TestLiveEndToEnd:
     def test_weather_query_live(self, mock_config, eval_db, eval_dialogue_memory):
         """Live eval: Weather query with real LLM."""
         from jarvis.reply.engine import run_reply_engine
-        from helpers import JUDGE_MODEL
 
         query = "how's the weather this week?"
         test_location = "London, England, United Kingdom"
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         def mock_get_location(**kwargs):
             return (f"Location: {test_location}", None)
@@ -665,13 +655,10 @@ class TestLiveEndToEnd:
         uses them for personalized search rather than asking the user or ignoring them.
         """
         from jarvis.reply.engine import run_reply_engine
-        from helpers import JUDGE_MODEL
 
         query = "what news from today might interest me?"
         capture = ToolCallCapture()
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         # Provide enrichment context so LLM has user interests available
         mock_enrichment_context = [
@@ -764,12 +751,9 @@ class TestLiveEndToEnd:
         bounce the question back.
         """
         from jarvis.reply.engine import run_reply_engine
-        from helpers import JUDGE_MODEL
 
         capture = ToolCallCapture()
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         mock_enrichment_context = [
             "[2024-12-15] User is passionate about space exploration and astronomy",
@@ -900,10 +884,7 @@ class TestHelpfulness:
     ):
         """Live eval: agent should use tools for forecast queries, never deflect."""
         from jarvis.reply.engine import run_reply_engine
-        from helpers import JUDGE_MODEL
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         capture = ToolCallCapture()
         mock_tool_run = create_mock_tool_run(capture, {
@@ -953,10 +934,7 @@ class TestHelpfulness:
     ):
         """Live eval: agent should use tools for answerable queries, never deflect."""
         from jarvis.reply.engine import run_reply_engine
-        from helpers import JUDGE_MODEL
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         capture = ToolCallCapture()
         mock_tool_run = create_mock_tool_run(capture, {
@@ -1022,10 +1000,7 @@ class TestHelpfulness:
         """
         from jarvis.reply.engine import run_reply_engine
         from jarvis.reply.prompts import detect_model_size, ModelSize
-        from helpers import JUDGE_MODEL
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
 
         is_small = detect_model_size(JUDGE_MODEL) == ModelSize.SMALL
 
@@ -1118,10 +1093,7 @@ class TestHelpfulness:
         silent drop like the earlier orphan-list bug) is caught.
         """
         from jarvis.reply.engine import run_reply_engine
-        from helpers import JUDGE_MODEL
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
         # Graph enrichment is opt-in via this setting; MockConfig defaults it off.
         mock_config.memory_enrichment_source = "all"
 
@@ -1252,10 +1224,7 @@ class TestHelpfulness:
         system-prompt directive + banned phrasings.
         """
         from jarvis.reply.engine import run_reply_engine
-        from helpers import JUDGE_MODEL
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
         mock_config.memory_enrichment_source = "all"
 
         query = "please remember that I'm vegetarian"
@@ -1313,10 +1282,7 @@ class TestHelpfulness:
         context on open-ended prompts instead of emitting a stock greeting.
         """
         from jarvis.reply.engine import run_reply_engine
-        from helpers import JUDGE_MODEL
 
-        mock_config.ollama_base_url = "http://localhost:11434"
-        mock_config.ollama_chat_model = JUDGE_MODEL
         mock_config.memory_enrichment_source = "all"
 
         class _Node:
@@ -1448,7 +1414,7 @@ class TestMalformedResponseAfterTools:
 
         call_count = 0
 
-        def mock_chat(base_url, chat_model, messages, timeout_sec, extra_options=None, tools=None, **kwargs):
+        def mock_chat(cfg, messages, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:

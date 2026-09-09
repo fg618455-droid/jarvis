@@ -6,6 +6,8 @@ Privacy-first: all data stays on disk, never leaves the machine.
 
 from __future__ import annotations
 
+from jarvis.storage import data_directory
+
 import json
 import threading
 import time
@@ -16,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 def _default_history_path() -> Path:
     """Return the default path for dictation history storage."""
-    base = Path.home() / ".local" / "share" / "jarvis"
+    base = data_directory()
     base.mkdir(parents=True, exist_ok=True)
     return base / "dictation_history.json"
 

@@ -48,7 +48,11 @@ class LocalFilesTool(Tool):
                 return os.path.expanduser(p)
 
             def _resolve_safe(p: str) -> Path:
-                resolved = Path(_expand_user_path(p)).resolve()
+                expanded = Path(_expand_user_path(p))
+                # The public schema promises home-relative paths. ``Path.resolve``
+                # otherwise interprets a bare value against the daemon's CWD.
+                candidate = expanded if expanded.is_absolute() else home_root / expanded
+                resolved = candidate.resolve()
                 try:
                     # Allow exactly the home root or its descendants
                     if resolved == home_root or str(resolved).startswith(str(home_root) + os.sep):

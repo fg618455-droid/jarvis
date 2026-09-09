@@ -69,6 +69,9 @@ After transcription, text passes through these stages in order:
   reliable than character-by-character typing, handles Unicode.
 - **Shared Whisper model** via lazy reference (`lambda: voice_thread.model`)
   and backend info — no double memory usage.
+- **Shared `whisper_language` setting.** Dictation transcribes in the same
+  language the listener does, so a user who pins their language only says so
+  once. Unset means Whisper identifies the language per recording.
 - **Separate `sounddevice.InputStream`** for dictation audio — avoids
   modifying the complex listener code.
 - **Pause flag** on the main listener to prevent dictation speech being
@@ -149,3 +152,7 @@ Location steps) that allows users to:
 ## Dependencies
 
 - `pynput>=1.7.6` — global hotkey detection and keyboard simulation.
+
+Default application-owned output paths honour the startup `JARVIS_DATA_DIR`
+override; see `src/jarvis/storage.spec.md`. Explicit configured paths retain
+precedence, and provider authentication/HOME are not remapped.
