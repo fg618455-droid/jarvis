@@ -1721,3 +1721,49 @@ class TestSearchProvidersPage:
         finally:
             cfg_path.unlink(missing_ok=True)
 
+
+
+class TestMigratedConfigPrefill:
+    """Re-running the wizard after the v4 config migration must still show the
+    user's provider choice and connection details, which now live in the
+    ``_legacy_local_llm`` block rather than at the top level.
+    """
+
+    MIGRATED_CONFIG = {
+        "_config_version": 4,
+        "execution_mode": "local",
+        "_legacy_local_llm": {
+            "llm_provider": "openai_compatible",
+            "llm_base_url": "http://lmstudio:1234/v1",
+            "llm_api_key": "sk-saved",
+            "llm_chat_model": "lmstudio/gemma",
+            "embedding_model": "text-embed-3",
+        },
+    }
+
+    def _config_file(self, tmp_path):
+        import json
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(json.dumps(self.MIGRATED_CONFIG), encoding="utf-8")
+        return cfg_path
+
+    def test_provider_choice_preselects_the_relocated_provider(self, qapp, tmp_path):
+        cfg_path = self._config_file(tmp_path)
+
+        with patch("jarvis.config.default_config_path", return_value=cfg_path):
+            page = ProviderChoicePage()
+
+        assert page._selected == "openai_compatible"
+        assert page._openai_radio.isChecked() is True
+
+    def test_openai_page_prefills_the_relocated_connection(self, qapp, tmp_path):
+        cfg_path = self._config_file(tmp_path)
+
+        page = OpenAICompatiblePage()
+        with patch("jarvis.config.default_config_path", return_value=cfg_path):
+            page.initializePage()
+
+        assert page._base_url_input.text() == "http://lmstudio:1234/v1"
+        assert page._api_key_input.text() == "sk-saved"
+        assert page._chat_model_combo.currentText() == "lmstudio/gemma"
+        assert page._embed_model_combo.currentText() == "text-embed-3"

@@ -516,3 +516,50 @@ class TestMCPConfigSaveLogic:
             assert "mcps" not in saved
         finally:
             cfg_path.unlink(missing_ok=True)
+
+
+class TestRelocatedLocalModelSettings:
+    """The form must reflect the settings Jarvis runs on.
+
+    After the v4 config migration the local-LLM settings live in the
+    ``_legacy_local_llm`` block, so a window that merged defaults with the raw
+    file would show a model the daemon never loads, and saving would then
+    write that wrong value back.
+    """
+
+    MIGRATED_CONFIG = {
+        "_config_version": 4,
+        "execution_mode": "local",
+        "_legacy_local_llm": {
+            "ollama_chat_model": "gpt-oss:20b",
+            "ollama_base_url": "http://127.0.0.1:9999",
+        },
+    }
+
+    def _open_window(self, tmp_path, monkeypatch, payload):
+        from desktop_app.settings_window import SettingsWindow
+
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(json.dumps(payload), encoding="utf-8")
+        monkeypatch.setattr(
+            "desktop_app.settings_window.default_config_path", lambda: cfg_path
+        )
+        return SettingsWindow(), cfg_path
+
+    def test_form_shows_the_relocated_model(self, qapp, tmp_path, monkeypatch):
+        window, _ = self._open_window(tmp_path, monkeypatch, self.MIGRATED_CONFIG)
+
+        assert window._merged["ollama_chat_model"] == "gpt-oss:20b"
+        assert window._merged["ollama_base_url"] == "http://127.0.0.1:9999"
+
+    def test_saving_unchanged_keeps_the_resolved_settings(self, qapp, tmp_path, monkeypatch):
+        from jarvis.config import load_settings
+
+        window, cfg_path = self._open_window(tmp_path, monkeypatch, self.MIGRATED_CONFIG)
+        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
+        before = load_settings()
+
+        with patch("desktop_app.settings_window.QMessageBox.information"):
+            window._on_save()
+
+        assert load_settings() == before

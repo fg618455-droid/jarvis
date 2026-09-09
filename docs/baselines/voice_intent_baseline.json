@@ -1,0 +1,44 @@
+{
+  "measured_at": "2026-09-08",
+  "cases": 42,
+  "catalogue": "evals/test_intent_judge.py",
+  "rules": {
+    "passed": 28,
+    "failed": 14,
+    "accuracy": 0.6667,
+    "accuracy_by_kind": {
+      "multi": 0.4545,
+      "single": 0.9
+    },
+    "failed_cases": [
+      "stop_command_during_tts",
+      "mentioned_in_narrative_past_tense",
+      "multiple_echoes_then_interrupt",
+      "multi_person_weather_discussion",
+      "multi_person_vague_reference",
+      "cross_segment_dinosaur_opinion",
+      "cross_segment_answer_that_weather",
+      "cross_segment_answer_that_with_noise",
+      "cross_segment_answered_that_whisper_variant",
+      "cross_segment_go_ahead_and_answer",
+      "alias_after_narrative_context",
+      "buried_target_amid_unrelated_chatter",
+      "buried_target_topicless_question",
+      "buried_target_plural_vague_ref_they"
+    ]
+  },
+  "intent_judge": {
+    "passed": 41,
+    "failed": 1,
+    "accuracy": 0.9762,
+    "accuracy_by_kind": {
+      "multi": 1.0,
+      "single": 0.95
+    },
+    "failed_cases": [
+      "echo_plus_followup_extracted"
+    ],
+    "model": "gemma4:e2b"
+  },
+  "gap_percentage_points": 30.95
+}

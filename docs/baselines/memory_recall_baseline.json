@@ -1,0 +1,47 @@
+{
+  "k": 3,
+  "questions": 18,
+  "corpus_size": 24,
+  "hits": 6,
+  "misses": 12,
+  "recall_at_k": 0.3333,
+  "recall_by_kind": {
+    "lexical": 0.4444,
+    "semantic": 0.2222
+  },
+  "missed_queries": [
+    "What did the physiotherapist say about the knee?",
+    "When does the family fly to Croatia?",
+    "Wann läuft der Handyvertrag aus?",
+    "Worüber muss Felix das Referat in Englisch halten?",
+    "Wann muss der Wagen zur Inspektion?",
+    "Welches Instrument lernt Felix gerade?",
+    "Wofür spart Felix im Moment?",
+    "Warum ist das Brot nicht aufgegangen?",
+    "What made the laptop quiet again?",
+    "Wer reagiert allergisch auf Tiere?",
+    "Was ist für Omas achtzigsten geplant?",
+    "Which board game does Felix play on Thursdays?"
+  ],
+  "fts_only": {
+    "recall_at_k": 0.7778,
+    "recall_by_kind": {
+      "lexical": 1.0,
+      "semantic": 0.5556
+    },
+    "missed_queries": [
+      "Welches Instrument lernt Felix gerade?",
+      "Why can he not go running at the moment?",
+      "Wofür spart Felix im Moment?",
+      "Wer reagiert allergisch auf Tiere?"
+    ]
+  },
+  "measured_at": "2026-09-08",
+  "retrieval": "hybrid",
+  "vector_weight": 0.6,
+  "fts_weight": 0.4,
+  "embedding_model": "nomic-embed-text",
+  "vector_store": "python",
+  "query": "OR-joined keywords for FTS, joined keywords embedded",
+  "note": "The blend scores an FTS hit as 1/(1+bm25) * 0.4, and SQLite's bm25() is negative for a match, so the better a document matches the more the term subtracts. That is why the blend scores below its own FTS-only branch here. Compare a replacement against fts_only, not against the blend."
+}
