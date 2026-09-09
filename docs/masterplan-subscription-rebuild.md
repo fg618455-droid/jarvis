@@ -359,6 +359,15 @@ Run-orientiert statt Completion-orientiert — das ist der eigentliche Schnitt g
 | `health()` | `HealthReport` | Erreichbarkeit + Latenz |
 
 Nicht unterstützte Fähigkeiten geben `NotSupported` zurück — **niemals** eine simulierte Antwort.
+`NotSupported` gilt für `steer`, `interrupt`, `resume`, `fork` und `list_sessions`. **Nicht** für
+`list_models`: dort ist immer ein `ModelCatalog` zu liefern, dessen `enumerable`-Flag angibt, ob der
+Provider eine Auflistung anbietet (§6.4).
+
+`RunSpec` trägt **kein** provider-spezifisches `permission_mode`, sondern
+`capability_profile: read_only | project_dev | automation | unrestricted` (§15.2, Default
+`read_only`); jeder Adapter übersetzt es selbst in seine native Berechtigungsform
+(Claude `--permission-mode`, Codex `--sandbox` / `PermissionProfile`, Hermes `approvals`).
+Ebenfalls Teil des Vertrags: `mcp_config` (Pfad zur MCP-Konfiguration, ab Phase 4 genutzt).
 
 ### 6.2 Adapter-Transporte (verifiziert)
 
@@ -395,7 +404,9 @@ run.finished  {status: ok|error|cancelled|quota|timeout, reason}
 | **Hermes** | `hermes model --refresh` (holt `/v1/models` je Provider) + `cache/model_catalog.json` | ✅ dynamisch |
 | **Claude** | **keine Listing-Schnittstelle in der CLI** | ⚠️ offene Capability |
 
-**Fail-Closed-Entwurf für Claude (§7.4):** Der Katalog startet leer. Es gibt genau zwei Wege,
+**Fail-Closed-Entwurf für Claude (§7.4):** Der Katalog trägt `enumerable=False` und startet leer —
+`NotSupported` wäre falsch, denn Claude unterstützt Modellwahl sehr wohl, nur nicht deren
+Auflistung. Es gibt genau zwei Wege,
 Einträge zu erhalten: (a) der Nutzer trägt einen Modellnamen ein, und JARVIS **verifiziert** ihn
 mit einem 1-Token-Probe-Run (`claude -p --model X --output-format json "ping"`) und schreibt ihn
 mit `source="verified-probe"` in den Katalog; (b) ein Run läuft erfolgreich, dann wird das
@@ -1281,7 +1292,7 @@ Neuer CI-Wächter: ein Test, der `git grep -iE "ollama|lm ?studio|llama\.cpp|loc
 |---|---|---|---|---|
 | R1 | Sprachdialog wird zu langsam (6–20 s statt 4,5 s) | hoch | hoch | Persistente Sessions, sofortige Quittungs-TTS, Streaming satzweise, `hermes` als schnellster Pfad für Kurzantworten |
 | R2 | Abo-Kontingent im Alltag erschöpft | hoch | hoch | Usage-Dashboard, Warnschwellen, Provider-Wahl pro Aufgabentyp, kein Auto-Fallback |
-| R3 | Memory-Qualität bricht ohne Embeddings ein | hoch | mittel | Baseline vorher messen (§23), BM25+Metadaten+Recency-Tuning, ehrliche Kommunikation |
+| R3 | Memory-Qualität bricht ohne Embeddings ein | **gering** | mittel | Durch T-002 entkräftet: der heutige Hybrid liegt bei 33,3 % Recall@3 gegen 77,8 % seines eigenen FTS-Zweigs, weil `1/(1+bm25)` bei negativem `bm25()` einen starken Treffer bestraft (`db.py:172-176`, `db.py:228`). Der Embedding-Wegfall entfernt einen defekten Blend. T-031 misst gegen `fts_only` |
 | R4 | CLI-Update bricht Adapter (kein stabiler Vertrag) | hoch | hoch | Golden-File-Kontrakttests, Versionspinning, Nightly-Live-Smoke, defensives Parsen |
 | R5 | Wegfall des Intent-Judge macht Wake-Erkennung schlechter | hoch | **hoch** (gemessen: 30,95 Punkte Lücke) | Regeln aus den 42 Eval-Fällen hart nachbauen, Schwerpunkt Mehrsegment-Kontext, Barge-in beibehalten |
 | R6 | Datenabfluss: Redaction greift nicht vor Cloud-Aufruf | mittel | **kritisch** | Redaction als Pflicht-Middleware im Adapter, Test mit Fixture-Secrets, Audit |
@@ -1704,7 +1715,7 @@ Für **jede** Phase gilt zusätzlich zu den phasenspezifischen Abnahmekriterien:
 | T-014 | Core-API-Skelett (Loopback, Token, SSE, Origin/CSRF) | 2 | M | C |
 | T-015 | `app.py` in sechs Module zerlegen | 2 | L | C |
 | T-016 | Memory-Viewer → Core-API-Routen, Flask-Prozess entfernen | 2 | L | C |
-| T-017 | `ports/` + Face-Widget-Import auflösen | 2 | M | C |
+| T-017 | `ports/` + Face-Widget-Import auflösen (**5 Module**, nicht 1 — durch T-004 gemessen) | 2 | L | C |
 | T-018 | Windows-Pfadmigration (kopieren, reversibel) | 2 | M | C |
 | T-019 | `RunManager` + `RunStore` + `run_events` | 3 | L | D |
 | T-020 | Audit-Kette (append-only, Hash) | 3 | M | D |
@@ -1828,7 +1839,7 @@ T-008** (fremder CLI-Vertrag) und **T-037** (Ersatz für den Intent-Judge).
 | Fähigkeit | Claude (CLI 2.1.220) | Codex (app-server 0.153.4) | Hermes (lokal) |
 |---|---|---|---|
 | Abo-Auth | ✅ `claude.ai`, Pro (verifiziert) | ✅ ChatGPT (verifiziert) | ✅ via openai-codex |
-| Auth-Status maschinenlesbar | ✅ JSON | ✅ `codex doctor` / `Account/read` | ⚠️ Textausgabe |
+| Auth-Status maschinenlesbar | ✅ JSON | ✅ `codex doctor` / `Account/read` | ✅ `hermes auth status <provider>` → `<provider>: logged in`, Exit 0 |
 | Modell-Liste dynamisch | ❌ **keine Schnittstelle** | ✅ `Model/list` | ✅ `hermes model --refresh` |
 | Modell-Fähigkeiten abfragbar | ❌ | ✅ `ModelProvider/capabilities/read` | ⚠️ teilweise |
 | Modell pro Run pinnbar | ✅ `--model` | ✅ `Turn/start` | ✅ `-m` |
@@ -1859,7 +1870,7 @@ T-008** (fremder CLI-Vertrag) und **T-037** (Ersatz für den Intent-Judge).
 | Antwortlatenz | ~4,5 s | 6–20 s | ⚠️ **schlechter** |
 | Tool-Nutzung | eigener Loop + Router-LLM | Provider-Loop über MCP | ✅ besser |
 | Mehrschrittige Aufgaben | Planner (5 Schritte) | echter Agent | ✅ deutlich besser |
-| Memory-Suche | Embedding+FTS hybrid | FTS5/BM25+Metadaten | ⚠️ **schlechter** |
+| Memory-Suche | Embedding+FTS hybrid (defekt, 33,3 % Recall@3) | FTS5/BM25+Metadaten (77,8 %) | ✅ **besser** |
 | Memory-Verdichtung | lokales LLM je Sitzung | Cloud, gebündelt, mit Provenienz | ✅ besser |
 | Dictation | lokal Whisper | unverändert | ➡️ gleich |
 | TTS | Piper/Chatterbox | unverändert (+Priorisierung) | ✅ leicht besser |
@@ -2124,7 +2135,7 @@ claude -p        codex app-server      hermes gateway
 | 12 | T-012 `CapabilityRegistry` | 1 | S |
 | 13 | T-013 Golden-Kontrakttests | 1 | M |
 | 14 | T-014 Core-API-Skelett | 2 | M |
-| 15 | T-017 `ports/` + Face-Import auflösen | 2 | M |
+| 15 | T-017 `ports/` + Face-Import auflösen (5 Module) | 2 | L |
 | 16 | T-015 `app.py` zerlegen | 2 | L |
 | 17 | T-016 Memory-Viewer → API | 2 | L |
 | 18 | T-018 Windows-Pfadmigration | 2 | M |
@@ -2229,7 +2240,11 @@ Codex CLI 0.153.4
   Fallback:  `codex exec --json` (JSONL) wenn app-server nicht startet
 
 Hermes (lokal unter %LOCALAPPDATA%\hermes, Start über bin\hermes.cmd)
-  Auth:      `hermes status`, `hermes auth status`
+  Auth:      `hermes auth status <provider>` — Provider ist PFLICHT und wird zur
+             Laufzeit aus %LOCALAPPDATA%\hermes\config.yaml gelesen (`model.provider`),
+             nie hardcodiert. Ausgabe: `<provider>: logged in`, Exit 0.
+             `hermes status` wird NICHT geparst: seine Ausgabe enthält maskierte
+             API-Key-Fragmente und der Befehl ist netzabhängig.
   Run:       `hermes -z "<prompt>" [-m <model>] [--provider <p>] [-t <toolsets>]
               [--skills <s>] [--in <dir>]`
   Modelle:   `hermes model --refresh` + cache/model_catalog.json
@@ -2306,7 +2321,7 @@ Riskanteste Glieder: **T-007/T-008** (fremde CLI-Verträge, wöchentliche Update
 |---|---|---|
 | **E-1** | Bleibt STT/TTS lokal-primär (Empfehlung) oder soll Cloud-primär gebaut werden? | Cloud-STT/TTS bräuchte einen **vierten** Provider — die Vorgabe verbietet das. Ohne Antwort ist Phase 7 nicht spezifizierbar. |
 | **E-2** | Welcher Provider trägt den Sprachdialog (Empfehlung: Hermes)? | Bestimmt Latenz, Kontingentverbrauch und Phase-3-Abnahme. |
-| **E-6** | Wie viel Memory-Recall-Verlust ist akzeptabel, wenn Embeddings wegfallen? | Kein erlaubter Zugang bietet Embeddings. Wenn die Antwort „gar keiner" ist, kippt Phase 5 und wir brauchen ein anderes Gespräch. |
+| ~~E-6~~ | ~~Memory-Recall-Verlust~~ | **Erledigt durch T-002.** Der Embedding-Wegfall kostet nichts: der heutige Hybrid liegt bei 33,3 % Recall@3 gegen 77,8 % seines eigenen FTS-Zweigs. Phase 5 ist damit entrisikt. Der zugrunde liegende Scoring-Bug verdient ein eigenes Issue unabhängig vom Umbau. |
 | **E-9** | Erlaubt die „Jarvis AI Assistant License" (Baris Sencan) diesen Umbau und eine spätere Weitergabe? | Private Nutzung unkritisch; Veröffentlichung ist ungeklärt. Betrifft auch den Namen. |
 | **E-10** | Neupositionierung: „100 % lokal, keine Abos" wird ins Gegenteil verkehrt — wie soll das Produkt künftig auftreten? | Betrifft README, Release-Texte, Installer-Texte und die Erwartung an Datenschutz. |
 
