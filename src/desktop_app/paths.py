@@ -19,6 +19,12 @@ def get_log_dir() -> Path:
     created (e.g. read-only home, permission denied) so callers never have
     to handle mkdir failure themselves.
     """
+    from jarvis.storage import data_root_override
+    root = data_root_override()
+    if root is not None:
+        preferred = root / "logs"
+        preferred.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return preferred
     if sys.platform == "darwin":
         preferred = Path.home() / "Library" / "Logs" / "Jarvis"
     elif sys.platform == "win32":

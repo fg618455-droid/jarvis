@@ -9,6 +9,8 @@ too.
 
 from __future__ import annotations
 
+from jarvis.storage import data_directory
+
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -39,7 +41,7 @@ def _get_db_path() -> str:
         return settings.db_path
     except Exception:
         # Fallback to default path
-        base = Path.home() / ".local" / "share" / "jarvis"
+        base = data_directory()
         return str(base / "jarvis.db")
 
 

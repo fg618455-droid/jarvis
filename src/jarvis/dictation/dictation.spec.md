@@ -152,3 +152,7 @@ Location steps) that allows users to:
 ## Dependencies
 
 - `pynput>=1.7.6` — global hotkey detection and keyboard simulation.
+
+Default application-owned output paths honour the startup `JARVIS_DATA_DIR`
+override; see `src/jarvis/storage.spec.md`. Explicit configured paths retain
+precedence, and provider authentication/HOME are not remapped.

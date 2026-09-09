@@ -100,3 +100,7 @@ Two independent caches exist, each with in-memory and on-disk tiers:
 - **Weather tool** (`src/jarvis/tools/builtin/weather.py`): Uses `get_location_info` for coordinates. Does not pass the manual override through — a city/country name has no latitude/longitude, so weather geocoding continues to rely on IP-based geolocation regardless of the override.
 - **Setup Wizard** (`src/desktop_app/setup_wizard.py`): Uses `get_location_context` and `get_location_info` for status display and IP validation, including the manual override. Skips the location page entirely when `location_enabled=false`. Uses the OpenDNS resolver (not an external website) for the "Detect My IP" button. IP validation reuses the core `_is_private_ip` and `_is_cgnat_ip` helpers.
 - **Settings UI** (`src/desktop_app/settings_window.py`): Exposes all nine config keys as toggleable fields, metadata-driven via `config_metadata.py`.
+
+Default application-owned output paths honour the startup `JARVIS_DATA_DIR`
+override; see `src/jarvis/storage.spec.md`. Explicit configured paths retain
+precedence, and provider authentication/HOME are not remapped.

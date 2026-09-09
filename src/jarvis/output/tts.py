@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from jarvis.storage import data_directory
 import platform
 import subprocess
 import threading
@@ -58,7 +60,7 @@ PIPER_VOICE_BASE_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0
 
 def _get_piper_models_dir() -> Path:
     """Get the directory for storing Piper voice models."""
-    base = Path.home() / ".local" / "share" / "jarvis" / "models" / "piper"
+    base = data_directory() / "models" / "piper"
     base.mkdir(parents=True, exist_ok=True)
     return base
 

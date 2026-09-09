@@ -1015,7 +1015,11 @@ def show_unsupported_model_dialog(model_name: str) -> bool:
 
 def get_lock_file_path() -> Path:
     """Get the path to the single-instance lock file."""
-    if sys.platform == "darwin":
+    from jarvis.storage import data_root_override
+    root = data_root_override()
+    if root is not None:
+        lock_dir = root / "state" / "desktop"
+    elif sys.platform == "darwin":
         lock_dir = Path.home() / "Library" / "Application Support" / "Jarvis"
     elif sys.platform == "win32":
         lock_dir = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Jarvis"

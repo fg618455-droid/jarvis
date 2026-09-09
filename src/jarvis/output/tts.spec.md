@@ -282,3 +282,7 @@ raises `KokoroSidecarError` in the client. `KokoroTTS._speak_once` catches
 download: `debug_log`, a printed warning, and the utterance is skipped
 rather than spoken — no raw subprocess or pipe exception reaches the reply
 engine or the user.
+
+Default application-owned output paths honour the startup `JARVIS_DATA_DIR`
+override; see `src/jarvis/storage.spec.md`. Explicit configured paths retain
+precedence, and provider authentication/HOME are not remapped.

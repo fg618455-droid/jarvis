@@ -351,3 +351,6 @@ content and the report-issue body, so these aborts become diagnosable.
 | Database | `~/.local/share/jarvis/` | `%LOCALAPPDATA%\jarvis\` | `~/.local/share/jarvis/` |
 | Crash logs | `~/Library/Logs/Jarvis/` | `%LOCALAPPDATA%\Jarvis\` | `~/.jarvis/` |
 | Instance lock | `~/Library/Application Support/Jarvis/` | `%LOCALAPPDATA%\Jarvis\` | `~/.jarvis/` |
+
+With `JARVIS_DATA_DIR` set, desktop logs and the instance lock use that explicit
+root as specified in `../jarvis/storage.spec.md`; authentication/HOME are unchanged.

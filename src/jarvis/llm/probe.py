@@ -7,6 +7,8 @@ its result or logs.
 
 from __future__ import annotations
 
+from jarvis.storage import state_directory
+
 import json
 import os
 import sys
@@ -359,7 +361,7 @@ def probe_all(values: Mapping[str, str]) -> list[dict[str, Any]]:
 
 
 def _save_catalogue(results: list[dict]) -> Path:
-    path = Path.home() / ".jarvis" / "llm_probe.json"
+    path = state_directory() / "llm_probe.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(
         dir=str(path.parent), prefix=".llm_probe.", suffix=".tmp"

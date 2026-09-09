@@ -18,6 +18,8 @@ each dump is self-contained and easy to `cat` or paste into a test.
 
 from __future__ import annotations
 
+from jarvis.storage import data_directory
+
 import json
 import os
 import time
@@ -42,7 +44,7 @@ def new_session_id() -> str:
 
 
 def _dump_dir() -> Path:
-    base = Path.home() / ".local" / "share" / "jarvis" / "prompts"
+    base = data_directory() / "prompts"
     base.mkdir(parents=True, exist_ok=True)
     return base
 

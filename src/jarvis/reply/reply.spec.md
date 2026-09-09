@@ -472,3 +472,7 @@ Behaviour:
 
 
 Memory, tool-result and max-turn loop summaries enforce `Tier.PRIVATE` at the digest boundary, including callers that supply a cloud model. They retain bounded digest timeouts and existing fail-soft behaviour.
+
+Default application-owned output paths honour the startup `JARVIS_DATA_DIR`
+override; see `src/jarvis/storage.spec.md`. Explicit configured paths retain
+precedence, and provider authentication/HOME are not remapped.

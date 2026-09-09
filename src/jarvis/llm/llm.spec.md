@@ -354,3 +354,6 @@ the existing login root. These are supported by the
 [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 The router itself also rejects CHAT-only subscription/crew providers in FAST,
 including direct constructions that bypass the settings factory.
+
+Provider probe and route-state defaults honour the startup `JARVIS_DATA_DIR`
+override described in `../storage.spec.md`. Explicit state paths take precedence.

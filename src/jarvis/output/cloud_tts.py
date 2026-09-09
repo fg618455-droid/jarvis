@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from jarvis.storage import state_directory
+
 import hashlib
 import io
 import json
@@ -117,7 +119,7 @@ def default_tts_provider_state_path() -> Path:
     override = os.environ.get("JARVIS_TTS_PROVIDER_STATE_PATH")
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".jarvis" / "tts_provider_state.json"
+    return state_directory() / "tts_provider_state.json"
 
 
 def provider_state_key(provider: CloudProviderConfig) -> str:

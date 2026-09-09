@@ -1,3 +1,5 @@
+
+from jarvis.storage import data_directory
 import os
 import sys
 import json
@@ -104,7 +106,7 @@ def _default_dictation_hotkey() -> str:
 
 
 def _default_db_path() -> str:
-    base = Path.home() / ".local" / "share" / "jarvis"
+    base = data_directory()
     base.mkdir(parents=True, exist_ok=True)
     return str(base / "jarvis.db")
 

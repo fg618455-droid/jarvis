@@ -934,3 +934,7 @@ Ollama HTTP endpoint with a four-second request timeout, redirects disabled and
 no environment proxy. Missing services or malformed responses yield no resident
 models. The existing name/size/processor/context/until response fields remain.
 Endpoint reference: https://docs.ollama.com/api/ps
+
+Default application-owned output paths honour the startup `JARVIS_DATA_DIR`
+override; see `src/jarvis/storage.spec.md`. Explicit configured paths retain
+precedence, and provider authentication/HOME are not remapped.

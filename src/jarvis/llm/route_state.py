@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from jarvis.storage import state_directory
+
 import hashlib
 import json
 import os
@@ -23,7 +25,7 @@ def default_state_path() -> Path:
     override = os.environ.get("JARVIS_LLM_ROUTE_STATE_PATH")
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".jarvis" / "llm_routes_state.json"
+    return state_directory() / "llm_routes_state.json"
 
 
 def route_state_key(route: Any) -> str:

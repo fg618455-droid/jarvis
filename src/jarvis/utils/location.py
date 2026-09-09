@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from jarvis.storage import data_directory
 import socket
 import ipaddress
 from pathlib import Path
@@ -51,7 +53,7 @@ _CGNAT_RESOLUTION_TTL = timedelta(hours=1)
 
 # Disk cache paths (share directory with geoip DB for locality)
 def _cache_base_dir() -> Path:
-    return Path.home() / ".local" / "share" / "jarvis"
+    return data_directory()
 
 _LOCATION_CACHE_FILE = _cache_base_dir() / "location_cache.json"
 _CGNAT_CACHE_FILE = _cache_base_dir() / "cgnat_cache.json"
@@ -301,7 +303,7 @@ def _get_external_ip_automatically() -> Optional[str]:
 
 def _get_database_path() -> Path:
     """Get the path where the GeoLite2 database should be stored."""
-    base_dir = Path.home() / ".local" / "share" / "jarvis" / "geoip"
+    base_dir = data_directory() / "geoip"
     base_dir.mkdir(parents=True, exist_ok=True)
     return base_dir / "GeoLite2-City.mmdb"
 
