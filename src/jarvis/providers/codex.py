@@ -256,7 +256,7 @@ class _JsonRpcTransport:
                 except json.JSONDecodeError:
                     self._fail_all(CodexProtocolError("Codex app-server emitted malformed JSON"))
                     return
-                if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
+                if not isinstance(message, dict) or message.get("jsonrpc") not in (None, "2.0"):
                     self._fail_all(CodexProtocolError("Codex app-server emitted invalid JSON-RPC"))
                     return
                 request_id = message.get("id")

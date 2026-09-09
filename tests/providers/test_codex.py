@@ -446,12 +446,15 @@ for line in sys.stdin:
     method = request['method']
     if method == 'initialize':
         result = {'codexHome': '.', 'platformFamily': 'windows', 'platformOs': 'windows', 'userAgent': 'test'}
-    elif method == 'account/read':
+        print(json.dumps({'id': request['id'], 'result': result}), flush=True)
+        print(json.dumps({'method': 'remoteControl/status/changed', 'params': {'status': 'disabled'}, 'emittedAtMs': 1}), flush=True)
+        continue
+    if method == 'account/read':
         result = {'account': {'type': 'chatgpt', 'email': None, 'planType': 'plus'}, 'requiresOpenaiAuth': True}
     elif method == 'model/list':
         clean = 'clean' if 'ANTHROPIC_API_KEY' not in os.environ and 'OPENAI_API_KEY' not in os.environ else 'leaked'
         result = {'data': [{'id': clean, 'model': clean, 'displayName': clean}], 'nextCursor': None}
-    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+    print(json.dumps({'id': request['id'], 'result': result}), flush=True)
 """
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
     monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
