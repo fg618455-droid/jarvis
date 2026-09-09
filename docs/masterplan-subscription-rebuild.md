@@ -400,7 +400,7 @@ run.finished  {status: ok|error|cancelled|quota|timeout, reason}
 
 | Provider | Quelle | Verfügbarkeit |
 |---|---|---|
-| **Codex** | `app-server` → `Model/list`, `ModelProvider/capabilities/read` | ✅ vollständig dynamisch |
+| **Codex** | `app-server` → `model/list`, `modelProvider/capabilities/read` | ✅ vollständig dynamisch |
 | **Hermes** | `hermes model --refresh` (holt `/v1/models` je Provider) + `cache/model_catalog.json` | ✅ dynamisch |
 | **Claude** | **keine Listing-Schnittstelle in der CLI** | ⚠️ offene Capability |
 
@@ -470,7 +470,7 @@ läuft `claude` mit seinem eigenen Default, und JARVIS protokolliert `model_sour
 | Frage | Antwort | Quelle |
 |---|---|---|
 | Nutzungslimits Claude Pro | existieren (5-h- und Wochenfenster), **nicht** per CLI abfragbar | keine CLI-Schnittstelle gefunden |
-| Nutzungslimits Codex | `Account/rateLimits/read`, `Account/usage/read`, `Account/rateLimits/updated` | app-server v2 Schema |
+| Nutzungslimits Codex | `account/rateLimits/read`, `account/usage/read`, `account/rateLimits/updated` | app-server v2 Schema |
 | Nutzungslimits Hermes | `hermes status`, `agent/account_usage.py` | CLI |
 | Modell-Liste Claude | **nicht verfügbar** | CLI-Hilfe |
 | Embeddings | **bei keinem der drei verfügbar** | CLI-Hilfen + Schema |
@@ -701,7 +701,7 @@ Neu: `src/jarvis/tools/server/` — ein Stdio-MCP-Server, der die elf Builtins p
 exponiert. Angebunden über:
 
 - Claude: `claude --mcp-config <json> --strict-mcp-config --allowedTools "mcp__jarvis__*"`
-- Codex: `codex mcp add` bzw. `Config/mcpServer/reload` im app-server
+- Codex: `codex mcp add` bzw. `config/mcpServer/reload` im app-server
 - Hermes: `hermes mcp`
 
 Damit sind JARVIS-Tools für alle drei Provider verfügbar, ohne dass JARVIS den Tool-Loop fährt.
@@ -725,21 +725,27 @@ Session-Verlust) bleibt unverändert — sie ist für JARVIS-als-MCP-**Client** 
 
 ## 12. Claude-/Codex-Operator
 
-### 12.1 Verifizierte Codex-Fähigkeiten (`app-server` v2, 92 Methoden)
+### 12.1 Verifizierte Codex-Fähigkeiten (`app-server` v2, 99 Request-Methoden)
+
+Die Methodennamen auf der Leitung sind durchgehend lowerCamelCase (`thread/start`, nicht
+`Thread/start`). Maßgeblich ist der Schema-Dump aus
+`codex app-server generate-json-schema --out <dir>`: `ClientRequest.json` enthält 99 Varianten
+einschließlich `initialize`. Unter Windows wird die CLI als `codex.cmd` gestartet; der Shell-Wrapper
+`codex` ist für `CreateProcess` nicht ausführbar.
 
 Vollständig relevant für den Operator:
 
 | Bereich | Methoden |
 |---|---|
-| Sessions | `Thread/start`, `list`, `read`, `resume`, `fork`, `archive`, `unarchive`, `delete`, `revert`, `rollback`, `injectItems`, `metadata/update`, `name/set`, `items/list`, `turns/list`, `loaded/list`, `compact/start`, `goal/{set,get,clear}` |
-| Runs | `Turn/start`, `Turn/interrupt`, `Turn/steer` |
-| Modelle | `Model/list`, `ModelProvider/capabilities/read` |
-| Konto | `Account/read`, `Account/usage/read`, `Account/rateLimits/read`, `Account/login/{start,cancel}`, `Account/logout` |
-| Sicherheit | `PermissionProfile/list`, `Thread/approveGuardianDeniedAction` |
-| Review | `Review/start` |
-| Umfeld | `Skills/list`, `McpServerStatus/list`, `Config/read`, `Config/value/write`, `Hooks/list`, `App/list` |
-| Dateien | `Fs/{readFile,writeFile,readDirectory,getMetadata,copy,remove,watch,unwatch}` |
-| Prozesse | `Command/exec`, `exec/write`, `exec/resize`, `exec/terminate` |
+| Sessions | `thread/start`, `list`, `read`, `resume`, `fork`, `archive`, `unarchive`, `delete`, `revert`, `rollback`, `metadata/update`, `name/set`, `items/list`, `turns/list`, `loaded/list`, `compact/start`, `goal/{set,get,clear}` |
+| Runs | `turn/start`, `turn/interrupt`, `turn/steer` |
+| Modelle | `model/list`, `modelProvider/capabilities/read` |
+| Konto | `account/read`, `account/usage/read`, `account/rateLimits/read`, `account/login/{start,cancel}`, `account/logout` |
+| Sicherheit | `permissionProfile/list`, `thread/approveGuardianDeniedAction` |
+| Review | `review/start` |
+| Umfeld | `skills/list`, `mcpServerStatus/list`, `config/read`, `config/value/write`, `hooks/list`, `app/list` |
+| Dateien | `fs/{readFile,writeFile,readDirectory,getMetadata,copy,remove,watch,unwatch}` |
+| Prozesse | `command/exec`, `exec/write`, `exec/resize`, `exec/terminate` |
 
 Das deckt praktisch die gesamte geforderte Operator-Funktionsliste ab — **ohne** AppleScript und
 ohne Tastendruck-Simulation.
@@ -1371,7 +1377,7 @@ Komplexität: **S** ≤ 1 Tag · **M** 2–4 Tage · **L** 1–2 Wochen · **XL*
   Redaction-Middleware-Hook vorgesehen, noch ohne Nutzdaten.
 - **Plattform:** Prozessstart Windows/macOS/Linux; Codex-app-server über stdio.
 - **Tests:** Kontrakttests gegen Golden-Streams je Adapter; `auth_status()`-Parsing;
-  `Model/list`-Parsing (Codex); Claude-Katalog bleibt leer ohne verifizierten Probe.
+  `model/list`-Parsing (Codex); Claude-Katalog bleibt leer ohne verifizierten Probe.
 - **Evals:** keine (kein Nutzerverhalten betroffen).
 - **Abnahme:** `python -m jarvis.providers.cli status` zeigt für alle drei ehrlich Auth, Modelle
   (bzw. „unbekannt"), Usage (bzw. „nicht verfügbar"); ein 1-Token-Probe-Run je Provider läuft
@@ -1839,27 +1845,27 @@ T-008** (fremder CLI-Vertrag) und **T-037** (Ersatz für den Intent-Judge).
 | Fähigkeit | Claude (CLI 2.1.220) | Codex (app-server 0.153.4) | Hermes (lokal) |
 |---|---|---|---|
 | Abo-Auth | ✅ `claude.ai`, Pro (verifiziert) | ✅ ChatGPT (verifiziert) | ✅ via openai-codex |
-| Auth-Status maschinenlesbar | ✅ JSON | ✅ `codex doctor` / `Account/read` | ✅ `hermes auth status <provider>` → `<provider>: logged in`, Exit 0 |
-| Modell-Liste dynamisch | ❌ **keine Schnittstelle** | ✅ `Model/list` | ✅ `hermes model --refresh` |
-| Modell-Fähigkeiten abfragbar | ❌ | ✅ `ModelProvider/capabilities/read` | ⚠️ teilweise |
-| Modell pro Run pinnbar | ✅ `--model` | ✅ `Turn/start` | ✅ `-m` |
+| Auth-Status maschinenlesbar | ✅ JSON | ✅ `codex doctor` / `account/read` | ✅ `hermes auth status <provider>` → `<provider>: logged in`, Exit 0 |
+| Modell-Liste dynamisch | ❌ **keine Schnittstelle** | ✅ `model/list` | ✅ `hermes model --refresh` |
+| Modell-Fähigkeiten abfragbar | ❌ | ✅ `modelProvider/capabilities/read` | ⚠️ teilweise |
+| Modell pro Run pinnbar | ✅ `--model` | ✅ `turn/start` | ✅ `-m` |
 | Streaming | ✅ `stream-json` + Partials | ✅ Notifications | ✅ |
-| Mid-Run-Steering | ✅ stdin `stream-json` | ✅ `Turn/steer` | ⚠️ nur über Gateway |
-| Interrupt | ✅ Signal/Stream | ✅ `Turn/interrupt` | ⚠️ Prozess |
-| Resume | ✅ `--resume` | ✅ `Thread/resume` | ✅ `--resume` |
-| Fork | ⚠️ über Resume+neue ID | ✅ `Thread/fork` | ✅ `--continue` |
-| Session-Liste | ✅ `agents --json` | ✅ `Thread/list` | ✅ `hermes sessions` |
+| Mid-Run-Steering | ✅ stdin `stream-json` | ✅ `turn/steer` | ⚠️ nur über Gateway |
+| Interrupt | ✅ Signal/Stream | ✅ `turn/interrupt` | ⚠️ Prozess |
+| Resume | ✅ `--resume` | ✅ `thread/resume` | ✅ `--resume` |
+| Fork | ⚠️ über Resume+neue ID | ✅ `thread/fork` | ✅ `--continue` |
+| Session-Liste | ✅ `agents --json` | ✅ `thread/list` | ✅ `hermes sessions` |
 | Eigene Tools via MCP | ✅ `--mcp-config` | ✅ `codex mcp` | ✅ `hermes mcp` |
-| Tool-Berechtigungen | ✅ `--permission-mode`, allow/deny | ✅ `PermissionProfile/list` | ✅ `approvals`, `--yolo` |
+| Tool-Berechtigungen | ✅ `--permission-mode`, allow/deny | ✅ `permissionProfile/list` | ✅ `approvals`, `--yolo` |
 | Struktur-Output | ✅ `--json-schema` | ✅ `--output-schema` | ⚠️ |
-| Usage / Rate-Limits | ❌ **nicht verfügbar** | ✅ `Account/{usage,rateLimits}/read` | ⚠️ `hermes status` |
+| Usage / Rate-Limits | ❌ **nicht verfügbar** | ✅ `account/{usage,rateLimits}/read` | ⚠️ `hermes status` |
 | Bilder als Eingabe | ✅ | ✅ `-i` | ✅ `image_input_mode` |
 | Embeddings | ❌ | ❌ | ❌ |
 | Cron / Zeitplan | ❌ | ❌ | ✅ `hermes cron` |
 | Zustellkanäle | ❌ | ❌ | ✅ `hermes send` |
 | Hintergrundlauf | ✅ `--bg` | ✅ daemon | ✅ gateway |
-| Code-Review | ✅ `ultrareview` | ✅ `Review/start` | ⚠️ |
-| Skills | ✅ | ✅ `Skills/list` | ✅ `--skills` |
+| Code-Review | ✅ `ultrareview` | ✅ `review/start` | ⚠️ |
+| Skills | ✅ | ✅ `skills/list` | ✅ `--skills` |
 
 ## Annex B — Feature-Paritätsmatrix alt ↔ neu
 
