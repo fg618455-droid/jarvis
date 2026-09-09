@@ -56,6 +56,10 @@ class CodexProtocolError(RuntimeError):
     """Report an app-server or JSONL response outside the known schema."""
 
 
+class CodexTimeoutError(CodexProtocolError):
+    """Report that Codex did not answer within the allotted time."""
+
+
 @dataclass(frozen=True)
 class CodexTransportState:
     """Visible transport selection for the adapter."""
@@ -194,7 +198,7 @@ class _JsonRpcTransport:
                 stdin.flush()
             response = response_queue.get(timeout=self._request_timeout)
         except queue.Empty as error:
-            raise CodexProtocolError(f"Codex app-server timed out during {method}") from error
+            raise CodexTimeoutError(f"Codex app-server timed out during {method}") from error
         except (BrokenPipeError, OSError) as error:
             raise CodexProtocolError(f"Codex app-server could not send {method}") from error
         finally:
@@ -216,7 +220,7 @@ class _JsonRpcTransport:
         try:
             message = self._messages.get(timeout=timeout)
         except queue.Empty as error:
-            raise CodexProtocolError("Codex app-server stream timed out") from error
+            raise CodexTimeoutError("Codex app-server stream timed out") from error
         if isinstance(message, Exception):
             raise message
         if not isinstance(message, dict):
@@ -338,7 +342,7 @@ class _ExecJsonProcess:
         try:
             message = self._messages.get(timeout=timeout)
         except queue.Empty as error:
-            raise CodexProtocolError("Codex exec JSONL stream timed out") from error
+            raise CodexTimeoutError("Codex exec JSONL stream timed out") from error
         if isinstance(message, Exception):
             raise message
         return cast(dict[str, Any], message)
@@ -754,6 +758,14 @@ class CodexAdapter(ProviderAdapter):
                     )
                 else:
                     events = normalise_codex_message(self._next_run_message(state))
+            except CodexTimeoutError:
+                debug_log("Codex stream reached its message timeout", "providers")
+                events = [
+                    RunEvent(
+                        "run.finished",
+                        {"status": "timeout", "reason": "Codex stopped sending events"},
+                    )
+                ]
             except CodexProtocolError:
                 events = [
                     RunEvent(

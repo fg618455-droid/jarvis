@@ -13,6 +13,7 @@ from jarvis.providers.base import AuthStatus, Capabilities, NotSupported, RunSpe
 from jarvis.providers.codex import (
     CodexAdapter,
     CodexProtocolError,
+    CodexTimeoutError,
     CodexTransportState,
     normalise_codex_message,
 )
@@ -464,3 +465,32 @@ for line in sys.stdin:
 
     assert [model.id for model in catalogue.models] == ["clean"]
     adapter.close()
+
+
+class TimingOutTransport(StubTransport):
+    def next_message(self, timeout: float | None = None) -> dict[str, Any]:
+        raise CodexTimeoutError("Codex app-server stream timed out")
+
+
+@pytest.mark.unit
+def test_a_silent_stream_terminates_as_timeout_rather_than_error() -> None:
+    responses = app_server_responses()
+    responses["thread/resume"] = {
+        "thread": {
+            "id": "thread-1",
+            "turns": [{"id": "turn-1", "status": "inProgress"}],
+        },
+        "model": "catalogue-model",
+        "cwd": ".",
+    }
+    adapter = CodexAdapter(
+        auth_manager=StubAuthenticationManager(),
+        transport=TimingOutTransport(responses),
+    )
+    run = adapter.resume("thread-1")
+    assert not isinstance(run, NotSupported)
+
+    events = list(adapter.stream(run))
+
+    assert events[-1].kind == "run.finished"
+    assert events[-1].payload["status"] == "timeout"

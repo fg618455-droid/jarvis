@@ -189,6 +189,9 @@ Tool arguments are never copied into normalised events. `tool.call` contains
 count only. `usageLimitExceeded`, `rateLimitExceeded` and
 `sessionBudgetExceeded` terminate with `status="quota"`. Completed, interrupted
 and other failed turns terminate as `ok`, `cancelled` and `error` respectively.
+A stream that stops producing messages within its message timeout terminates with
+`status="timeout"`, which is distinct from a transport failure reported as
+`status="error"`.
 
 `usage()` reads both `account/usage/read` and `account/rateLimits/read`. The
 primary window is reported as a percentage limit with its provider reset time.
