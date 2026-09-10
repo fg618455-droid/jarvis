@@ -417,3 +417,23 @@ ChatGPT subscription, so a failover between them buys nothing.
 version when present, and measures the complete reachability check latency. A
 startup or protocol failure reports `reachable=False` with the transport state;
 it never falls back to `-z`.
+
+## Cross-adapter contract tests
+
+`tests/providers/test_golden_contract.py` holds the rules every adapter obeys,
+so a fourth one cannot quietly invent its own shape. Each adapter contributes a
+recording of a real session under `tests/providers/golden/`, and the suite
+asserts against all of them together:
+
+- Every emitted event is a kind the contract knows, carrying its required payload.
+- The assistant's answer reaches the caller as `text.delta` and matches the text
+  in the recording.
+- A terminal status is one of the five; no adapter invents a sixth.
+- No normalised payload carries provider content, credentials or key material.
+- Usage counts are non-negative integers.
+- A tool call announces its name and identifier and redacts its arguments. This
+  is checked by feeding each adapter a tool call whose arguments contain
+  credentials and reading what escapes, not only by inspecting recordings that
+  happen to contain no tools.
+
+Adding an adapter without a recording fails the suite.
