@@ -8,6 +8,7 @@ import queue
 import shutil
 import subprocess
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -405,12 +406,14 @@ class ClaudeAdapter(ProviderAdapter):
         session_factory: Callable[[Sequence[str], RunSpec, Mapping[str, str]], _Session] | None = None,
         runner: Callable[..., Any] = subprocess.run,
         process_factory: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
+        clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._command = tuple(command) if command is not None else None
         self._auth_manager = auth_manager or AuthenticationManager()
         self._session_factory = session_factory
         self._runner = runner
         self._process_factory = process_factory
+        self._clock = clock
         self._runs: dict[str, _RunState] = {}
         self._owned_sessions: set[str] = set()
         self._models: dict[str, ModelSource] = {}
@@ -616,15 +619,19 @@ class ClaudeAdapter(ProviderAdapter):
 
     def health(self) -> HealthReport:
         checked_at = datetime.now(timezone.utc).isoformat()
-        status = self._auth_manager.status("claude")
+        started = self._clock()
+        status = self._auth_manager.status("claude", force_refresh=True)
+        latency_ms = (self._clock() - started) * 1000.0
         if not status.logged_in:
             return HealthReport(
                 reachable=False,
+                latency_ms=latency_ms,
                 detail="Claude is not signed in to a claude.ai subscription",
                 checked_at=checked_at,
             )
         return HealthReport(
             reachable=True,
+            latency_ms=latency_ms,
             detail="Claude CLI reports a signed-in subscription",
             checked_at=checked_at,
         )

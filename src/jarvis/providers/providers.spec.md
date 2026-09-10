@@ -437,3 +437,24 @@ asserts against all of them together:
   happen to contain no tools.
 
 Adding an adapter without a recording fails the suite.
+
+## Registry and diagnostic command
+
+`registry.get_provider(id)` builds one adapter and `registry.list_providers()`
+names all of them. An unknown identifier raises with the known names in the
+message rather than returning a null adapter.
+
+`python -m jarvis.providers.cli status [provider ...]` prints what each provider
+currently reports: authentication, model catalogue, usage, health with latency,
+and visible sessions. It is a diagnostic, so it is built to stay honest under
+failure:
+
+- Each reading is taken independently. One provider that cannot answer, or one
+  CLI that is not installed, is reported in place and does not stop the rest.
+- Absent evidence is printed as absent. An empty catalogue says whether the
+  provider cannot list models at all or simply has not confirmed one yet, and an
+  unavailable usage reading prints the provider's own reason.
+- Nothing is estimated or filled in with a plausible zero.
+
+The command reconfigures stdout to UTF-8 because a Windows console defaults to
+cp1252, which cannot encode the emojis in the report.

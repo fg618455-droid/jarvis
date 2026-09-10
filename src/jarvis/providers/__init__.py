@@ -15,7 +15,9 @@ from .base import (
     SessionInfo,
     UsageSnapshot,
 )
+from .hermes import HermesAdapter, HermesProtocolError, HermesTimeoutError
 from .models import ModelCatalog
+from .registry import get_provider, list_providers
 from .claude import ClaudeAdapter, ClaudeProcessError, ClaudeTimeoutError
 from .codex import (
     CodexAdapter,
@@ -36,8 +38,13 @@ __all__ = [
     "CodexTimeoutError",
     "CodexTransportState",
     "HealthReport",
+    "HermesAdapter",
+    "HermesProtocolError",
+    "HermesTimeoutError",
     "ModelInfo",
     "ModelCatalog",
+    "get_provider",
+    "list_providers",
     "NotSupported",
     "ProviderAdapter",
     "ProviderCapabilityRegistry",
