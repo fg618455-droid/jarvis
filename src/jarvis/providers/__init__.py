@@ -16,6 +16,7 @@ from .base import (
     UsageSnapshot,
 )
 from .models import ModelCatalog
+from .claude import ClaudeAdapter, ClaudeProcessError, ClaudeTimeoutError
 from .codex import (
     CodexAdapter,
     CodexProtocolError,
@@ -27,6 +28,9 @@ __all__ = [
     "AuthStatus",
     "AuthenticationManager",
     "Capabilities",
+    "ClaudeAdapter",
+    "ClaudeProcessError",
+    "ClaudeTimeoutError",
     "CodexAdapter",
     "CodexProtocolError",
     "CodexTimeoutError",

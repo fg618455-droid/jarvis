@@ -204,3 +204,90 @@ primary window is reported as a percentage limit with its provider reset time.
 Token totals are not reclassified as input or output token usage. Missing or
 changed readings return `UsageSnapshot(available=False)` with an explicit
 detail. `health()` measures an `account/read` round trip and reports its latency.
+
+## Claude adapter
+
+### Transport and authentication
+
+`ClaudeAdapter` resolves `claude.cmd` before `claude` on Windows and `claude`
+elsewhere, through `PATH`. A run is one `claude -p` process per session, started
+with `--output-format stream-json --input-format stream-json
+--include-partial-messages --verbose --session-id <uuid>`. Stdin stays open for
+the lifetime of the session, which is what makes mid-run steering possible: a
+further user message is a JSON line on stdin.
+
+Only a claude.ai subscription starts a run. `AuthenticationManager` must report
+`authMethod="claude.ai"`, and the child process starts through
+`scrub_provider_environment()` so `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` are
+absent. `--bare` is never passed, because it switches the CLI to API-key
+authentication.
+
+### Models and capabilities
+
+Claude Code has no model listing interface, so `list_models()` returns a
+catalogue with `enumerable=False`. It starts empty and grows only from evidence:
+the `model` field of a run's `init` event. A model the caller asked for and that
+a run then confirmed is recorded as `verified-probe`; a model Claude chose by
+itself is recorded as `provider-default`. No identifier is ever guessed.
+
+`capabilities()` is closed until a run reports. The `init` event establishes
+`tools` from its tool list and `mcp` from its MCP server list. `streaming`,
+`steering` and `structured_output` follow from the transport the adapter itself
+uses: the stream-json output format, the stream-json input format, and
+`--json-schema`. Image input is not established by any observed evidence and
+stays false.
+
+### Capability profiles
+
+| Capability profile | Claude permission mode |
+|---|---|
+| `read_only` | `plan` |
+| `project_dev` | `acceptEdits` |
+| `automation` | `dontAsk` |
+| `unrestricted` | `bypassPermissions` |
+
+`system_prompt` maps to `--append-system-prompt`, `mcp_config` to `--mcp-config`
+with `--strict-mcp-config`, `additional_directories` to repeated `--add-dir`,
+and `allowed_tools` to `--allowedTools`. `skills` and `toolsets` have no Claude
+equivalent, so supplying one raises rather than being ignored.
+
+### Event mapping
+
+| Claude stream-json message | Normalised event |
+|---|---|
+| `system` / `init` | `run.started` |
+| `stream_event` / `message_start` | `turn.started` |
+| `content_block_delta` with `text_delta` | `text.delta` |
+| `content_block_delta` with `thinking_delta` | `thinking` |
+| `content_block_start` with a `tool_use` block | `tool.call` |
+| `user` message carrying `tool_result` blocks | `tool.result` |
+| `system` / `permission_request` | `approval.needed` |
+| `result` | `usage.delta` then `run.finished` |
+
+Tool arguments never reach an event: `tool.call` carries `args_redacted=True`
+and `tool.result` carries a generic outcome and a byte count.
+
+Terminal states stay apart. A successful `result` ends the run as `ok`, an
+`api_error_status` of 429 ends it as `quota`, a stream that stops sending within
+its message timeout ends it as `timeout`, and a stream that closes before a
+`result` ends it as `error`.
+
+### Sessions and usage
+
+`list_sessions()` parses `claude agents --json` and marks a session as owned only
+when this adapter started it. Sessions the user began in a terminal are listed
+read-only. A listing that is not JSON, or not a list, raises rather than
+degrading to an empty result.
+
+`resume()` and `fork()` return `NotSupported`. The CLI can continue a session
+through `--resume`, but only together with a new user message, which the
+session-only signature of the contract cannot carry. Reporting that honestly is
+preferable to a resume that silently invents a prompt.
+
+Claude has no usage query command. A run emits `rate_limit_event` carrying
+`status`, `rateLimitType`, `utilization` and `resetsAt`, and its `result` event
+carries token counts. The adapter keeps the last reading, so `usage()` is
+unavailable until a run has happened in this process and reports the real
+window afterwards. A `status` that does not begin with `allowed` is treated as
+an exhausted window and terminates the run as `quota`; `allowed_warning` is a
+warning and does not.
