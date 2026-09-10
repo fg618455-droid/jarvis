@@ -230,6 +230,15 @@ the `model` field of a run's `init` event. A model the caller asked for and that
 a run then confirmed is recorded as `verified-probe`; a model Claude chose by
 itself is recorded as `provider-default`. No identifier is ever guessed.
 
+`verify_model(name)` adds an entry without a full run. It sends a one-token
+probe, `claude -p --output-format json --model <name> --permission-mode plan
+"ping"`, and accepts the result only when `is_error` is false and `modelUsage`
+names a model. The recorded identifier is the `canonicalModel` Claude billed,
+not the alias the caller typed, so probing `sonnet` records `claude-sonnet-5`.
+Any other outcome, an unknown model answered with `api_error_status` 404, output
+that is not JSON, or a launch failure, records nothing and returns `None`. The
+catalogue never grows from a failed probe.
+
 `capabilities()` is closed until a run reports. The `init` event establishes
 `tools` from its tool list and `mcp` from its MCP server list. `streaming`,
 `steering` and `structured_output` follow from the transport the adapter itself

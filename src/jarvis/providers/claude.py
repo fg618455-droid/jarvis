@@ -33,6 +33,7 @@ from .base import (
 from .models import ModelCatalog
 
 
+PROBE_TIMEOUT_SECONDS = 120.0
 SESSION_COMMAND_TIMEOUT_SECONDS = 20.0
 STREAM_MESSAGE_TIMEOUT_SECONDS = 300.0
 _PERMISSION_MODES: Mapping[str, str] = {
@@ -432,6 +433,64 @@ class ClaudeAdapter(ProviderAdapter):
                 ModelInfo(identifier, source) for identifier, source in sorted(self._models.items())
             ),
         )
+
+    def verify_model(self, model: str) -> ModelInfo | None:
+        """Confirm a model with a one-token probe, or record nothing at all."""
+
+        self._require_subscription()
+        command = [
+            *(self._command or _resolve_claude_command()),
+            "-p",
+            "--output-format",
+            "json",
+            "--model",
+            model,
+            "--permission-mode",
+            "plan",
+            "ping",
+        ]
+        try:
+            result = self._runner(
+                command,
+                capture_output=True,
+                check=False,
+                env=scrub_provider_environment(),
+                text=True,
+                timeout=PROBE_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            debug_log(f"Claude model probe failed to run: {type(error).__name__}", "providers")
+            return None
+
+        try:
+            payload = json.loads(result.stdout)
+        except (json.JSONDecodeError, TypeError):
+            debug_log("Claude model probe returned output that is not JSON", "providers")
+            return None
+        if not isinstance(payload, dict) or payload.get("is_error") is not False:
+            debug_log(f"Claude rejected the probe for model {model}", "providers")
+            return None
+
+        confirmed = self._canonical_model(payload)
+        if confirmed is None:
+            debug_log("Claude probe succeeded without naming a model", "providers")
+            return None
+
+        self._models[confirmed] = "verified-probe"
+        debug_log(f"Verified Claude model {confirmed} by probe", "providers")
+        return ModelInfo(confirmed, "verified-probe")
+
+    @staticmethod
+    def _canonical_model(payload: Mapping[str, Any]) -> str | None:
+        """Read the model Claude actually billed, not the alias asked for."""
+
+        usage = payload.get("modelUsage")
+        if not isinstance(usage, dict) or not usage:
+            return None
+        name, detail = next(iter(usage.items()))
+        if isinstance(detail, dict) and isinstance(detail.get("canonicalModel"), str):
+            return detail["canonicalModel"]
+        return name if isinstance(name, str) and name else None
 
     def capabilities(self, model: str | None) -> Capabilities:
         """Return the capabilities the last run reported, closed until then."""
