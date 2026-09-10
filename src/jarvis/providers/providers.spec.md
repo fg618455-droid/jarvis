@@ -291,3 +291,120 @@ unavailable until a run has happened in this process and reports the real
 window afterwards. A `status` that does not begin with `allowed` is treated as
 an exhausted window and terminates the run as `quota`; `allowed_warning` is a
 warning and does not.
+
+## Hermes adapter
+
+### Transport and authentication
+
+`HermesAdapter` resolves the launcher through the same
+`%LOCALAPPDATA%/hermes/bin/hermes.cmd` discovery as `AuthenticationManager`,
+with `hermes` as the PATH fallback. Its only transport is one long-lived
+`hermes acp` process using Agent Client Protocol JSON-RPC v2 over stdio. ACP
+startup may take about 30 seconds, so initialisation has a 60-second request
+budget. `HermesTransportState` is either `acp` or `unavailable` and exposes a
+failed startup rather than selecting another execution mode.
+
+There is no `hermes -z` fallback. That command emits only final text and
+auto-bypasses approvals, so it cannot preserve either the event or permission
+contract. `--yolo` is never passed. Every Hermes child receives
+`scrub_provider_environment()`, so neither billing API key is present.
+
+The authentication manager reads the configured provider at runtime and runs
+`hermes auth status <provider>`. A run starts only when that exact status is a
+subscription route represented as `method="chatgpt"`; no provider name is
+hard-coded by the adapter.
+
+### Models and capabilities
+
+`list_models()` reads `models.availableModels` from the ACP `session/new`
+reply, taking each `modelId` with `source="api"` and its `name` as the display
+name. That is the provider's own structured advertisement, so nothing is
+refreshed through a command, nothing is read from a cache file that could be
+stale, and no identifier is inferred. Opening a session is the only way to ask,
+so `list_models()` starts one when the adapter has not yet seen a catalogue.
+Missing, malformed or changed required fields raise `HermesProtocolError`.
+
+`session/new` also returns `models.availableModels` and `currentModelId`. A
+caller-selected model is accepted only when it appears in that response, then
+is pinned with `session/set_model` and recorded with `model_source="api"`. With
+no selection, the reported `currentModelId` is recorded with
+`model_source="provider-default"`. An absent current model remains unknown.
+
+Capabilities start false. A successful `initialize` establishes image input
+only from `agentCapabilities.promptCapabilities.image`. Streaming is true
+because the selected ACP transport demonstrably sends `session/update`
+notifications. Tools, MCP, structured output and steering have no positive
+flag in the handshake and remain false.
+
+### Capability profiles and approvals
+
+The modes returned by `session/new` are the only approval policies the adapter
+uses:
+
+| Capability profile | Required ACP mode | Behaviour |
+|---|---|---|
+| `read_only` | `default` | Hermes asks before edits; the JARVIS ACP client declines each approval request. |
+| `project_dev` | `accept_edits` | Hermes auto-allows workspace and temporary-directory edits and asks for sensitive paths. |
+| `automation` | `dont_ask` | Hermes auto-allows session file edits except sensitive paths. Any remaining approval request is declined. |
+| `unrestricted` | none | Not faithfully representable without `--yolo`; run creation raises `HermesProtocolError`. |
+
+Run creation fails if the required mode is absent from the session response.
+An ACP `session/request_permission` becomes `approval.needed`, with option IDs
+but without tool arguments, and receives a cancelled outcome. This is
+fail-closed because `ProviderAdapter` has no operation for returning an approval
+decision in this phase.
+
+`system_prompt`, `mcp_config`, `allowed_tools`, `additional_directories`,
+`skills` and `toolsets` have no wired ACP mapping in this phase. Supplying any
+of them raises rather than being ignored.
+
+### Event mapping
+
+| Hermes ACP message | Normalised event |
+|---|---|
+| successful session and prompt dispatch | `run.started`, then `turn.started` |
+| `agent_message_chunk` | `text.delta` |
+| `agent_thought_chunk` | `thinking` |
+| `tool_call` | `tool.call` |
+| terminal `tool_call_update` | `tool.result` |
+| `session/request_permission` | `approval.needed` |
+| `session/prompt` reply | exact token `usage.delta`, then `run.finished` |
+
+`available_commands_update` and `session_info_update` carry no provider-neutral
+event and are ignored. Tool input is never copied into an event;
+`tool.call.args_redacted` is always true. Tool results contain only success,
+generic summary and byte count.
+
+`session/prompt.stopReason="end_turn"` maps to `ok`, and `cancelled` maps to
+`cancelled`. Every other stop reason maps to `error`. A message timeout maps to
+`timeout`, while a closed or malformed stream maps to `error`.
+
+Hermes exposes no structured quota outcome. The adapter never emits
+`run.finished(status="quota")` and never searches assistant text for quota-like
+phrases. Provider failures that arrive as assistant prose remain prose; an
+unknown stop reason is `error`.
+
+### Sessions, usage and health
+
+The handshake currently advertises session `resume`, `fork` and `list`; the
+adapter maps them to `session/resume`, `session/fork` and `session/list`.
+Interruption uses the ACP `session/cancel` method. Mid-run steering has no
+advertised capability and returns `NotSupported`. Any absent session capability
+also returns `NotSupported` rather than simulating success.
+
+`usage()` is unavailable before a run. It then reports the exact input, output
+and cached-read token counts from the `session/prompt` reply, and mentions the
+latest `usage_update` context reading in its detail.
+
+`usage_update` describes how full the session context is, not what a turn spent,
+so it produces no `usage.delta` event and never populates `limit` or
+`remaining`. Those fields stay empty because Hermes has no quota window of its
+own: it spends the subscription of the provider configured in its own settings,
+and shares that budget with whichever adapter uses the same provider. On a
+machine configured with `openai-codex`, Hermes and the Codex adapter draw on one
+ChatGPT subscription, so a failover between them buys nothing.
+
+`health()` starts and initialises ACP, reports the advertised agent name and
+version when present, and measures the complete reachability check latency. A
+startup or protocol failure reports `reachable=False` with the transport state;
+it never falls back to `-z`.

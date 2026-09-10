@@ -375,7 +375,7 @@ Ebenfalls Teil des Vertrags: `mcp_config` (Pfad zur MCP-Konfiguration, ab Phase 
 |---|---|---|
 | Claude | `claude -p --input-format stream-json --output-format stream-json --include-partial-messages`, persistenter Prozess pro Session | `claude --help`, v2.1.220 |
 | Codex | `codex app-server` (JSON-RPC v2 über stdio); Fallback `codex exec --json` | Schema-Dump v0.153.4 |
-| Hermes | `hermes -z <prompt>` einmalig; `hermes gateway` + `hermes cron` für 24/7 | `hermes --help` |
+| Hermes | `hermes acp` (Agent Client Protocol, JSON-RPC über stdio); `hermes gateway` + `hermes cron` für 24/7 | Live-Handshake gegen 0.20.4 |
 
 ### 6.3 Normalisiertes Event-Modell
 
@@ -401,7 +401,7 @@ run.finished  {status: ok|error|cancelled|quota|timeout, reason}
 | Provider | Quelle | Verfügbarkeit |
 |---|---|---|
 | **Codex** | `app-server` → `model/list`, `modelProvider/capabilities/read` | ✅ vollständig dynamisch |
-| **Hermes** | `hermes model --refresh` (holt `/v1/models` je Provider) + `cache/model_catalog.json` | ✅ dynamisch |
+| **Hermes** | ACP `session/new` → `models.availableModels` (143 Einträge, mit `currentModelId`) | ✅ dynamisch |
 | **Claude** | **keine Listing-Schnittstelle in der CLI** | ⚠️ offene Capability |
 
 **Fail-Closed-Entwurf für Claude (§7.4):** Der Katalog trägt `enumerable=False` und startet leer —
@@ -471,7 +471,7 @@ läuft `claude` mit seinem eigenen Default, und JARVIS protokolliert `model_sour
 |---|---|---|
 | Nutzungslimits Claude Pro | existieren (5-h- und Wochenfenster); kein Abfragebefehl, aber der Run-Stream meldet sie | `rate_limit_event` im `stream-json`-Lauf |
 | Nutzungslimits Codex | `account/rateLimits/read`, `account/usage/read`, `account/rateLimits/updated` | app-server v2 Schema |
-| Nutzungslimits Hermes | `hermes status`, `agent/account_usage.py` | CLI |
+| Nutzungslimits Hermes | **kein eigenes Fenster**; Hermes verbraucht das Abo seines konfigurierten Providers | ACP-Lauf + `model.provider` |
 | Modell-Liste Claude | **nicht verfügbar** | CLI-Hilfe |
 | Embeddings | **bei keinem der drei verfügbar** | CLI-Hilfen + Schema |
 | Unbegrenzte Nutzung | **nein**, bei keinem | — |
@@ -488,6 +488,15 @@ läuft `claude` mit seinem eigenen Default, und JARVIS protokolliert `model_sour
   **fragt den Nutzer**, ob auf Codex/Hermes umgeschaltet werden soll. Automatischer
   Providerwechsel ist standardmäßig **aus**.
 - *Claude-Modellliste fehlt:* siehe §6.4.
+- *Hermes hat kein eigenes Kontingent:* Hermes läuft gegen den in seiner eigenen Konfiguration
+  gesetzten Provider (`model.provider`). Steht dort `openai-codex`, verbraucht Hermes dasselbe
+  ChatGPT-Abo wie der Codex-Adapter. Zwei Adapter, ein Topf. Ein Ausweichen von Codex auf Hermes
+  bei `quota` bringt deshalb nichts und darf nicht als Failover eingeplant werden. Die UI zeigt
+  Hermes-Verbrauch nie als eigenes Budget.
+- *Hermes meldet Quota nicht strukturiert:* ACP kennt in `stopReason` keinen Quota-Wert, und ein
+  Provider-Fehler erscheint als gewöhnlicher Antworttext. Der Adapter liefert deshalb nie
+  `run.finished(status=quota)`, sondern `error`. Quota aus Text zu erraten wäre genau das
+  Sprachmuster-Raten, das das Projekt verbietet.
 - *Embeddings fehlen:* Memory läuft FTS5-only. Es gibt keinen versteckten vierten Provider und
   keinen lokalen Embedder als Ersatz.
 
@@ -1851,7 +1860,7 @@ T-008** (fremder CLI-Vertrag) und **T-037** (Ersatz für den Intent-Judge).
 |---|---|---|---|
 | Abo-Auth | ✅ `claude.ai`, Pro (verifiziert) | ✅ ChatGPT (verifiziert) | ✅ via openai-codex |
 | Auth-Status maschinenlesbar | ✅ JSON | ✅ `codex doctor` / `account/read` | ✅ `hermes auth status <provider>` → `<provider>: logged in`, Exit 0 |
-| Modell-Liste dynamisch | ❌ **keine Schnittstelle** | ✅ `model/list` | ✅ `hermes model --refresh` |
+| Modell-Liste dynamisch | ❌ **keine Schnittstelle** | ✅ `model/list` | ✅ ACP `session/new` |
 | Modell-Fähigkeiten abfragbar | ❌ | ✅ `modelProvider/capabilities/read` | ⚠️ teilweise |
 | Modell pro Run pinnbar | ✅ `--model` | ✅ `turn/start` | ✅ `-m` |
 | Streaming | ✅ `stream-json` + Partials | ✅ Notifications | ✅ |
@@ -2257,9 +2266,13 @@ Hermes (lokal unter %LOCALAPPDATA%\hermes, Start über bin\hermes.cmd)
              nie hardcodiert. Ausgabe: `<provider>: logged in`, Exit 0.
              `hermes status` wird NICHT geparst: seine Ausgabe enthält maskierte
              API-Key-Fragmente und der Befehl ist netzabhängig.
-  Run:       `hermes -z "<prompt>" [-m <model>] [--provider <p>] [-t <toolsets>]
-              [--skills <s>] [--in <dir>]`
-  Modelle:   `hermes model --refresh` + cache/model_catalog.json
+  Run:       `hermes acp` — ACP über stdio: `initialize`, `session/new`,
+              `session/set_model`, `session/set_mode`, `session/prompt`;
+              Antworten und `session/update`-Notifications tragen Text, Tools und Usage.
+              `hermes -z` ist KEIN Fallback: laut eigener Hilfe werden dort
+              „approvals are auto-bypassed", ein `read_only`-Lauf würde damit
+              unbemerkt unbeschränkt laufen.
+  Modelle:   ACP `session/new` → `models.availableModels`
   WICHTIG:   `hermes proxy` unterstützt NUR nous und xai als OAuth-Upstreams —
              er ist KEIN Weg zu Claude oder Codex. Nicht so einplanen.
 
