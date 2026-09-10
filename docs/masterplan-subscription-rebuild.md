@@ -469,7 +469,7 @@ läuft `claude` mit seinem eigenen Default, und JARVIS protokolliert `model_sour
 
 | Frage | Antwort | Quelle |
 |---|---|---|
-| Nutzungslimits Claude Pro | existieren (5-h- und Wochenfenster), **nicht** per CLI abfragbar | keine CLI-Schnittstelle gefunden |
+| Nutzungslimits Claude Pro | existieren (5-h- und Wochenfenster); kein Abfragebefehl, aber der Run-Stream meldet sie | `rate_limit_event` im `stream-json`-Lauf |
 | Nutzungslimits Codex | `account/rateLimits/read`, `account/usage/read`, `account/rateLimits/updated` | app-server v2 Schema |
 | Nutzungslimits Hermes | `hermes status`, `agent/account_usage.py` | CLI |
 | Modell-Liste Claude | **nicht verfügbar** | CLI-Hilfe |
@@ -478,10 +478,15 @@ läuft `claude` mit seinem eigenen Default, und JARVIS protokolliert `model_sour
 
 **Fail-Closed-Verhalten pro offener Capability:**
 
-- *Claude-Quota unbekannt:* Die UI zeigt „Kontingent: unbekannt (Provider stellt keine Auskunft
-  bereit)" — nie eine geschätzte Zahl. Ein `run.finished(status=quota)` schaltet Claude für ein
-  konfigurierbares Fenster in `degraded` und **fragt den Nutzer**, ob auf Codex/Hermes umgeschaltet
-  werden soll. Automatischer Providerwechsel ist standardmäßig **aus**.
+- *Claude-Quota nur beim Laufen bekannt:* Es gibt keinen Abfragebefehl, aber ein Lauf mit
+  `--output-format stream-json` liefert `rate_limit_event` mit `status`, `rateLimitType`
+  (z. B. `seven_day`), `utilization`, `surpassedThreshold`, `isUsingOverage` und `resetsAt`, und
+  das `result`-Event liefert `usage` samt `modelUsage`. Der Adapter merkt sich die letzte Messung
+  und liefert sie mit ihrem Zeitstempel; vor dem ersten Lauf zeigt die UI „Kontingent: unbekannt
+  (noch kein Lauf in diesem Prozess)" — nie eine geschätzte Zahl. Ein
+  `run.finished(status=quota)` schaltet Claude für ein konfigurierbares Fenster in `degraded` und
+  **fragt den Nutzer**, ob auf Codex/Hermes umgeschaltet werden soll. Automatischer
+  Providerwechsel ist standardmäßig **aus**.
 - *Claude-Modellliste fehlt:* siehe §6.4.
 - *Embeddings fehlen:* Memory läuft FTS5-only. Es gibt keinen versteckten vierten Provider und
   keinen lokalen Embedder als Ersatz.
@@ -767,7 +772,7 @@ ohne Tastendruck-Simulation.
 | Auth | `claude auth status` (JSON) |
 | Health | `claude doctor` |
 | **Modell-Liste** | **nicht verfügbar** (§6.4) |
-| **Usage/Quota** | **nicht per CLI verfügbar** (§7.4) |
+| **Usage/Quota** | kein Abfragebefehl; `rate_limit_event` und `result.usage` im Lauf (§7.4) |
 
 ### 12.3 Fremde vs. eigene Sessions
 
@@ -1858,7 +1863,7 @@ T-008** (fremder CLI-Vertrag) und **T-037** (Ersatz für den Intent-Judge).
 | Eigene Tools via MCP | ✅ `--mcp-config` | ✅ `codex mcp` | ✅ `hermes mcp` |
 | Tool-Berechtigungen | ✅ `--permission-mode`, allow/deny | ✅ `permissionProfile/list` | ✅ `approvals`, `--yolo` |
 | Struktur-Output | ✅ `--json-schema` | ✅ `--output-schema` | ⚠️ |
-| Usage / Rate-Limits | ❌ **nicht verfügbar** | ✅ `account/{usage,rateLimits}/read` | ⚠️ `hermes status` |
+| Usage / Rate-Limits | ⚠️ nur im Lauf: `rate_limit_event`, `result.usage` | ✅ `account/{usage,rateLimits}/read` | ⚠️ `hermes status` |
 | Bilder als Eingabe | ✅ | ✅ `-i` | ✅ `image_input_mode` |
 | Embeddings | ❌ | ❌ | ❌ |
 | Cron / Zeitplan | ❌ | ❌ | ✅ `hermes cron` |
@@ -2230,7 +2235,8 @@ Claude Code 2.1.220
   Resume:    `--resume <id>`; Fork = Resume in neue --session-id
   Health:    `claude doctor`
   Modelle:   NICHT verfügbar  -> fail-closed-Katalog
-  Usage:     NICHT verfügbar  -> UsageSnapshot(available=False)
+  Usage:     kein Abfragebefehl; `rate_limit_event` und `result.usage` fallen im Lauf an
+             -> vor dem ersten Lauf UsageSnapshot(available=False)
 
 Codex CLI 0.153.4
   Auth:      `codex login status` (Text) und `codex doctor` (Detail)
