@@ -362,3 +362,96 @@ class _Completed:
 
 def _completed(stdout: str) -> _Completed:
     return _Completed(stdout)
+
+
+PROBE_SUCCESS = {
+    "is_error": False,
+    "subtype": "success",
+    "result": "ping",
+    "api_error_status": None,
+    "modelUsage": {
+        "opus": {
+            "inputTokens": 2,
+            "outputTokens": 4,
+            "canonicalModel": "claude-opus-5",
+            "provider": "firstParty",
+        }
+    },
+}
+PROBE_UNKNOWN_MODEL = {
+    "is_error": True,
+    "subtype": "success",
+    "api_error_status": 404,
+    "terminal_reason": "api_error",
+    "modelUsage": {},
+    "result": "There's an issue with your model selection",
+}
+
+
+def probing_adapter(stdout: str) -> ClaudeAdapter:
+    return ClaudeAdapter(
+        auth_manager=StubAuthenticationManager(),
+        command=("claude",),
+        runner=lambda command, **kwargs: _completed(stdout),
+    )
+
+
+@pytest.mark.unit
+def test_a_probe_records_the_model_claude_actually_billed() -> None:
+    adapter = probing_adapter(json.dumps(PROBE_SUCCESS))
+
+    confirmed = adapter.verify_model("opus")
+
+    assert confirmed is not None
+    assert confirmed.id == "claude-opus-5"
+    assert confirmed.source == "verified-probe"
+    assert [(model.id, model.source) for model in adapter.list_models().models] == [
+        ("claude-opus-5", "verified-probe")
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        json.dumps(PROBE_UNKNOWN_MODEL),
+        json.dumps({"is_error": False, "modelUsage": {}}),
+        json.dumps(["not", "an", "object"]),
+        "Error: something went wrong",
+        "",
+    ],
+)
+def test_a_failed_probe_records_nothing(stdout: str) -> None:
+    adapter = probing_adapter(stdout)
+
+    assert adapter.verify_model("made-up-model") is None
+    assert adapter.list_models().models == ()
+
+
+@pytest.mark.unit
+def test_a_probe_needs_a_subscription() -> None:
+    adapter = ClaudeAdapter(
+        auth_manager=StubAuthenticationManager(AuthStatus(logged_in=True, method="apiKey")),
+        command=("claude",),
+        runner=lambda command, **kwargs: _completed(json.dumps(PROBE_SUCCESS)),
+    )
+
+    with pytest.raises(PermissionError):
+        adapter.verify_model("opus")
+
+
+@pytest.mark.unit
+def test_a_probe_never_carries_billing_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
+    seen: dict[str, Any] = {}
+
+    def runner(command: list[str], **kwargs: Any) -> Any:
+        seen.update(kwargs.get("env") or {})
+        return _completed(json.dumps(PROBE_SUCCESS))
+
+    adapter = ClaudeAdapter(
+        auth_manager=StubAuthenticationManager(), command=("claude",), runner=runner
+    )
+    adapter.verify_model("opus")
+
+    assert "ANTHROPIC_API_KEY" not in seen

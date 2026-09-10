@@ -230,6 +230,15 @@ the `model` field of a run's `init` event. A model the caller asked for and that
 a run then confirmed is recorded as `verified-probe`; a model Claude chose by
 itself is recorded as `provider-default`. No identifier is ever guessed.
 
+`verify_model(name)` adds an entry without a full run. It sends a one-token
+probe, `claude -p --output-format json --model <name> --permission-mode plan
+"ping"`, and accepts the result only when `is_error` is false and `modelUsage`
+names a model. The recorded identifier is the `canonicalModel` Claude billed,
+not the alias the caller typed, so probing `sonnet` records `claude-sonnet-5`.
+Any other outcome, an unknown model answered with `api_error_status` 404, output
+that is not JSON, or a launch failure, records nothing and returns `None`. The
+catalogue never grows from a failed probe.
+
 `capabilities()` is closed until a run reports. The `init` event establishes
 `tools` from its tool list and `mcp` from its MCP server list. `streaming`,
 `steering` and `structured_output` follow from the transport the adapter itself
@@ -408,3 +417,44 @@ ChatGPT subscription, so a failover between them buys nothing.
 version when present, and measures the complete reachability check latency. A
 startup or protocol failure reports `reachable=False` with the transport state;
 it never falls back to `-z`.
+
+## Cross-adapter contract tests
+
+`tests/providers/test_golden_contract.py` holds the rules every adapter obeys,
+so a fourth one cannot quietly invent its own shape. Each adapter contributes a
+recording of a real session under `tests/providers/golden/`, and the suite
+asserts against all of them together:
+
+- Every emitted event is a kind the contract knows, carrying its required payload.
+- The assistant's answer reaches the caller as `text.delta` and matches the text
+  in the recording.
+- A terminal status is one of the five; no adapter invents a sixth.
+- No normalised payload carries provider content, credentials or key material.
+- Usage counts are non-negative integers.
+- A tool call announces its name and identifier and redacts its arguments. This
+  is checked by feeding each adapter a tool call whose arguments contain
+  credentials and reading what escapes, not only by inspecting recordings that
+  happen to contain no tools.
+
+Adding an adapter without a recording fails the suite.
+
+## Registry and diagnostic command
+
+`registry.get_provider(id)` builds one adapter and `registry.list_providers()`
+names all of them. An unknown identifier raises with the known names in the
+message rather than returning a null adapter.
+
+`python -m jarvis.providers.cli status [provider ...]` prints what each provider
+currently reports: authentication, model catalogue, usage, health with latency,
+and visible sessions. It is a diagnostic, so it is built to stay honest under
+failure:
+
+- Each reading is taken independently. One provider that cannot answer, or one
+  CLI that is not installed, is reported in place and does not stop the rest.
+- Absent evidence is printed as absent. An empty catalogue says whether the
+  provider cannot list models at all or simply has not confirmed one yet, and an
+  unavailable usage reading prints the provider's own reason.
+- Nothing is estimated or filled in with a plausible zero.
+
+The command reconfigures stdout to UTF-8 because a Windows console defaults to
+cp1252, which cannot encode the emojis in the report.
